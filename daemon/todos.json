@@ -99,7 +99,7 @@
         {
           "id": "A1",
           "title": "Add HostOs and complete Device fields",
-          "status": "pending",
+          "status": "done",
           "dependsOn": [],
           "description": "core/src/device/mod.rs currently has DeviceId/DeviceState/Device with only id, name, state. Add HostOs {Macos, Windows, Linux} and the missing os: HostOs and last_seen: DateTime<Utc> fields so Device matches data-model.md's Device class exactly.",
           "deliverables": [
