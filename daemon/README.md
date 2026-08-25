@@ -53,7 +53,7 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 |---|---|---|---|
 | Linux | real (`todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
 | macOS | real (E4, `CGEventTap`) | real (E5, `CGEventPost`) | cross-compile checked (`cargo check -p flow-platform --target x86_64-apple-darwin` and `--target aarch64-apple-darwin`) plus `clippy`/`fmt` on both; the `CGEvent <-> InputEvent` translation has unit tests in both directions, but they need macOS to execute — this Linux container can only compile-check them, not run them, and there's no Mac hardware here at all — see "Manual verification notes" below |
-| Windows | real (E6, `WH_KEYBOARD_LL`/`WH_MOUSE_LL`) | pending (E7) | cross-compile checked (`cargo check`/`clippy --all-targets` for `flow-platform` on `x86_64-pc-windows-msvc`) plus `fmt`; the hook-struct-to-`InputEvent` translation has unit tests, but no Windows hardware exists here to run them — see "Manual verification notes" below |
+| Windows | real (E6, `WH_KEYBOARD_LL`/`WH_MOUSE_LL`) | real (E7, `SendInput`) | cross-compile checked (`cargo check`/`clippy --all-targets` for `flow-platform` on `x86_64-pc-windows-msvc`) plus `fmt`; the `InputEvent <-> INPUT` translation has unit tests in both directions, but no Windows hardware exists here to run them — see "Manual verification notes" below |
 
 Cross-compilation setup instructions land in `todos.json` task J3 once the macOS/Windows adapters exist to check.
 
@@ -150,3 +150,15 @@ cargo test -p flow-platform --target <your-windows-target>   # runs translate.rs
 ```
 
 What to look for on real hardware: `start()` succeeds without any special permission (unlike macOS's Accessibility gate, low-level hooks need no user consent, though some antivirus/EDR software flags them); typing/clicking/scrolling produces the expected `InputEvent`s, including per-side modifier names (`LSHIFT` vs `RSHIFT`) and a normalized one-unit-per-notch `Scroll`; and `stop()` returns once the posted `WM_QUIT` is processed — near-instant, similar to macOS's `CFRunLoop::stop()` and unlike Linux's idle-poll delay.
+
+### E7: Windows injection via SendInput
+
+`platform/src/windows/injector.rs` (`WindowsInputInjector`) builds `INPUT` structs from incoming `InputEvent`s through the pure `inject_translate::to_input` function (the reverse of E6's `EventTranslator`) and queues them via `SendInput`. Unlike macOS's `CGEventPost` (one event per call, needing a manual anchor-to-current-position hack for relative moves) `SendInput` takes `dx`/`dy` as a genuinely relative delta when `MOUSEEVENTF_ABSOLUTE` isn't set, so `MouseEvent::Move` translates directly with no cursor-tracking workaround needed. One design choice worth noting: a `MouseEvent::Scroll` with both axes set becomes *two* `INPUT` entries in one `SendInput` call (`MOUSEEVENTF_WHEEL` and `MOUSEEVENTF_HWHEEL` are mutually exclusive on a single `INPUT`), the same per-axis shape E2's Linux uinput injector uses — `to_input` returns `Vec<INPUT>` rather than a single value for exactly this reason. Verified with `cargo check`/`clippy --all-targets -D warnings`/`cargo fmt` for `flow-platform` on `x86_64-pc-windows-msvc`, all clean — no Windows hardware exists here, so `inject_translate.rs`'s 10 unit tests (constructing `InputEvent`s and reading back the resulting `INPUT`'s union fields, unsafely but only ever reading back what the same test just wrote) have never actually executed:
+
+```sh
+cargo test -p flow-platform --target <your-windows-target>   # runs inject_translate.rs's unit tests for real
+```
+
+What to look for on real hardware: injected input is indistinguishable from real hardware input to other applications, the same as macOS's `CGEventPost`; `SendInput` returns fewer queued events than sent when something (commonly a UIPI-elevated foreground window) is blocking synthetic input — `WindowsInjectError::SendInputBlocked` surfaces that rather than silently dropping it; and a `MouseEvent::Move` moves the cursor by the given delta regardless of where it already was, unlike macOS's anchor-and-offset approach.
+
+With E7 landed, all three platforms (Linux, macOS, Windows) have both capture and injection implemented — Linux's E1-E3 are the only ones actually exercised end-to-end in this environment; macOS's and Windows' are cross-compile-checked and unit-tested-in-source only, per each section above.

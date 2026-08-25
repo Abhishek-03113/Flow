@@ -17,4 +17,6 @@ pub use linux::{LinuxInputCapture, LinuxInputInjector};
 #[cfg(target_os = "macos")]
 pub use macos::{MacosCaptureError, MacosInjectError, MacosInputCapture, MacosInputInjector};
 #[cfg(target_os = "windows")]
-pub use windows::{WindowsCaptureError, WindowsInputCapture, WindowsInputInjector};
+pub use windows::{
+    WindowsCaptureError, WindowsInjectError, WindowsInputCapture, WindowsInputInjector,
+};
