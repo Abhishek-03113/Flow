@@ -117,7 +117,7 @@
         {
           "id": "A2",
           "title": "Add DaemonLinkState",
-          "status": "pending",
+          "status": "done",
           "dependsOn": [],
           "description": "New enum for daemon-reachability health, distinct from per-device DeviceState. Lives in a new core/src/link/mod.rs (top-level concept in the contract, not a sub-concept of device or state).",
           "deliverables": [
