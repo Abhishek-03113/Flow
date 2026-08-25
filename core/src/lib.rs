@@ -12,6 +12,7 @@ pub mod input;
 pub mod link;
 pub mod pairing;
 pub mod protocol;
+pub mod settings;
 pub mod state;
 pub mod switch_key;
 pub mod transport;

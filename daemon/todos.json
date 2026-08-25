@@ -173,7 +173,7 @@
         {
           "id": "A5",
           "title": "Add FlowSettings, SettingsPatch, PointerSensitivity",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A4"],
           "description": "New core/src/settings/mod.rs. SettingsPatch mirrors FlowSettings with every field Option<T> (matches Dart's SettingsPatch all-nullable partial), plus FlowSettings::apply_patch(&mut self, patch: SettingsPatch) doing a field-by-field merge only where Some.",
           "deliverables": [
