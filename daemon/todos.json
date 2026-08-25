@@ -134,7 +134,7 @@
         {
           "id": "A3",
           "title": "Expand pairing into a full PairingSession state machine",
-          "status": "pending",
+          "status": "done",
           "dependsOn": [],
           "description": "core/src/pairing/mod.rs only has PairingRequest/PairingDecision today. Add PairingStage, PairingCandidate, and PairingSession (stage, candidates, target_name, error) plus a PairingSession::idle() constructor, matching the state machine daemon-ipc.md defines.",
           "deliverables": [
