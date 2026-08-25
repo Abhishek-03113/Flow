@@ -1,9 +1,12 @@
 //! Persisted user preferences (`data-model.md` "FlowSettings").
 
+use serde::{Deserialize, Serialize};
+
 use crate::switch_key::{default_binding, SwitchKeyBinding};
 
 /// How fast the pointer moves relative to raw input deltas.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PointerSensitivity {
     Low,
     Normal,
@@ -12,7 +15,8 @@ pub enum PointerSensitivity {
 
 /// The full set of user-configurable settings, mirroring
 /// `data-model.md`'s `FlowSettings` class field-for-field.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct FlowSettings {
     pub launch_at_login: bool,
     pub show_tray_icon: bool,
@@ -90,16 +94,26 @@ impl FlowSettings {
 /// A partial `FlowSettings` update — every field optional, matching the
 /// Dart `SettingsPatch`'s all-nullable partial. Only the keys being
 /// changed need to be `Some`.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct SettingsPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_at_login: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_tray_icon: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_reconnect: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_connect_paired_devices: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_keyboard: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub share_mouse: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub debug_logging: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pointer_sensitivity: Option<PointerSensitivity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_key: Option<SwitchKeyBinding>,
 }
 

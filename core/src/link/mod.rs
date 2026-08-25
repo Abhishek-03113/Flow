@@ -2,9 +2,12 @@
 //! "DaemonLinkState"). A single top-level value, not per-device — it
 //! drives the tray popover's status dot and banner.
 
+use serde::{Deserialize, Serialize};
+
 /// Reachability/health of the daemon connection, distinct from any single
 /// device's [`crate::device::DeviceState`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DaemonLinkState {
     /// Daemon reachable, active device receiving input normally.
     /// UI treatment: green dot, no banner.

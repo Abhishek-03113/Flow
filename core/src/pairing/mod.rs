@@ -6,6 +6,8 @@
 //! `PairingDecision` are only the accept/reject shape needed for
 //! local-network pairing (used by the future network handshake in track G).
 
+use serde::{Deserialize, Serialize};
+
 use crate::device::HostOs;
 
 #[derive(Debug, Clone)]
@@ -28,7 +30,8 @@ pub enum PairingDecision {
 /// --(auto, ~1.6s)--> idle; requesting --(peer rejects/times out)-->
 /// failed --(auto, ~1.6s)--> idle; any non-idle state --cancel_pairing-->
 /// idle`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum PairingStage {
     Idle,
     Searching,
@@ -40,7 +43,8 @@ pub enum PairingStage {
 
 /// A discoverable device offered as a pairing target once
 /// [`PairingStage::Found`] is reached.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct PairingCandidate {
     pub id: String,
     pub name: String,
@@ -49,7 +53,8 @@ pub struct PairingCandidate {
 
 /// Current state of the pairing flow, mirroring `data-model.md`'s
 /// `PairingSession` class field-for-field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct PairingSession {
     pub stage: PairingStage,
     /// Populated once `stage >= Found`.
