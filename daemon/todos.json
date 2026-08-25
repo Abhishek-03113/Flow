@@ -664,7 +664,8 @@
         {
           "id": "D4",
           "title": "Provider wiring: swappable daemon backend",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Manually verified end to end outside the unit test suite (a flutter_test-based smoke test, since dart run can't load anything importing package:flutter — dart:ui isn't available outside the flutter_tester): with a real flow-daemon running and FLOW_DAEMON_MODE=ipc passed via --dart-define, devicesProvider actually fetched the 3 seeded devices over the real WebSocket contract, proving the provider-level swap works against a live process, not just against IpcDaemonRepository in isolation (which D2/D3 already covered with fakes). Default (no dart-define) flutter test run of the full suite (59 tests) is unchanged, confirming no regression for UI-only development. Updated flutter/README.md: new 'Running against a real daemon' section documenting the flag + port + two-terminal recipe, lib/data/ description updated to mention both repository implementations, and the stale 'no real daemon exists yet' line in the 'What's not here yet' section removed now that one does.",
           "dependsOn": ["D2", "D3"],
           "description": "flutter/lib/state/repository_providers.dart's daemonRepositoryProvider currently hardcodes MockDaemonRepository. Make the choice explicit and swappable (e.g. an environment/compile-time flag or a small config value) without deleting the mock — the mock remains the default for UI-only development per the original design, IpcDaemonRepository is opt-in for daemon-integration testing.",
           "deliverables": [
