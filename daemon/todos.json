@@ -211,7 +211,8 @@
         {
           "id": "A7",
           "title": "Serde-align every contract type to the wire format",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "PairingRequest/PairingDecision deliberately left without serde — they're not part of docs/contracts/data-model.md's wire vocabulary (only used for the future daemon-to-daemon handshake in track G). FlowError also left without serde: it's not a wire type itself, it's mapped to ErrorPayload{code,message} in track C1 via FlowError::code()/Display. SettingsPatch fields use #[serde(default, skip_serializing_if = \"Option::is_none\")] so a patch round-trips both directions matching daemon-ipc.md's 'only the keys being changed are sent' rule, verified in the wire_format test.",
           "dependsOn": ["A1", "A2", "A3", "A5", "A6"],
           "description": "Sweep every type added/touched in A1-A6 (plus the pre-existing Device/DeviceState) and add #[derive(Serialize, Deserialize)] + #[serde(rename_all = \"snake_case\")], matching the exact JSON examples in data-model.md field-for-field. This is the task that makes A's types wire-ready for track C.",
           "deliverables": [

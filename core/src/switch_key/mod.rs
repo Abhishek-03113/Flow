@@ -4,12 +4,15 @@
 //! Kept as its own module since both `settings` (track A5) and the future
 //! hotkey detector (track F) depend on it independently.
 
+use serde::{Deserialize, Serialize};
+
 /// A switch-key shortcut: a human-readable label plus the ordered,
 /// platform-neutral key tokens that make it up (e.g. `"Ctrl"`, `"Alt"`,
 /// `"Shift"`, `"Meta"`, `"ScrollLock"`, `"Pause"`, `"F13"`, single
 /// characters, ...). Rendering a platform-correct glyph (e.g. `⌘` on macOS
 /// for `"Meta"`) is a UI concern, not part of this type.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct SwitchKeyBinding {
     pub label: String,
     pub keys: Vec<String>,

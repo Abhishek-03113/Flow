@@ -4,7 +4,10 @@
 //! on) rather than derived client-side, so the UI never hardcodes per-OS
 //! permission copy.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct PermissionStatus {
     pub name: String,
     pub granted: bool,
