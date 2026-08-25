@@ -10,11 +10,13 @@ use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
+use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{PairingCandidate, PairingSession};
 use flow_core::permission::PermissionStatus;
 use flow_core::settings::FlowSettings;
 use tokio::sync::{watch, RwLock};
+use tokio::time::Duration;
 
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
@@ -24,6 +26,10 @@ use crate::storage::Storage;
 /// removable, never offered as a pairing candidate; matches
 /// `MockDaemonRepository._localDeviceId`.
 pub const LOCAL_DEVICE_ID: &str = "d1";
+
+/// Delay before a `switch_active_device` command takes effect, matching
+/// `MockDaemonRepository._switchDebounce`.
+const SWITCH_DEBOUNCE: Duration = Duration::from_millis(400);
 
 pub struct ServiceState {
     pub devices: HashMap<DeviceId, Device>,
@@ -142,6 +148,73 @@ impl DaemonService {
 
     pub fn watch_permission(&self) -> watch::Receiver<PermissionStatus> {
         self.permission_tx.subscribe()
+    }
+
+    /// Makes `device_id` the active device, moving whichever device was
+    /// previously active back to inactive. Matches
+    /// `MockDaemonRepository.switchActiveDevice`, including its debounce
+    /// delay (`SWITCH_DEBOUNCE` — not part of
+    /// `sharedContractConstants.mockParityTimings`, but present in the
+    /// Dart mock it mirrors; see this module's `buildNote` in
+    /// `daemon/todos.json`).
+    pub async fn switch_active_device(&self, device_id: &str) -> Result<(), FlowError> {
+        let target_id = DeviceId(device_id.to_string());
+        {
+            let state = self.state.read().await;
+            let target = state
+                .devices
+                .get(&target_id)
+                .ok_or_else(|| FlowError::DeviceNotFound(target_id.clone()))?;
+            if target.state != DeviceState::Inactive && target.state != DeviceState::Connected {
+                return Err(FlowError::DeviceNotSwitchable(target_id));
+            }
+        }
+
+        tokio::time::sleep(SWITCH_DEBOUNCE).await;
+
+        let devices = {
+            let mut state = self.state.write().await;
+            for (id, device) in state.devices.iter_mut() {
+                if *id == target_id {
+                    device.state = DeviceState::Active;
+                    device.last_seen = Utc::now();
+                } else if device.state == DeviceState::Active {
+                    device.state = DeviceState::Inactive;
+                }
+            }
+            devices_list(&state)
+        };
+
+        self.devices_tx.send_replace(devices);
+        Ok(())
+    }
+
+    /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is
+    /// never removable, matching the mock.
+    pub async fn remove_device(&self, device_id: &str) -> Result<(), FlowError> {
+        if device_id == LOCAL_DEVICE_ID {
+            return Err(FlowError::DeviceNotRemovable(DeviceId(
+                device_id.to_string(),
+            )));
+        }
+
+        let target_id = DeviceId(device_id.to_string());
+        let devices = {
+            let mut state = self.state.write().await;
+            if state.devices.remove(&target_id).is_none() {
+                return Err(FlowError::DeviceNotFound(target_id));
+            }
+            devices_list(&state)
+        };
+
+        // Removal is durable: a removed device must not reappear from a
+        // stale devices-table row after a restart.
+        DeviceRepo::new(self.storage.clone())
+            .remove(target_id)
+            .await;
+
+        self.devices_tx.send_replace(devices);
+        Ok(())
     }
 }
 
@@ -289,5 +362,91 @@ mod tests {
         let a = service.watch_devices();
         let b = service.watch_devices();
         assert_eq!(a.borrow().len(), b.borrow().len());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn switching_to_a_missing_or_active_device_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert_eq!(
+            service.switch_active_device("no-such-device").await,
+            Err(FlowError::DeviceNotFound(DeviceId(
+                "no-such-device".to_string()
+            )))
+        );
+        // d1 is already active in the seed data.
+        assert_eq!(
+            service.switch_active_device(LOCAL_DEVICE_ID).await,
+            Err(FlowError::DeviceNotSwitchable(DeviceId(
+                LOCAL_DEVICE_ID.to_string()
+            )))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn switching_moves_exactly_one_device_active_and_the_prior_one_inactive() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let mut watch = service.watch_devices();
+        let _ = watch.borrow_and_update(); // consume the initial replay
+
+        // Time is paused; awaiting the internal SWITCH_DEBOUNCE sleep
+        // auto-advances the virtual clock since nothing else is runnable.
+        service.switch_active_device("d2").await.expect("switch d2");
+
+        assert!(watch.changed().await.is_ok());
+        let devices = watch.borrow_and_update().clone();
+        let d1 = devices.iter().find(|d| d.id.0 == "d1").unwrap();
+        let d2 = devices.iter().find(|d| d.id.0 == "d2").unwrap();
+        assert_eq!(d1.state, DeviceState::Inactive);
+        assert_eq!(d2.state, DeviceState::Active);
+        assert_eq!(
+            devices
+                .iter()
+                .filter(|d| d.state == DeviceState::Active)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_the_local_device_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert_eq!(
+            service.remove_device(LOCAL_DEVICE_ID).await,
+            Err(FlowError::DeviceNotRemovable(DeviceId(
+                LOCAL_DEVICE_ID.to_string()
+            )))
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_an_unknown_device_returns_not_found() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert_eq!(
+            service.remove_device("no-such-device").await,
+            Err(FlowError::DeviceNotFound(DeviceId(
+                "no-such-device".to_string()
+            )))
+        );
+    }
+
+    #[tokio::test]
+    async fn removing_a_device_persists_across_a_reload() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage.clone()).await;
+
+        service.remove_device("d3").await.expect("remove d3");
+        let devices = service.watch_devices().borrow().clone();
+        assert!(!devices.iter().any(|d| d.id.0 == "d3"));
+
+        // Simulate a restart against the same database.
+        let reloaded = ServiceState::load_or_seed(&storage).await;
+        assert!(!reloaded.devices.contains_key(&DeviceId("d3".to_string())));
     }
 }

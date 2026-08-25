@@ -391,7 +391,8 @@
         {
           "id": "B3",
           "title": "Device commands: switch_active_device, remove_device",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Added a SWITCH_DEBOUNCE = 400ms constant not listed in sharedContractConstants.mockParityTimings — the mock source (flutter/lib/data/mock_daemon_repository.dart's _switchDebounce) has this delay before switch_active_device takes effect and B's goal is exact behavioral parity, so it's matched here even though the shared-constants block in this file only enumerated the 3 pairing timings. remove_device also calls DeviceRepo::remove so a removed device doesn't reappear from a stale row after a restart (verified by a reload test) — not explicitly in the task text but necessary given P4 exists precisely so removed/trust state survives restarts; switch_active_device intentionally does NOT persist state/last_seen changes, since DeviceState is never a column (P4) and persisting last_seen on every switch wasn't asked for. tokio dev-dependency with the test-util feature added for #[tokio::test(start_paused = true)] + watch::Receiver::changed() in the debounce test.",
           "dependsOn": ["B2"],
           "description": "Async methods on DaemonService implementing the two device-list commands and their preconditions from the daemon-ipc.md commands table, pushing to devices_tx on success and returning the matching FlowError variant on precondition failure.",
           "deliverables": [
