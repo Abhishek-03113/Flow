@@ -2,7 +2,7 @@
 
 The Rust data-plane daemon for Flow — input capture, injection, device switching, networking, and pairing, running independently of the Flutter UI (`docs/product/vision.md` §8). This directory holds the daemon binary itself; the workspace also includes `flow-core` (`../core`) and `flow-platform` (`../platform`).
 
-**Status: scaffolding.** `cargo build --workspace` succeeds today, but `flow-daemon` only constructs an empty `AppState` and prints a placeholder line — no IPC, no input capture, no networking yet. See [`todos.json`](./todos.json) and [`PLAN.md`](./PLAN.md) for the full build-out plan; this file will be rewritten track by track as it lands, the same way `flutter/README.md` was rewritten once the UI was real.
+**Status: real process, no OS input yet.** `flow-daemon` binds a WebSocket IPC listener on `127.0.0.1:47823`, serves the full `docs/contracts/daemon-ipc.md` contract (backed by `flow-core`'s mock-parity `DaemonService`) over it, and persists to a local SQLite database — tracks A/P/B/C are done. Real OS input capture/injection (track E onward) hasn't landed yet. See [`todos.json`](./todos.json) and [`PLAN.md`](./PLAN.md) for the full build-out plan; a full section-by-section pass (not just this status line) is track J5's job once everything above lands.
 
 ## Why this exists separately from the root README
 
@@ -23,7 +23,7 @@ cargo build --workspace
 cargo run -p flow-daemon
 ```
 
-Today this prints a scaffolding placeholder and exits. Once track C (`local-ipc-transport`) lands, it will bind a WebSocket listener on `127.0.0.1:47823` (`docs/contracts/daemon-ipc.md`'s local IPC contract) and stay running until interrupted.
+This binds a WebSocket listener on `127.0.0.1:47823` (`docs/contracts/daemon-ipc.md`'s local IPC contract) and stays running, serving commands and pushing state events, until interrupted (Ctrl-C).
 
 ## Testing and linting
 
@@ -33,9 +33,19 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
 
-## The contract this daemon is building toward
+**Cross-language contract test** (`daemon/todos.json` task D5): `flutter/test/data/ipc_daemon_repository_manual_test.dart` runs the same 13 scenarios `mock_daemon_repository_test.dart` proves against the Dart mock, against a real `flow-daemon` process instead — confirming the Rust and Dart sides agree, not just that each independently passes its own tests. Manual and not part of either `cargo test` or a plain `flutter test`:
 
-[`docs/contracts/`](../docs/contracts) defines the exact interface — commands, state streams, error codes, state machines — that `flutter/lib/data/mock_daemon_repository.dart` already implements on the Flutter side. `flow-daemon` exists to become a second, real implementation of that same contract reachable over local IPC, so `flutter/lib/state/repository_providers.dart` can eventually point at it instead of the mock with **no UI code changing** (`docs/contracts/README.md` ground rule 2). `daemon/todos.json` tracks A-D build exactly this, in order.
+```sh
+# terminal 1, from the repo root — a fresh HOME so the daemon seeds mock-parity data
+HOME=$(mktemp -d) cargo run -p flow-daemon
+
+# terminal 2
+cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repository_manual_test.dart
+```
+
+## The contract this daemon implements
+
+[`docs/contracts/`](../docs/contracts) defines the exact interface — commands, state streams, error codes, state machines — that `flutter/lib/data/mock_daemon_repository.dart` implements on the Flutter side. `flow-daemon` is the second, real implementation of that same contract, reachable over local IPC: `flutter/lib/state/repository_providers.dart`'s `daemonRepositoryProvider` can point at it instead of the mock via `--dart-define=FLOW_DAEMON_MODE=ipc`, with **no UI code changing** (`docs/contracts/README.md` ground rule 2; see `flutter/README.md` "Running against a real daemon"). `daemon/todos.json` tracks A-D built exactly this, in order.
 
 ## Platform adapters: what's real vs. stubbed
 

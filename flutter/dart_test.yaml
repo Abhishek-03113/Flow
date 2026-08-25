@@ -1,0 +1,10 @@
+# Tags excluded from a plain `flutter test` / `dart test` run.
+#
+# `manual`: requires a `flow-daemon` process already running on
+# 127.0.0.1:47823 — see test/data/ipc_daemon_repository_manual_test.dart
+# and this project's README ("Running against a real daemon"). Run
+# explicitly with `flutter test --tags manual <file>`; never picked up by
+# a bare `flutter test`, so CI and daemonless local runs are unaffected.
+tags:
+  manual:
+    skip: "requires a running flow-daemon; run explicitly with --tags manual"

@@ -31,6 +31,8 @@ flutter run -d linux --dart-define=FLOW_DAEMON_MODE=ipc
 
 This swaps in `IpcDaemonRepository`, which connects to `ws://127.0.0.1:47823` (`flow_core::ipc::IPC_PORT`, `daemon/src/main.rs`) — requires a running `flow-daemon` on that port or every provider stays in `AsyncLoading`/errors out. `flutter test` never needs this flag; `test/data/ipc_daemon_repository_test.dart` exercises `IpcDaemonRepository` against an in-memory fake channel, no daemon required.
 
+`test/data/ipc_daemon_repository_manual_test.dart` goes one step further: the same 13 scenarios `mock_daemon_repository_test.dart` proves against the mock, run against `IpcDaemonRepository` and a **real** `flow-daemon` process, confirming the two implementations are externally indistinguishable. Tagged `manual` (`dart_test.yaml` skips it by default — never part of a plain `flutter test`); run it explicitly per the recipe in its own doc comment (`flutter test --tags manual --run-skipped ...`, against a freshly-started daemon).
+
 ## Testing and linting
 
 ```sh
