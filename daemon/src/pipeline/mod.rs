@@ -69,14 +69,27 @@ pub async fn send_while_active(
 /// this pipeline run concurrently) is ignored rather than treated as an
 /// error. A single failed `inject` (e.g. a transient OS-level rejection)
 /// doesn't end the loop — only the `Channel` closing does.
+///
+/// Replay protection (`daemon/todos.json` H4): each event's own
+/// `timestamp_ms` (already carried by every `InputEvent` variant, so no
+/// separate sequence field was added) must strictly increase from the
+/// last *accepted* event's — anything arriving with an equal or lower
+/// timestamp is a duplicate or replayed frame and is dropped, not
+/// injected.
 pub async fn receive_and_inject<I>(mut channel: Box<dyn Channel>, mut injector: I)
 where
     I: InputInjector,
     I::Error: std::fmt::Debug,
 {
+    let mut last_timestamp_ms: Option<u64> = None;
     loop {
         match channel.recv().await {
             Ok(ChannelMessage::Input(event)) => {
+                let timestamp_ms = event.timestamp_ms();
+                if last_timestamp_ms.is_some_and(|last| timestamp_ms <= last) {
+                    continue;
+                }
+                last_timestamp_ms = Some(timestamp_ms);
                 if let Err(err) = injector.inject(&event) {
                     tracing::warn!("input injection failed: {err:?}");
                 }
@@ -96,10 +109,14 @@ mod tests {
     use tokio::net::TcpListener;
 
     fn a_key_event(key: &str) -> InputEvent {
+        a_key_event_at(key, 0)
+    }
+
+    fn a_key_event_at(key: &str, timestamp_ms: u64) -> InputEvent {
         InputEvent::Keyboard(KeyboardEvent::KeyDown {
             key: key.to_string(),
             modifiers: vec![],
-            timestamp_ms: 0,
+            timestamp_ms,
         })
     }
 
@@ -248,6 +265,76 @@ mod tests {
         let injected = rx.recv().await.expect("injector received the input event");
         assert_eq!(injected, event);
         assert!(rx.try_recv().is_err(), "the heartbeat must not be injected");
+
+        sender_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_timestamp_frame_is_dropped_not_injected() {
+        let (mut sender_side, receiver_side) = connected_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
+
+        let first = a_key_event_at("first", 100);
+        sender_side
+            .send(ChannelMessage::Input(first.clone()))
+            .await
+            .expect("send first");
+        assert_eq!(rx.recv().await.expect("first event injected"), first);
+
+        // Same timestamp_ms as the already-accepted event - a replayed
+        // frame per H4's guard, must be dropped rather than injected.
+        let replay = a_key_event_at("replay", 100);
+        sender_side
+            .send(ChannelMessage::Input(replay))
+            .await
+            .expect("send replay");
+
+        sender_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "the replayed frame must not have been injected"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_out_of_order_lower_timestamp_frame_is_dropped_not_injected() {
+        let (mut sender_side, receiver_side) = connected_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
+
+        let first = a_key_event_at("first", 200);
+        sender_side
+            .send(ChannelMessage::Input(first.clone()))
+            .await
+            .expect("send first");
+        assert_eq!(rx.recv().await.expect("first event injected"), first);
+
+        // Older than the last accepted event - dropped, not injected.
+        let stale = a_key_event_at("stale", 150);
+        sender_side
+            .send(ChannelMessage::Input(stale))
+            .await
+            .expect("send stale");
+
+        let next = a_key_event_at("next", 250);
+        sender_side
+            .send(ChannelMessage::Input(next.clone()))
+            .await
+            .expect("send next");
+
+        // The next value this channel yields is whatever was actually
+        // injected - if the stale frame had slipped through, this would
+        // be it instead of `next`, proving the drop deterministically
+        // rather than by racing a timeout against nothing arriving.
+        assert_eq!(rx.recv().await.expect("next event injected"), next);
 
         sender_side.close().await.expect("close");
         pipeline.await.expect("pipeline task");

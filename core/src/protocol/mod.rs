@@ -65,3 +65,80 @@ pub enum InputEvent {
     Keyboard(KeyboardEvent),
     Mouse(MouseEvent),
 }
+
+impl InputEvent {
+    /// This event's own capture-time timestamp, common to every variant.
+    /// `daemon/todos.json` H4's replay guard reuses this existing field
+    /// as its sequence check rather than adding a separate one.
+    pub fn timestamp_ms(&self) -> u64 {
+        match self {
+            InputEvent::Keyboard(KeyboardEvent::KeyDown { timestamp_ms, .. })
+            | InputEvent::Keyboard(KeyboardEvent::KeyUp { timestamp_ms, .. })
+            | InputEvent::Mouse(MouseEvent::Move { timestamp_ms, .. })
+            | InputEvent::Mouse(MouseEvent::ButtonDown { timestamp_ms, .. })
+            | InputEvent::Mouse(MouseEvent::ButtonUp { timestamp_ms, .. })
+            | InputEvent::Mouse(MouseEvent::Scroll { timestamp_ms, .. }) => *timestamp_ms,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timestamp_ms_reads_the_right_field_on_every_variant() {
+        assert_eq!(
+            InputEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: "A".to_string(),
+                modifiers: vec![],
+                timestamp_ms: 1,
+            })
+            .timestamp_ms(),
+            1
+        );
+        assert_eq!(
+            InputEvent::Keyboard(KeyboardEvent::KeyUp {
+                key: "A".to_string(),
+                modifiers: vec![],
+                timestamp_ms: 2,
+            })
+            .timestamp_ms(),
+            2
+        );
+        assert_eq!(
+            InputEvent::Mouse(MouseEvent::Move {
+                dx: 1,
+                dy: 1,
+                timestamp_ms: 3,
+            })
+            .timestamp_ms(),
+            3
+        );
+        assert_eq!(
+            InputEvent::Mouse(MouseEvent::ButtonDown {
+                button: MouseButton::Left,
+                timestamp_ms: 4,
+            })
+            .timestamp_ms(),
+            4
+        );
+        assert_eq!(
+            InputEvent::Mouse(MouseEvent::ButtonUp {
+                button: MouseButton::Left,
+                timestamp_ms: 5,
+            })
+            .timestamp_ms(),
+            5
+        );
+        assert_eq!(
+            InputEvent::Mouse(MouseEvent::Scroll {
+                dx: 1,
+                dy: 1,
+                timestamp_ms: 6,
+            })
+            .timestamp_ms(),
+            6
+        );
+    }
+}
