@@ -494,7 +494,8 @@
         {
           "id": "C1",
           "title": "IPC envelope types in flow-core",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "serde_json moved from core's [dev-dependencies] to [dependencies] since IpcRequest.payload/IpcResponse::Event.payload are public API surface (serde_json::Value), not just test-only usage. IpcResponse variant declaration order is Err, Ack, Event (not the Ack-then-Err order implied by the task's own deliverable snippet) — #[serde(untagged)] tries variants in order and, since Ack{id,ok} and Err{id,ok,error} share a field prefix, serde's default 'ignore unknown fields' behavior means Ack would silently swallow an Err payload (dropping its error field) if tried first; Err must be tried first so it only matches when `error` is actually present. Verified by two explicit round-trip tests (err_round_trips_and_is_not_mistaken_for_ack / the reverse) rather than trusting the ordering by inspection.",
           "dependsOn": ["A7"],
           "description": "New core/src/ipc/mod.rs holding the transport-agnostic envelope so any future Rust client (not just flow-daemon's own server) can depend on flow-core for the shape. Lives in core, not daemon, per the module-boundary rule in core/src/lib.rs's doc comment ('shared vocabulary... any future transport implementations build on').",
           "deliverables": [
