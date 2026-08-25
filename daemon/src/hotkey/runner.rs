@@ -7,12 +7,14 @@
 
 use std::sync::mpsc;
 use std::thread;
+use std::time::Instant;
 
 use flow_core::input::InputCapture;
 use flow_platform::DefaultInputCapture;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::JoinHandle;
 
+use super::debounce::{SwitchDebouncer, SWITCH_DEBOUNCE_WINDOW};
 use super::SwitchKeyMatcher;
 use crate::service::DaemonService;
 
@@ -51,6 +53,7 @@ pub fn spawn(service: &DaemonService) -> Option<JoinHandle<()>> {
     let service = service.clone();
     let mut settings_rx = service.watch_settings();
     let mut matcher = SwitchKeyMatcher::new(settings_rx.borrow_and_update().switch_key.clone());
+    let mut debouncer = SwitchDebouncer::new(SWITCH_DEBOUNCE_WINDOW);
 
     Some(tokio::spawn(async move {
         // Keeps the capture handle (and its OS-level hook/tap/thread)
@@ -62,7 +65,12 @@ pub fn spawn(service: &DaemonService) -> Option<JoinHandle<()>> {
             tokio::select! {
                 event = bridge_rx.recv() => {
                     let Some(event) = event else { break; };
-                    if matcher.feed(&event) {
+                    // Key-repeat (holding the switch key) or a noisy
+                    // multi-key combo release can make the matcher fire
+                    // more than once for what a person experiences as a
+                    // single press — the debouncer, not the matcher,
+                    // collapses that into one actual switch (F3).
+                    if matcher.feed(&event) && debouncer.should_fire(Instant::now()) {
                         service.switch_active_device_local().await;
                     }
                 }

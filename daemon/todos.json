@@ -873,7 +873,7 @@
         {
           "id": "F3",
           "title": "Switch debounce",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F2"],
           "description": "A short debounce window on the hotkey trigger path so key-repeat (holding Scroll Lock, or a noisy combo release) doesn't fire multiple switches. Explicitly a Rust-side implementation concern, not a contract requirement — daemon-ipc.md's switching section says the mock's UI-visible debounce is a UI concern, but the real daemon still needs its own debounce since it's now the thing directly reading raw key-repeat events.",
           "deliverables": [
@@ -883,7 +883,8 @@
             "unit test: synthetic rapid-fire matches within the debounce window produce exactly one switch"
           ],
           "specContext": "daemon-ipc.md 'Switching': 'a debounced/disabled row while the command's Future is in flight is a UI concern, not a wire state' — this task is the analogous concern one layer down, at the raw-input layer the UI never sees.",
-          "commit": "feat(daemon): add switch-key debounce to the hotkey trigger path"
+          "commit": "feat(daemon): add switch-key debounce to the hotkey trigger path",
+          "buildNote": "daemon/src/hotkey/debounce.rs (private submodule - only runner.rs uses it, unlike SwitchKeyMatcher which the plan frames as independently reusable). SwitchDebouncer::should_fire(&mut self, now: Instant) -> bool takes the current time as an explicit argument rather than reading a clock internally, the same 'inject the clock' pattern used elsewhere in this codebase for deterministic testing (mirrors the timestamp_ms parameters throughout every platform translate.rs), so its 3 unit tests run instantly with no tokio time-pausing machinery needed. Window resets from the most recent *fired* match, not the first one in a burst - explicitly tested (the_window_resets_from_the_most_recent_fire_not_the_first) since resetting from the first match instead would let a long key-hold's later autorepeat events fire early once the original window elapsed, defeating the point. 500ms window (SWITCH_DEBOUNCE_WINDOW) chosen independently of DaemonService's existing SWITCH_DEBOUNCE (400ms, matching the Dart mock's UI-visible debounce) since the two solve different problems at different layers - this one collapses raw repeated key events into a single trigger call, that one is the pre-existing command-processing delay the mock also has; conflating them would be wrong given daemon-ipc.md's own explicit framing of the mock's debounce as a UI concern separate from a wire-level one. Wired into runner.rs's tokio::select! loop as `if matcher.feed(&event) && debouncer.should_fire(Instant::now())` - the debouncer is checked only on an actual matcher match, never advancing on every event, so an unrelated keypress can't reset the window. Full workspace test suite (57 daemon lib tests, 3 new) and every previously-verified cross-compile target (x86_64/aarch64-apple-darwin, x86_64-pc-windows-msvc) still pass/stay clean after this change, which touches only daemon/src/hotkey/ and doesn't touch flow-platform. This closes out track F (F1-F3): the switch key now actually switches the active device locally, debounced, with no UI required."
         }
       ]
     },
