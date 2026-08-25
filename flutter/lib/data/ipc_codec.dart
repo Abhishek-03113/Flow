@@ -60,6 +60,10 @@ SwitchKeyBinding switchKeyBindingFromJson(Map<String, dynamic> json) {
   );
 }
 
+Map<String, dynamic> switchKeyBindingToJson(SwitchKeyBinding binding) {
+  return {'label': binding.label, 'keys': binding.keys};
+}
+
 FlowSettings flowSettingsFromJson(Map<String, dynamic> json) {
   return FlowSettings(
     launchAtLogin: json['launch_at_login'] as bool,
@@ -76,6 +80,26 @@ FlowSettings flowSettingsFromJson(Map<String, dynamic> json) {
       json['switch_key'] as Map<String, dynamic>,
     ),
   );
+}
+
+/// Only the fields actually set on [patch] are included — matches
+/// `daemon-ipc.md`'s "only the keys being changed are sent" rule for
+/// `SettingsPatch`.
+Map<String, dynamic> settingsPatchToJson(SettingsPatch patch) {
+  return {
+    if (patch.launchAtLogin != null) 'launch_at_login': patch.launchAtLogin,
+    if (patch.showTrayIcon != null) 'show_tray_icon': patch.showTrayIcon,
+    if (patch.autoReconnect != null) 'auto_reconnect': patch.autoReconnect,
+    if (patch.autoConnectPairedDevices != null)
+      'auto_connect_paired_devices': patch.autoConnectPairedDevices,
+    if (patch.shareKeyboard != null) 'share_keyboard': patch.shareKeyboard,
+    if (patch.shareMouse != null) 'share_mouse': patch.shareMouse,
+    if (patch.debugLogging != null) 'debug_logging': patch.debugLogging,
+    if (patch.pointerSensitivity != null)
+      'pointer_sensitivity': patch.pointerSensitivity!.name,
+    if (patch.switchKey != null)
+      'switch_key': switchKeyBindingToJson(patch.switchKey!),
+  };
 }
 
 PermissionStatus permissionStatusFromJson(Map<String, dynamic> json) {
