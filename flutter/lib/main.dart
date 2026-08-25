@@ -1,25 +1,25 @@
 import 'package:flutter/material.dart';
 
-import 'devices/devices_screen.dart';
-
 void main() {
-  runApp(const FlowApp());
+  runApp(const _ScaffoldPlaceholderApp());
 }
 
-/// Root widget for the Flow control-plane UI.
+/// Placeholder entry point.
 ///
-/// Per vision.md §8-§9, this UI only configures, pairs with, and observes
-/// the Flow daemon over local IPC — the daemon keeps working even if this
-/// app is closed.
-class FlowApp extends StatelessWidget {
-  const FlowApp({super.key});
+/// Real app wiring (ProviderScope, FlowTheme, navigation between the tray
+/// popover / onboarding / app window) lands in `lib/app.dart` as part of
+/// the app-shell track in `todos.json` (task S1) — this only keeps the
+/// project runnable while the foundation and design-system tracks land.
+class _ScaffoldPlaceholderApp extends StatelessWidget {
+  const _ScaffoldPlaceholderApp();
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return const MaterialApp(
       title: 'Flow',
-      theme: ThemeData(useMaterial3: true),
-      home: const DevicesScreen(),
+      home: Scaffold(
+        body: Center(child: Text('Flow UI — under construction')),
+      ),
     );
   }
 }

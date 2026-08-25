@@ -1,19 +1,17 @@
-# Flow UI
+# flow_ui
 
-Flutter control-plane app for Flow (menu bar / system tray, pairing, settings, connection status). See [`docs/product/vision.md`](../docs/product/vision.md) for the architecture.
+A new Flutter project.
 
-This directory currently holds only the Dart source layout. The native platform runners (`macos/`, `windows/`, `linux/`, etc.) aren't generated yet — this session had no Flutter SDK available to run `flutter create`. Once the SDK is available, generate them in place with:
+## Getting Started
 
-```sh
-flutter create --platforms=macos,windows,linux --org <your-org> .
-```
+This project is a starting point for a Flutter application.
 
-then `flutter pub get` to fetch dependencies.
+A few resources to get you started if this is your first Flutter project:
 
-## Layout
+- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
+- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
+- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
 
-- `lib/devices/` — paired devices and active-device display
-- `lib/onboarding/` — first-run setup and initial pairing
-- `lib/settings/` — connection, input, startup, and advanced settings
-- `lib/tray/` — menu bar / system tray integration
-- `lib/services/` — local IPC client to the Rust daemon
+For help getting started with Flutter development, view the
+[online documentation](https://docs.flutter.dev/), which offers tutorials,
+samples, guidance on mobile development, and a full API reference.
