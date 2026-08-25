@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -16,3 +18,31 @@ final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.dark);
 /// external triggers (opening the dashboard, which closes the popover)
 /// need to observe/drive it.
 final trayOpenProvider = StateProvider<bool>((ref) => true);
+
+/// A single transient toast message, auto-dismissed after ~1.7s
+/// (`todos.json` D7). Matches the design's single `toast` state slot: a
+/// new message replaces whatever is currently showing rather than
+/// queuing behind it.
+class ToastNotifier extends StateNotifier<String?> {
+  ToastNotifier() : super(null);
+
+  static const _duration = Duration(milliseconds: 1700);
+
+  Timer? _timer;
+
+  void show(String message) {
+    _timer?.cancel();
+    state = message;
+    _timer = Timer(_duration, () => state = null);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+}
+
+final toastProvider = StateNotifierProvider<ToastNotifier, String?>(
+  (ref) => ToastNotifier(),
+);
