@@ -328,7 +328,8 @@
         {
           "id": "P6",
           "title": "Identity repository",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "load_or_generate() returns IdentityKeyBytes { public_key: Vec<u8>, private_key: Vec<u8> } (32 bytes each, matching ed25519's layout) rather than a real ed25519 Keypair type. Track H1's own task description assigns 'ed25519-dalek added to the relevant Cargo.toml' and the actual key-generation semantics to H1 itself ('generates... via ed25519-dalek... calling into P6's IdentityRepo for storage') — so P6 deliberately stays a byte-level persistence primitive (using `rand` only to fill bytes) and H1 layers real cryptographic key derivation on top when that track is built, rather than pulling H1's dependency/scope forward.",
           "dependsOn": ["P2"],
           "description": "IdentityRepo::load_or_generate() -> Keypair backing track H1 — generates and persists an ed25519 keypair into the identity table on first run, loads the existing one on every subsequent run. Replaces H1's original plain-file storage plan.",
           "deliverables": [
