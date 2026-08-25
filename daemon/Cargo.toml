@@ -25,5 +25,15 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.10"
 async-trait = "0.1"
 
+# bluer (BlueZ D-Bus bindings) is Linux-only and needs bluetoothd/a real
+# adapter to do anything at runtime; gated behind the "bluetooth" feature
+# per this crate's own convention (`cargo build --features bluetooth`),
+# not enabled by default.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17.4", features = ["rfcomm", "bluetoothd"], optional = true }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+
+[features]
+bluetooth = ["dep:bluer"]
