@@ -276,7 +276,7 @@
         {
           "id": "P3",
           "title": "Settings repository",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["P2"],
           "description": "SettingsRepo::load(&self) -> FlowSettings returns FlowSettings::defaults() and inserts the default row if the table is empty (first-run bootstrap); SettingsRepo::save(&self, &FlowSettings) persists it. Track B's DaemonService loads from here at startup and writes here on every settings_changed, instead of always reconstructing defaults in memory.",
           "deliverables": [

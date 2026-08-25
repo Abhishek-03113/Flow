@@ -10,6 +10,7 @@
 //! `persistenceModel.concurrencyModel`.
 
 mod schema;
+pub mod settings_repo;
 
 use std::path::Path;
 use std::sync::Arc;
