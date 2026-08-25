@@ -6,6 +6,8 @@
 //! product... Users should eventually be able to choose... Custom key
 //! combinations."
 
+pub mod runner;
+
 use std::collections::HashSet;
 
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier};

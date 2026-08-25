@@ -57,6 +57,22 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 
 Cross-compilation setup instructions land in `todos.json` task J3 once the macOS/Windows adapters exist to check.
 
+## Switch-key hotkey
+
+`daemon/src/hotkey/` detects the configured switch-key combination directly from the platform's real input capture and triggers a device switch **without any IPC client connected**, per `vision.md` §8 ("Daemon Works without UI"). Two pieces:
+
+- `hotkey::SwitchKeyMatcher` (`mod.rs`, track F1) — a pure, platform-neutral matcher fed one `InputEvent` at a time, detecting when the current `FlowSettings.switch_key` binding's tokens are all satisfied simultaneously. Fully unit-tested in this environment (no hardware needed).
+- `hotkey::runner::spawn` (`runner.rs`, track F2) — starts `flow_platform::DefaultInputCapture` (whichever real per-OS adapter this binary was built for), bridges its event stream through the matcher, and calls `DaemonService::switch_active_device_local()` on a match — a separate, error-free path from the IPC `switch_active_device` command (track C), since a raw key press has no "requester" to reject with an error. Spawned alongside the IPC listener and history logger in `main.rs`.
+
+**The hotkey runner degrades gracefully, not fatally**, when the platform adapter can't start (no capturable device, missing permission): it logs a warning and the daemon keeps serving IPC normally without it. Confirmed in this container, which has no `/dev/input` at all:
+
+```
+WARN flow_daemon::hotkey::runner: hotkey runner not started: input capture failed: Custom { kind: NotFound, error: "no keyboard- or mouse-capable /dev/input device found" }
+INFO flow_daemon: flow-daemon listening on 127.0.0.1:47823
+```
+
+On a machine with a real capturable device, the switch key (Scroll Lock by default) actually advances the active device — cycling in device-id order starting just after whichever device is currently active, wrapping around, and skipping `Disconnected` devices — with no debounce yet (track F3).
+
 ## Persistence
 
 Settings, paired devices (which double as the trust store), this daemon's own identity keypair, and a connection history log all live in a single local SQLite database (`rusqlite`, bundled — no system SQLite dependency) under the platform data directory, applied via versioned migrations on startup. Nothing here is derived fresh on every run or held only in memory: a fresh database bootstraps to the same seed data the mock uses (3 devices, defaults), and every subsequent run loads what was actually persisted. `daemon/todos.json` track **P** (`persistence-storage`) builds this, positioned right after the core contract types and ahead of the command service itself, since `DaemonService`'s startup state depends on it.

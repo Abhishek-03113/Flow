@@ -101,6 +101,37 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
     list
 }
 
+/// The device a local hotkey trigger should switch to: the first
+/// `Inactive`/`Connected` device in id order starting just after the
+/// currently active one, wrapping around — `None` if nothing else is
+/// switchable. `Disconnected` devices are skipped, matching
+/// `switch_active_device`'s own eligibility rule.
+fn next_switchable_device(state: &ServiceState) -> Option<DeviceId> {
+    let mut ids: Vec<&DeviceId> = state.devices.keys().collect();
+    ids.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let is_switchable = |id: &DeviceId| {
+        matches!(
+            state.devices[id].state,
+            DeviceState::Inactive | DeviceState::Connected
+        )
+    };
+
+    let active_index = state
+        .devices
+        .values()
+        .find(|device| device.state == DeviceState::Active)
+        .and_then(|active| ids.iter().position(|id| **id == active.id));
+    let start = active_index.map_or(0, |index| index + 1);
+
+    ids.iter()
+        .cycle()
+        .skip(start)
+        .take(ids.len())
+        .find(|id| is_switchable(id))
+        .map(|id| (*id).clone())
+}
+
 /// Wraps [`ServiceState`] in a `tokio::sync::watch` channel per slice.
 /// `watch::Sender`/`Receiver` natively replay the latest value to a newly
 /// subscribing receiver, which is exactly the "connecting... is the
@@ -203,6 +234,41 @@ impl DaemonService {
 
         self.devices_tx.send_replace(devices);
         Ok(())
+    }
+
+    /// Advances to the next switchable device for the local hotkey
+    /// trigger path (`daemon/todos.json` F2) — unlike
+    /// `switch_active_device`, there's no requester to reject with an
+    /// error and no target device id (a physical key press names no
+    /// device), so a press with nothing else switchable simply does
+    /// nothing observable. Cycles in device-id order starting just after
+    /// whichever device is currently active, generalizing vision.md's
+    /// two-device Scroll Lock toggle example to any number of devices.
+    /// No debounce here — that's F3's job, one layer up in the runner
+    /// that actually reads raw (and possibly repeating) key events.
+    pub async fn switch_active_device_local(&self) {
+        let target_id = {
+            let state = self.state.read().await;
+            next_switchable_device(&state)
+        };
+        let Some(target_id) = target_id else {
+            return;
+        };
+
+        let devices = {
+            let mut state = self.state.write().await;
+            for (id, device) in state.devices.iter_mut() {
+                if *id == target_id {
+                    device.state = DeviceState::Active;
+                    device.last_seen = Utc::now();
+                } else if device.state == DeviceState::Active {
+                    device.state = DeviceState::Inactive;
+                }
+            }
+            devices_list(&state)
+        };
+
+        self.devices_tx.send_replace(devices);
     }
 
     /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is
@@ -666,6 +732,41 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn switch_active_device_local_cycles_through_switchable_devices_and_back() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        // Seed: d1 active, d2 inactive, d3 disconnected.
+
+        service.switch_active_device_local().await;
+        let devices = service.watch_devices().borrow().clone();
+        let by_id =
+            |devices: &[Device], id: &str| devices.iter().find(|d| d.id.0 == id).unwrap().state;
+        assert_eq!(by_id(&devices, "d1"), DeviceState::Inactive);
+        assert_eq!(by_id(&devices, "d2"), DeviceState::Active);
+        assert_eq!(by_id(&devices, "d3"), DeviceState::Disconnected);
+
+        // d3 stays disconnected (ineligible), so a second press wraps
+        // back to d1 rather than trying d3.
+        service.switch_active_device_local().await;
+        let devices = service.watch_devices().borrow().clone();
+        assert_eq!(by_id(&devices, "d1"), DeviceState::Active);
+        assert_eq!(by_id(&devices, "d2"), DeviceState::Inactive);
+    }
+
+    #[tokio::test]
+    async fn switch_active_device_local_with_nothing_else_switchable_does_nothing() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        service.remove_device("d2").await.expect("remove d2");
+        // Only d1 (active) and d3 (disconnected) remain — nothing eligible.
+
+        let before = service.watch_devices().borrow().clone();
+        service.switch_active_device_local().await;
+        let after = service.watch_devices().borrow().clone();
+        assert_eq!(before, after);
     }
 
     #[tokio::test]
