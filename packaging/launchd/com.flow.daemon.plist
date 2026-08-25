@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Scaffolding only (daemon/todos.json J4) — not installed or activated
+  by anything in this repository. Registering this as an actual
+  auto-starting LaunchAgent is future work; see
+  daemon/README.md's "Process supervision" section for the intended
+  model this file implements.
+
+  A per-user LaunchAgent, not a system-wide LaunchDaemon: flow-daemon
+  needs the logged-in user's interactive session to capture/inject
+  input (Accessibility permission, /dev/input access, etc. are all
+  per-session concerns), which only a LaunchAgent — loaded into the
+  user's own launchd instance — can reach. Install by copying (with
+  the placeholder paths below filled in for the real machine) to
+  ~/Library/LaunchAgents/com.flow.daemon.plist and running
+  `launchctl load ~/Library/LaunchAgents/com.flow.daemon.plist`.
+
+  Placeholders to fill in at install time:
+    - ProgramArguments: the actual installed binary path (a release
+      build's output, or wherever a future packaged app bundle places
+      it) — /usr/local/bin/flow-daemon is a plausible default, not a
+      guarantee of where this ends up installed.
+    - StandardOutPath/StandardErrorPath: an absolute path under the
+      real user's home directory (plist files do not support `~`
+      expansion) — a future installer would substitute this.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.flow.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/flow-daemon</string>
+    </array>
+
+    <!-- Start at login. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Restart only on an unexpected (non-zero) exit, matching
+         daemon/README.md's "Restart=on-failure... not a clean
+         Ctrl-C/quit" — flow-daemon's own SIGINT/Ctrl-C handling exits
+         0 on a deliberate shutdown. -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/com.flow.daemon.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.flow.daemon.err.log</string>
+</dict>
+</plist>
