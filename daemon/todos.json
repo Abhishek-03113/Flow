@@ -192,7 +192,7 @@
         {
           "id": "A6",
           "title": "Add PermissionStatus and the FlowError contract error codes",
-          "status": "pending",
+          "status": "done",
           "dependsOn": [],
           "description": "PermissionStatus in a new core/src/permission/mod.rs. FlowError in a new core/src/error/mod.rs using thiserror, one variant per code in sharedContractConstants.errorCodes, each carrying whatever context it needs (e.g. DeviceNotFound(DeviceId)) plus a code() -> &'static str method returning the exact snake_case wire string.",
           "deliverables": [

@@ -8,9 +8,11 @@
 //! this maps to.
 
 pub mod device;
+pub mod error;
 pub mod input;
 pub mod link;
 pub mod pairing;
+pub mod permission;
 pub mod protocol;
 pub mod settings;
 pub mod state;
