@@ -549,35 +549,38 @@
         {
           "id": "Q1",
           "title": "Test sweep",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["S2"],
           "description": "Unit tests for MockDaemonRepository's state machines (pairing, switching, link state) and widget tests for onboarding + app window sections not already covered by T4.",
           "deliverables": ["flutter/test/data/mock_daemon_repository_test.dart", "flutter/test/features/onboarding/onboarding_flow_test.dart", "flutter/test/features/app_window/app_window_shell_test.dart"],
           "acceptanceCriteria": ["flutter test: all green."],
           "designContext": { "note": "No new design context; tests assert against F1-A6 behavior already documented." },
-          "commit": null
+          "buildNote": "Written incrementally alongside each track (F4, T4, O3, A6, S2) rather than deferred to a separate late pass — every listed deliverable already existed and passed by the time this task was reached. 49 tests total across the project: 13 mock/state-machine, 5 provider/design-system, 10 tray, 8 onboarding, 8 app window, 5 harness. flutter test: all green.",
+          "commit": "docs: reconcile contracts and finalize QA sweep (Q1-Q3)"
         },
         {
           "id": "Q2",
           "title": "Static analysis + format pass",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["Q1"],
           "description": "flutter analyze and dart format --set-exit-if-changed across flutter/, zero warnings, zero diffs.",
           "deliverables": [],
           "acceptanceCriteria": ["Both commands exit 0 in CI-equivalent invocation."],
           "designContext": { "note": "Tooling task." },
-          "commit": null
+          "buildNote": "flutter analyze: No issues found. dart format --output=none --set-exit-if-changed lib test: 0 changed. Both were also run after every single task throughout the branch, not just at the end.",
+          "commit": "docs: reconcile contracts and finalize QA sweep (Q1-Q3)"
         },
         {
           "id": "Q3",
           "title": "Docs and contract reconciliation",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["Q1"],
           "description": "Re-read docs/contracts/*.md against the final DaemonRepository/MockDaemonRepository code; fix any drift (bump contract version + CHANGELOG entry if anything actually changed shape along the way). Update flutter/README.md with real `flutter pub get && flutter test` instructions now that the SDK is vendored for this session's tooling (note in README that a fresh environment still needs its own Flutter install).",
           "deliverables": ["docs/contracts/*.md (if drifted)", "flutter/README.md"],
           "acceptanceCriteria": ["Contract docs and code agree with no manual translation needed to read one from the other."],
           "designContext": { "note": "Reconciliation task, no new design context." },
-          "commit": null
+          "buildNote": "data-model.md and the DaemonRepository interface/wire shapes matched with no drift. One real gap found in daemon-ipc.md: its example error codes (device_not_found, pairing_not_active, permission_denied, invalid_switch_key) didn't match what the mock actually throws — permission_denied was never implemented (the mock's request_permission always succeeds; that code is reserved for a real daemon's OS-level denial) and several real codes were undocumented. Fixed: the doc now lists the mock's actual 9 codes and cross-references DaemonCommandException as their Dart realization. No shape change, so no version bump. flutter/README.md rewritten with real run/test instructions and a lib/ layout guide, replacing the flutter-create boilerplate.",
+          "commit": "docs: reconcile contracts and finalize QA sweep (Q1-Q3)"
         }
       ]
     }
