@@ -296,8 +296,7 @@ impl DaemonService {
         self.emit_pairing_session().await;
 
         let service = self.clone();
-        let handle =
-            tokio::spawn(async move { service.on_pair_request_elapsed(candidate).await });
+        let handle = tokio::spawn(async move { service.on_pair_request_elapsed(candidate).await });
         self.set_pairing_timer(handle).await;
         Ok(())
     }
@@ -601,15 +600,15 @@ mod tests {
         assert_eq!(devices.len(), 3);
         assert_eq!(devices[0].id, DeviceId("d1".to_string()));
 
-        assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Connected);
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Connected
+        );
         assert_eq!(
             *service.watch_pairing_session().borrow(),
             PairingSession::idle()
         );
-        assert_eq!(
-            *service.watch_settings().borrow(),
-            FlowSettings::defaults()
-        );
+        assert_eq!(*service.watch_settings().borrow(), FlowSettings::defaults());
         assert!(!service.watch_permission().borrow().granted);
     }
 
@@ -746,7 +745,9 @@ mod tests {
 
         assert_eq!(
             service.pair_with_candidate("no-such-candidate").await,
-            Err(FlowError::CandidateNotFound("no-such-candidate".to_string()))
+            Err(FlowError::CandidateNotFound(
+                "no-such-candidate".to_string()
+            ))
         );
     }
 
@@ -925,7 +926,10 @@ mod tests {
         let service = DaemonService::new(storage).await;
 
         assert!(!service.watch_permission().borrow().granted);
-        service.request_permission().await.expect("grant permission");
+        service
+            .request_permission()
+            .await
+            .expect("grant permission");
         assert!(service.watch_permission().borrow().granted);
     }
 
@@ -934,7 +938,10 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new(storage).await;
 
-        service.request_permission().await.expect("grant permission");
+        service
+            .request_permission()
+            .await
+            .expect("grant permission");
         assert_eq!(
             service.request_permission().await,
             Err(FlowError::PermissionAlreadyGranted)

@@ -65,7 +65,10 @@ mod tests {
     #[test]
     fn every_variant_reports_its_contract_code() {
         let id = DeviceId("d1".to_string());
-        assert_eq!(FlowError::DeviceNotFound(id.clone()).code(), "device_not_found");
+        assert_eq!(
+            FlowError::DeviceNotFound(id.clone()).code(),
+            "device_not_found"
+        );
         assert_eq!(
             FlowError::DeviceNotSwitchable(id.clone()).code(),
             "device_not_switchable"

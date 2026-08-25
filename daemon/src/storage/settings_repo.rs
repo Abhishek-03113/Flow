@@ -105,8 +105,7 @@ fn row_to_settings(row: &Row) -> rusqlite::Result<FlowSettings> {
         pointer_sensitivity: pointer_sensitivity_from_str(&pointer_sensitivity),
         switch_key: SwitchKeyBinding {
             label: row.get(8)?,
-            keys: serde_json::from_str(&switch_key_tokens)
-                .expect("deserialize switch key tokens"),
+            keys: serde_json::from_str(&switch_key_tokens).expect("deserialize switch key tokens"),
         },
     })
 }

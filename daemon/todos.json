@@ -469,7 +469,8 @@
         {
           "id": "B7",
           "title": "Mock-parity test suite",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Added daemon/src/lib.rs (flow-daemon was bin-only until now) re-exporting service/storage, since a binary-only crate's own integration tests under daemon/tests/ can't `use` its modules — this is what let service_parity.rs import DaemonService/Storage the same way main.rs will from C4 onward. Cross-reference table maps all 13 Dart case names to their Rust counterparts 1:1, except watchLinkState's debugSetLinkState half, which has no Rust equivalent — that helper is explicitly Flutter-only per its own doc comment in mock_daemon_repository.dart ('Not part of DaemonRepository'), not a daemon-service capability. Ran `cargo fmt` across the whole workspace as part of this task since B1-B6 had accumulated minor formatting drift never caught by a formatter run; cargo test/clippy stayed green after.",
           "dependsOn": ["B3", "B4", "B5", "B6"],
           "description": "Port the intent of flutter/test/data/mock_daemon_repository_test.dart's 13 cases to daemon/tests/service_parity.rs using #[tokio::test] + tokio::time::pause/advance, so the Rust service is tested against the same behavioral spec the Dart mock already passed.",
           "deliverables": [
