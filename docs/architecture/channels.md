@@ -1,6 +1,6 @@
 # Channels: the daemon-to-daemon communication abstraction
 
-**Status: draft, not yet implemented.** Defined here ahead of code per the project's contract-first discipline — `daemon/todos.json` track **G** builds this. Version **0.1.0**.
+**Status: abstraction landed, no concrete implementation yet.** The `Channel` trait and its vocabulary below (`ChannelKind`, `ChannelAddress`, `ChannelMessage`, `ChannelError`) exist in `core/src/channel/mod.rs` exactly as drafted here (`daemon/todos.json` G1) — replacing the earlier `core::transport::Transport` placeholder — and are proven exercisable via an in-memory test double, but neither `TcpChannel` nor `BluetoothChannel` (G2/G4 below) has landed yet, so nothing can actually reach another daemon. Version **0.1.0**.
 
 ## What this is, and what it isn't
 
