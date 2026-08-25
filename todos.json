@@ -220,7 +220,7 @@
         {
           "id": "D4",
           "title": "Shared primitive widgets",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D2"],
           "description": "flutter/lib/core/widgets/primitives.dart: StatusDot (solid+glow vs. ring variants per sharedDesignTokens.statusDotShape, with optional breathe pulse), ToggleSwitch (pill track + circular thumb, animated), SegmentedControl<T> (generic pill-group selector used for View/Connection/Platform/Theme pickers and Appearance/Sensitivity settings), PrimaryButton/GhostButton/DangerButton/ChipButton, Spinner (rotating ring).",
           "deliverables": ["flutter/lib/core/widgets/primitives.dart"],
@@ -230,12 +230,12 @@
             "segmentSpec": "pill container padding 2px radius 8px background mat1; each option padding 4px 9px radius 6px fontSize 11.5px weight 590; selected background accent + accentText, unselected transparent + text2.",
             "buttonSpec": "generic btn: padding 6px 12px, radius 8px, fontSize 12px weight 590, whiteSpace nowrap. Primary (onboarding CTA): padding 9px 20px radius 9px background accent color accentText fontSize 13px weight 620. Danger: background dangerSoft color danger."
           },
-          "commit": null
+          "commit": "feat(flutter): add shared widget primitives and toast overlay (D4-D7)"
         },
         {
           "id": "D5",
           "title": "GlassSurface backdrop container",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D2"],
           "description": "flutter/lib/core/widgets/glass_surface.dart: a BackdropFilter blur container (used for the tray popover body, onboarding window, app window, toast pill) reproducing the translucent 'glass' material from the design (blur(40-44px) saturate(180%), border 1px, boxShadow, optional inset highlight).",
           "deliverables": ["flutter/lib/core/widgets/glass_surface.dart"],
@@ -244,12 +244,12 @@
             "trayGlass": "dark: rgba(28,28,32,0.68) + inset 0 1px 0 rgba(255,255,255,0.09); light: rgba(252,252,254,0.74) + inset 0 1px 0 rgba(255,255,255,0.7). blur(44px) saturate(180%).",
             "windowGlass": "dark winGlass rgba(26,26,30,0.8); light rgba(250,250,252,0.86). blur(40px) saturate(180%)."
           },
-          "commit": null
+          "commit": "feat(flutter): add shared widget primitives and toast overlay (D4-D7)"
         },
         {
           "id": "D6",
           "title": "WindowChrome widget",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D3", "D4"],
           "description": "flutter/lib/core/widgets/window_chrome.dart: 40px title bar, three variants keyed off HostPlatform — mac (traffic-light dots left, centered title), win (title left-aligned, minimize/maximize/close glyph buttons right), gnome/linux (title left-aligned, small round icon buttons right). Direct port of WindowChrome.dc.html's three sc-if branches.",
           "deliverables": ["flutter/lib/core/widgets/window_chrome.dart"],
@@ -260,18 +260,18 @@
             "gnomeControls": "3 round 20px buttons, gap 8px, background rgba(128,128,128,0.18), glyphs: –, □, ✕, fontSize 11px.",
             "bar": "height 40px, padding 0 14px, gap 10px, borderBottom 1px solid border, top corners radius-matched to the window (10px)."
           },
-          "commit": null
+          "commit": "feat(flutter): add shared widget primitives and toast overlay (D4-D7)"
         },
         {
           "id": "D7",
           "title": "Toast overlay",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D5"],
           "description": "flutter/lib/core/widgets/toast.dart: a top-center transient pill notification (glass surface) with a small controller/provider to show a message for ~1.7s and fade out, used after switch/pair/remove/reset actions.",
           "deliverables": ["flutter/lib/core/widgets/toast.dart"],
           "acceptanceCriteria": ["Auto-dismisses after ~1.7s.", "Only one toast visible at a time (new message replaces the current one, matching the .dc.html's single `toast` state slot)."],
           "designContext": { "spec": "position top:18px centered, padding 9px 16px, radius 20px, glass surface (winGlass + blur 30px), fontSize 12.5px weight 590, cd-fade entrance ~200ms.", "copyExamples": ["Switched", "Device removed", "Pairing lives in the menu bar", "Reconnected", "Switch key updated", "Settings reset"] },
-          "commit": null
+          "commit": "feat(flutter): add shared widget primitives and toast overlay (D4-D7)"
         }
       ]
     },
