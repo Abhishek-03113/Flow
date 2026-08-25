@@ -4,6 +4,8 @@
 //! keep working with no UI attached. Capture, transport, and pairing are
 //! not wired up yet — this is crate-boundary scaffolding only.
 
+mod storage;
+
 use flow_core::state::AppState;
 
 fn main() {

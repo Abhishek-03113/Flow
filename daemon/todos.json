@@ -236,7 +236,8 @@
         {
           "id": "P1",
           "title": "SQLite connection layer",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Migration application deliberately not wired into Storage::open/open_in_memory yet — that's P2's job per its own acceptance criteria ('opening a fresh :memory: DB applies all migrations'). P1's open_and_configure only sets the two pragmas. `mod storage;` registered from daemon/src/main.rs (no daemon/src/lib.rs exists); dead_code warnings on Storage's API are expected until C4 wires main.rs to actually use it.",
           "dependsOn": ["A7"],
           "description": "Add rusqlite (bundled feature — statically-linked SQLite, no system libsqlite3 dependency, matters for the cross-compiled macOS/Windows checks in tracks E/J3) to flow-daemon. A single-connection Storage type wrapping rusqlite::Connection in Arc<tokio::sync::Mutex<_>>, with every query executed inside tokio::task::spawn_blocking since rusqlite is synchronous. Production opens the DB file under the platform data dir (directories crate); tests open ':memory:' so this and every later persistence test never touches the real filesystem.",
           "deliverables": [
