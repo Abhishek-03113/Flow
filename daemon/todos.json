@@ -292,7 +292,8 @@
         {
           "id": "P4",
           "title": "Device + trust repository",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Introduced DeviceRecord { device: flow_core::Device, public_key: Option<Vec<u8>>, removable: bool } rather than persisting a raw Device — public_key/removable aren't contract fields on Device (not in data-model.md), they're storage-only concerns, so DeviceRepo works over its own record type instead of stretching the wire type to carry non-wire columns.",
           "dependsOn": ["P2"],
           "description": "DeviceRepo covers both paired-device storage and trust lookups in one place, since a paired device's public key IS its trust entry — no separate trust store. list()/upsert()/remove()/find_by_id() plus is_trusted(public_key) -> bool for track H's pairing gate.",
           "deliverables": [
