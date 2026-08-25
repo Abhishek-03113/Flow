@@ -1,0 +1,1022 @@
+{
+  "project": "flow-daemon",
+  "branch": "feat/rust-daemon",
+  "baseBranch": "feat/flutter-ui",
+  "contractVersion": "0.1.0",
+  "generatedAt": "2026-08-25",
+  "purpose": "Implementation plan for the Rust daemon (flow-core + flow-daemon + flow-platform) that will eventually sit behind docs/contracts/daemon-ipc.md, replacing flutter/lib/data/mock_daemon_repository.dart with a real process the Flutter UI talks to over local IPC. Mirrors the granularity and commit-per-task discipline of the root todos.json (Flutter phase). Every task embeds the spec excerpt it's built from (vision.md section or docs/contracts/*.md) so context survives a fresh session picking up a single task cold.",
+  "namingConventions": {
+    "crates": "flow-core (lib, no OS/transport/UI deps), flow-daemon (bin, wires everything together), flow-platform (per-OS adapters behind flow-core traits)",
+    "modules": "snake_case matching existing core/src/{device,input,pairing,protocol,state,transport}/mod.rs layout; new modules follow the same one-concept-per-module rule",
+    "types": "UpperCamelCase matching data-model.md's Dart types 1:1 (Device, DeviceState, DaemonLinkState, PairingSession, FlowSettings, SwitchKeyBinding, PermissionStatus) so a reviewer can diff Rust struct fields against the Dart class directly",
+    "wire_format": "#[serde(rename_all = \"snake_case\")] on every contract type — Rust field foo_bar serializes as foo_bar, matching data-model.md's stated 'snake_case on the wire' rule without a translation layer",
+    "errors": "thiserror-derived FlowError in flow_core::error, one variant per docs/contracts/daemon-ipc.md error code, Display message matching the code's human-readable meaning",
+    "async_runtime": "tokio (rt-multi-thread) everywhere a daemon binary runs; flow-core stays runtime-agnostic (plain traits/types only, no tokio dependency) so platform adapters and tests aren't forced onto tokio"
+  },
+  "sharedContractConstants": {
+    "ipcTransport": "WebSocket over loopback TCP (127.0.0.1 only), chosen over Unix domain socket / named pipe so v0.1 needs exactly one implementation across macOS/Windows/Linux instead of #[cfg(target_os)] branching in the IPC layer itself. Revisit socket-based transport in track I as a hardening step once the contract is proven (README's data-model.md ground rule 3: this is local-only, assumed reachable only by the local user).",
+    "ipcPort": 47823,
+    "ipcEnvelope": {
+      "request": "{ \"id\": string, \"command\": string, \"payload\": object|null }",
+      "ack": "{ \"id\": string, \"ok\": true }",
+      "errAck": "{ \"id\": string, \"ok\": false, \"error\": { \"code\": string, \"message\": string } }",
+      "event": "{ \"event\": string, \"payload\": ... } (no id — unsolicited push)"
+    },
+    "eventNames": [
+      "devices_changed",
+      "link_state_changed",
+      "pairing_session_changed",
+      "settings_changed",
+      "permission_changed"
+    ],
+    "commands": [
+      "switch_active_device",
+      "remove_device",
+      "start_pairing",
+      "cancel_pairing",
+      "pair_with_candidate",
+      "set_switch_key",
+      "update_settings",
+      "reset_settings",
+      "request_permission"
+    ],
+    "errorCodes": [
+      "device_not_found",
+      "device_not_switchable",
+      "device_not_removable",
+      "pairing_in_progress",
+      "pairing_not_active",
+      "pairing_not_ready",
+      "candidate_not_found",
+      "invalid_switch_key",
+      "permission_already_granted"
+    ],
+    "mockParitySeedData": "3 devices: d1 'MacBook' (macos, active, local/unremovable), d2 'Work Laptop' (windows, inactive), d3 'Desktop' (linux, disconnected). 2 pairing candidates on start_pairing: 'Office Mac Mini' (macos), 'Studio Linux' (linux). Source: flutter/lib/data/mock_daemon_repository.dart.",
+    "mockParityTimings": {
+      "pairingSearchToFoundMs": 1200,
+      "pairingRequestToPairedMs": 1500,
+      "pairingTerminalToIdleMs": 1600,
+      "note": "daemon-ipc.md explicitly says these are NOT part of the contract for a real daemon (real latency depends on network + human accept/reject) — the mock-parity service (track B) matches them anyway so swapping the Flutter provider from mock to real-daemon-over-IPC is visually seamless during development, not because a real daemon must hit these numbers in production."
+    }
+  },
+  "tracks": [
+    {
+      "id": "A",
+      "title": "core-contract-parity",
+      "goal": "Grow flow-core from device/pairing/protocol scaffolding into a complete, serde-serializable mirror of docs/contracts/data-model.md, so every later track (service, IPC, platform adapters) builds on one already-correct vocabulary instead of drifting from the Dart side task by task.",
+      "tasks": [
+        {
+          "id": "A1",
+          "title": "Add HostOs and complete Device fields",
+          "status": "pending",
+          "dependsOn": [],
+          "description": "core/src/device/mod.rs currently has DeviceId/DeviceState/Device with only id, name, state. Add HostOs {Macos, Windows, Linux} and the missing os: HostOs and last_seen: DateTime<Utc> fields so Device matches data-model.md's Device class exactly.",
+          "deliverables": [
+            "pub enum HostOs { Macos, Windows, Linux } in core/src/device/mod.rs",
+            "Device gains os: HostOs, last_seen: chrono::DateTime<chrono::Utc>",
+            "chrono (with serde feature) added to core/Cargo.toml"
+          ],
+          "acceptanceCriteria": [
+            "cargo build -p flow-core succeeds",
+            "Device field order/names read as a 1:1 checklist against data-model.md's Device class"
+          ],
+          "specContext": "data-model.md 'Device': 'class Device { final String id; final String name; final HostOs os; final DeviceState state; final DateTime lastSeen; } enum HostOs { macos, windows, linux }'.",
+          "commit": "feat(core): add HostOs and complete Device with os/last_seen fields"
+        },
+        {
+          "id": "A2",
+          "title": "Add DaemonLinkState",
+          "status": "pending",
+          "dependsOn": [],
+          "description": "New enum for daemon-reachability health, distinct from per-device DeviceState. Lives in a new core/src/link/mod.rs (top-level concept in the contract, not a sub-concept of device or state).",
+          "deliverables": [
+            "core/src/link/mod.rs: pub enum DaemonLinkState { Connected, Connecting, Reconnecting, Disconnected, Error, PermissionRequired }",
+            "module registered in core/src/lib.rs"
+          ],
+          "acceptanceCriteria": [
+            "Variant names and order match data-model.md's DaemonLinkState table exactly",
+            "doc comment on each variant reproduces the table's 'Meaning' column so the UI-treatment mapping stays discoverable from Rust docs too"
+          ],
+          "specContext": "data-model.md 'DaemonLinkState': 'Health of *this machine's* connection to the daemon... a single top-level value, not per-device'.",
+          "commit": "feat(core): add DaemonLinkState"
+        },
+        {
+          "id": "A3",
+          "title": "Expand pairing into a full PairingSession state machine",
+          "status": "pending",
+          "dependsOn": [],
+          "description": "core/src/pairing/mod.rs only has PairingRequest/PairingDecision today. Add PairingStage, PairingCandidate, and PairingSession (stage, candidates, target_name, error) plus a PairingSession::idle() constructor, matching the state machine daemon-ipc.md defines.",
+          "deliverables": [
+            "pub enum PairingStage { Idle, Searching, Found, Requesting, Paired, Failed }",
+            "pub struct PairingCandidate { pub id: String, pub name: String, pub os: HostOs }",
+            "pub struct PairingSession { pub stage: PairingStage, pub candidates: Vec<PairingCandidate>, pub target_name: Option<String>, pub error: Option<String> }",
+            "impl PairingSession { pub fn idle() -> Self }",
+            "keep existing PairingRequest/PairingDecision (still used for the future accept/reject network handshake in track G)"
+          ],
+          "acceptanceCriteria": [
+            "PairingSession::idle() matches data-model.md's implicit idle default (empty candidates, no target, no error)",
+            "cargo test -p flow-core passes a basic idle-state assertion"
+          ],
+          "specContext": "daemon-ipc.md 'Pairing (PairingSession.stage)': 'idle --start_pairing--> searching --(candidate found)--> found; found --pair_with_candidate--> requesting --(peer accepts)--> paired --(auto, ~1.6s)--> idle; requesting --(peer rejects/times out)--> failed --(auto, ~1.6s)--> idle; any non-idle state --cancel_pairing--> idle'.",
+          "commit": "feat(core): expand pairing module into a full PairingSession state machine"
+        },
+        {
+          "id": "A4",
+          "title": "Add SwitchKeyBinding and its presets",
+          "status": "pending",
+          "dependsOn": [],
+          "description": "New core/src/switch_key/mod.rs holding the switch-key type shared by settings (track A5) and the future hotkey detector (track F) — kept as its own module since both depend on it independently.",
+          "deliverables": [
+            "pub struct SwitchKeyBinding { pub label: String, pub keys: Vec<String> }",
+            "pub const PRESETS: [SwitchKeyBinding presets for Scroll Lock / Pause / F13 / Ctrl+Shift+Space]",
+            "pub fn default_binding() -> SwitchKeyBinding (Scroll Lock)"
+          ],
+          "acceptanceCriteria": [
+            "token strings match data-model.md exactly: [\"Ctrl\",\"Shift\",\"Space\"], [\"ScrollLock\"], [\"Pause\"], [\"F13\"]",
+            "default_binding() returns the Scroll Lock preset, matching vision.md §12's stated default"
+          ],
+          "specContext": "data-model.md 'SwitchKeyBinding': 'keys tokens are platform-neutral strings... The four built-in presets are Scroll Lock, Pause, F13, Ctrl + Shift + Space'.",
+          "commit": "feat(core): add SwitchKeyBinding and built-in presets"
+        },
+        {
+          "id": "A5",
+          "title": "Add FlowSettings, SettingsPatch, PointerSensitivity",
+          "status": "pending",
+          "dependsOn": ["A4"],
+          "description": "New core/src/settings/mod.rs. SettingsPatch mirrors FlowSettings with every field Option<T> (matches Dart's SettingsPatch all-nullable partial), plus FlowSettings::apply_patch(&mut self, patch: SettingsPatch) doing a field-by-field merge only where Some.",
+          "deliverables": [
+            "pub enum PointerSensitivity { Low, Normal, High }",
+            "pub struct FlowSettings { launch_at_login, show_tray_icon, auto_reconnect, auto_connect_paired_devices, share_keyboard, share_mouse, debug_logging: bool; pointer_sensitivity: PointerSensitivity; switch_key: SwitchKeyBinding }",
+            "impl FlowSettings { pub fn defaults() -> Self; pub fn apply_patch(&mut self, patch: SettingsPatch) }",
+            "pub struct SettingsPatch { every FlowSettings field as Option<T> }"
+          ],
+          "acceptanceCriteria": [
+            "FlowSettings::defaults() field values match data-model.md's JSON example (all true except debug_logging, pointer_sensitivity normal, switch_key Scroll Lock)",
+            "unit test: apply_patch with a single-field patch only changes that field"
+          ],
+          "specContext": "data-model.md 'FlowSettings' + daemon-ipc.md: 'SettingsPatch is a plain partial object — only the keys being changed are sent, e.g. { \"share_mouse\": false }'.",
+          "commit": "feat(core): add FlowSettings, SettingsPatch, PointerSensitivity"
+        },
+        {
+          "id": "A6",
+          "title": "Add PermissionStatus and the FlowError contract error codes",
+          "status": "pending",
+          "dependsOn": [],
+          "description": "PermissionStatus in a new core/src/permission/mod.rs. FlowError in a new core/src/error/mod.rs using thiserror, one variant per code in sharedContractConstants.errorCodes, each carrying whatever context it needs (e.g. DeviceNotFound(DeviceId)) plus a code() -> &'static str method returning the exact snake_case wire string.",
+          "deliverables": [
+            "pub struct PermissionStatus { pub name: String, pub granted: bool }",
+            "#[derive(thiserror::Error, Debug)] pub enum FlowError with 9 variants matching sharedContractConstants.errorCodes",
+            "impl FlowError { pub fn code(&self) -> &'static str }",
+            "thiserror added to core/Cargo.toml"
+          ],
+          "acceptanceCriteria": [
+            "FlowError::DeviceNotFound(..).code() == \"device_not_found\" (and so on for all 9)",
+            "this is the single place error codes are defined — track B's command handlers return Result<_, FlowError>, never construct ad-hoc strings"
+          ],
+          "specContext": "daemon-ipc.md: 'Codes currently thrown by the mock, one per precondition in the table below: device_not_found, device_not_switchable, device_not_removable, pairing_in_progress, pairing_not_active, pairing_not_ready, candidate_not_found, invalid_switch_key, permission_already_granted.'",
+          "commit": "feat(core): add PermissionStatus and FlowError contract error codes"
+        },
+        {
+          "id": "A7",
+          "title": "Serde-align every contract type to the wire format",
+          "status": "pending",
+          "dependsOn": ["A1", "A2", "A3", "A5", "A6"],
+          "description": "Sweep every type added/touched in A1-A6 (plus the pre-existing Device/DeviceState) and add #[derive(Serialize, Deserialize)] + #[serde(rename_all = \"snake_case\")], matching the exact JSON examples in data-model.md field-for-field. This is the task that makes A's types wire-ready for track C.",
+          "deliverables": [
+            "every public contract type/enum in flow-core derives Serialize + Deserialize with snake_case renaming",
+            "a core/tests/wire_format.rs test file serializing one instance of each type and asserting the JSON matches the data-model.md example verbatim (as a serde_json::Value comparison)"
+          ],
+          "acceptanceCriteria": [
+            "cargo test -p flow-core passes, including the new wire_format tests",
+            "no type requires a manual serde impl — derive + rename_all covers every case (flag it in buildNote if one doesn't)"
+          ],
+          "specContext": "docs/contracts/data-model.md: 'Field names are snake_case on the wire and camelCase in Dart, converted 1:1.'",
+          "commit": "feat(core): derive serde wire format for all contract types, tested against data-model.md examples"
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "title": "daemon-command-service",
+      "goal": "An in-memory DaemonService in flow-daemon that behaviorally matches MockDaemonRepository exactly (same seed data, same state machine, same timings) — the Rust-side equivalent of the Dart mock. This is the track that proves the contract is implementable in Rust before any real OS input capture or networking exists, and becomes the real backend once track C exposes it over IPC.",
+      "tasks": [
+        {
+          "id": "B1",
+          "title": "ServiceState scaffold",
+          "status": "pending",
+          "dependsOn": ["A7"],
+          "description": "New daemon/src/service/mod.rs. ServiceState holds all 5 watched slices (devices, link_state, pairing_session, settings, permission) seeded per sharedContractConstants.mockParitySeedData, replacing/extending core::state::AppState (which today only has a bare devices map + active_device) with the full contract shape.",
+          "deliverables": [
+            "daemon/src/service/mod.rs: struct ServiceState { devices: HashMap<DeviceId, Device>, link_state: DaemonLinkState, pairing_session: PairingSession, settings: FlowSettings, permission: PermissionStatus, candidates_pool: Vec<PairingCandidate> }",
+            "ServiceState::seeded() constructing the exact 3-device/2-candidate mock parity data",
+            "core::state::AppState either absorbed into ServiceState or kept minimal and wrapped — decide during implementation, note the choice in buildNote"
+          ],
+          "acceptanceCriteria": [
+            "ServiceState::seeded().devices.len() == 3, local device (\"d1\") flagged not-removable",
+            "cargo test -p flow-daemon has a seed-data assertion test"
+          ],
+          "specContext": "sharedContractConstants.mockParitySeedData; docs/contracts/README.md ground rule 2: 'MockDaemonRepository must implement the interface exactly, including timing behavior that's part of the contract.'",
+          "commit": "feat(daemon): add ServiceState with mock-parity seed data"
+        },
+        {
+          "id": "B2",
+          "title": "Watch-channel event bus",
+          "status": "pending",
+          "dependsOn": ["B1"],
+          "description": "Wrap each ServiceState slice in a tokio::sync::watch channel — watch::channel natively replays the latest value to a new subscriber, which is exactly the 'replay current value to new listener' semantics the Dart mock needed a Stream.multi workaround for (see flutter's fixed async* bug). DaemonService exposes watch_devices() -> watch::Receiver<Vec<Device>> etc., mirroring the 5 watch* methods on DaemonRepository 1:1.",
+          "deliverables": [
+            "struct DaemonService { state: Arc<RwLock<ServiceState>>, devices_tx: watch::Sender<Vec<Device>>, link_state_tx: ..., pairing_session_tx: ..., settings_tx: ..., permission_tx: ... }",
+            "DaemonService::new() constructs channels from ServiceState::seeded()",
+            "5 pub fn watch_*(&self) -> watch::Receiver<T> accessors",
+            "tokio (sync, rt-multi-thread features) added to daemon/Cargo.toml"
+          ],
+          "acceptanceCriteria": [
+            "a subscriber that calls watch_devices() after construction immediately observes the seeded 3-device list without needing a prior emit",
+            "unit test proves late-subscribe replay, directly covering the bug class the Dart mock hit"
+          ],
+          "specContext": "docs/contracts/daemon-ipc.md: 'The daemon sends one on connect for each [event], so the UI never needs an explicit give-me-the-current-state command — connecting to the channel and subscribing IS the initial fetch.' flutter mock_daemon_repository.dart's _StateChannel.watch() comment on the Stream.multi fix.",
+          "commit": "feat(daemon): wire DaemonService watch-channel event bus (tokio::sync::watch)"
+        },
+        {
+          "id": "B3",
+          "title": "Device commands: switch_active_device, remove_device",
+          "status": "pending",
+          "dependsOn": ["B2"],
+          "description": "Async methods on DaemonService implementing the two device-list commands and their preconditions from the daemon-ipc.md commands table, pushing to devices_tx on success and returning the matching FlowError variant on precondition failure.",
+          "deliverables": [
+            "pub async fn switch_active_device(&self, device_id: &str) -> Result<(), FlowError>",
+            "pub async fn remove_device(&self, device_id: &str) -> Result<(), FlowError>",
+            "local device id (\"d1\") hardcoded as never-removable, matching the mock"
+          ],
+          "acceptanceCriteria": [
+            "switching to an already-active or missing device returns DeviceNotFound / DeviceNotSwitchable per the preconditions table",
+            "removing \"d1\" returns DeviceNotRemovable",
+            "successful switch flips exactly one device to Active and the prior Active device to Inactive, then emits exactly one devices_changed-equivalent watch update"
+          ],
+          "specContext": "daemon-ipc.md commands table: 'switch_active_device | Device exists, state is inactive or connected | Target device moves toward active; previous active device moves to inactive. remove_device | Device exists and isn't the local device (\"This device\" is never removable).'",
+          "commit": "feat(daemon): implement switch_active_device and remove_device commands"
+        },
+        {
+          "id": "B4",
+          "title": "Pairing commands and async state-machine timers",
+          "status": "pending",
+          "dependsOn": ["B2"],
+          "description": "start_pairing/cancel_pairing/pair_with_candidate driving PairingSession through its stage machine using tokio::time::sleep for the mock-parity timings (searching->found 1200ms, requesting->paired 1500ms, terminal->idle 1600ms), spawned as a cancellable tokio task so cancel_pairing can abort an in-flight timer.",
+          "deliverables": [
+            "pub async fn start_pairing(&self) -> Result<(), FlowError>",
+            "pub async fn cancel_pairing(&self) -> Result<(), FlowError>",
+            "pub async fn pair_with_candidate(&self, candidate_id: &str) -> Result<(), FlowError>",
+            "an internal JoinHandle stored so cancel_pairing can .abort() the pending timer, preventing a stale timer from resurrecting a cancelled session"
+          ],
+          "acceptanceCriteria": [
+            "start_pairing from a non-idle stage returns PairingInProgress",
+            "pair_with_candidate on an unknown id returns CandidateNotFound; before stage==found returns PairingNotReady",
+            "a successful pair_with_candidate eventually adds the paired device to ServiceState.devices AND returns the session to idle after ~1600ms, matching the mock's dual devices_changed + pairing_session_changed emission",
+            "cancelling mid-timer leaves no orphaned task that later mutates state (test with tokio::time::pause / advance)"
+          ],
+          "specContext": "sharedContractConstants.mockParityTimings; daemon-ipc.md commands table rows for start_pairing/cancel_pairing/pair_with_candidate.",
+          "commit": "feat(daemon): implement pairing commands with mock-parity async state machine"
+        },
+        {
+          "id": "B5",
+          "title": "Settings commands",
+          "status": "pending",
+          "dependsOn": ["B2"],
+          "description": "set_switch_key/update_settings/reset_settings on DaemonService, using FlowSettings::apply_patch (A5) for the merge logic.",
+          "deliverables": [
+            "pub async fn set_switch_key(&self, binding: SwitchKeyBinding) -> Result<(), FlowError>",
+            "pub async fn update_settings(&self, patch: SettingsPatch) -> Result<(), FlowError>",
+            "pub async fn reset_settings(&self) -> Result<(), FlowError>"
+          ],
+          "acceptanceCriteria": [
+            "set_switch_key with an empty keys list returns InvalidSwitchKey",
+            "update_settings with a single-field patch only changes that field on the emitted settings_changed value",
+            "reset_settings restores FlowSettings::defaults() exactly"
+          ],
+          "specContext": "daemon-ipc.md: 'set_switch_key | Binding non-empty. update_settings | SettingsPatch (any subset of FlowSettings fields) | — | Merged into current settings.'",
+          "commit": "feat(daemon): implement settings commands (set_switch_key, update_settings, reset_settings)"
+        },
+        {
+          "id": "B6",
+          "title": "Permission command",
+          "status": "pending",
+          "dependsOn": ["B2"],
+          "description": "request_permission on DaemonService. Matches the mock's always-succeeds behavior (real OS prompt/rejection handling is explicit future work per daemon-ipc.md, tracked separately once track E's platform adapters exist and can report a real OS-level denial).",
+          "deliverables": [
+            "pub async fn request_permission(&self) -> Result<(), FlowError>"
+          ],
+          "acceptanceCriteria": [
+            "calling it when already granted returns PermissionAlreadyGranted",
+            "calling it when not granted flips permission.granted to true and emits permission_changed-equivalent watch update"
+          ],
+          "specContext": "daemon-ipc.md: 'A real daemon can add codes (e.g. an OS-level permission_denied when the user declines the system prompt, which the mock doesn't simulate since request_permission always succeeds) without this being a breaking change.'",
+          "commit": "feat(daemon): implement request_permission command"
+        },
+        {
+          "id": "B7",
+          "title": "Mock-parity test suite",
+          "status": "pending",
+          "dependsOn": ["B3", "B4", "B5", "B6"],
+          "description": "Port the intent of flutter/test/data/mock_daemon_repository_test.dart's 13 cases to daemon/tests/service_parity.rs using #[tokio::test] + tokio::time::pause/advance, so the Rust service is tested against the same behavioral spec the Dart mock already passed.",
+          "deliverables": [
+            "daemon/tests/service_parity.rs mirroring the Dart test file's case list (seed data shape, each command's precondition errors, pairing stage transitions with time advancement, settings patch/reset)"
+          ],
+          "acceptanceCriteria": [
+            "cargo test -p flow-daemon passes all parity tests",
+            "test count and case names cross-referenced in a comment back to the Dart file, so a future contract change is a reminder to update both"
+          ],
+          "specContext": "docs/contracts/README.md ground rule 2 ('MockDaemonRepository must implement the interface exactly, including timing behavior') applied to the Rust side.",
+          "commit": "test(daemon): add mock-parity test suite mirroring the Dart mock's test cases"
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "title": "local-ipc-transport",
+      "goal": "Expose DaemonService over the wire per daemon-ipc.md's envelope, so flow-daemon becomes a real process a client can connect to — the first point where 'the contract' stops being an abstraction shared by two codebases and becomes bytes actually flowing between them.",
+      "tasks": [
+        {
+          "id": "C1",
+          "title": "IPC envelope types in flow-core",
+          "status": "pending",
+          "dependsOn": ["A7"],
+          "description": "New core/src/ipc/mod.rs holding the transport-agnostic envelope so any future Rust client (not just flow-daemon's own server) can depend on flow-core for the shape. Lives in core, not daemon, per the module-boundary rule in core/src/lib.rs's doc comment ('shared vocabulary... any future transport implementations build on').",
+          "deliverables": [
+            "pub const IPC_PORT: u16 = 47823;",
+            "pub struct IpcRequest { pub id: String, pub command: String, pub payload: serde_json::Value }",
+            "#[serde(untagged)] pub enum IpcResponse { Ack { id: String, ok: bool }, Err { id: String, ok: bool, error: ErrorPayload }, Event { event: String, payload: serde_json::Value } }",
+            "pub struct ErrorPayload { pub code: String, pub message: String }",
+            "serde_json added to core/Cargo.toml"
+          ],
+          "acceptanceCriteria": [
+            "serializing each variant matches sharedContractConstants.ipcEnvelope / daemon-ipc.md's wire envelope examples verbatim",
+            "From<FlowError> for ErrorPayload implemented (code() + Display message)"
+          ],
+          "specContext": "daemon-ipc.md 'Wire envelope': the req-17/req-19/devices_changed JSON examples.",
+          "commit": "feat(core): add IPC envelope types (IpcRequest/IpcResponse/ErrorPayload)"
+        },
+        {
+          "id": "C2",
+          "title": "Command dispatch: IpcRequest -> DaemonService call",
+          "status": "pending",
+          "dependsOn": ["C1", "B7"],
+          "description": "daemon/src/ipc/dispatch.rs: a single async fn dispatch(service: &DaemonService, req: IpcRequest) -> IpcResponse matching req.command against the 9 known commands, deserializing req.payload into the right argument type, calling the DaemonService method, and mapping Ok/Err into Ack/Err.",
+          "deliverables": [
+            "daemon/src/ipc/dispatch.rs with the full command match",
+            "an explicit fallback for an unrecognized command string returning an Err response (not a panic) — the contract's forward-compat note ('unrecognized codes... falls back to showing message') implies the reverse must also hold: an unknown command from a mismatched client version fails cleanly"
+          ],
+          "acceptanceCriteria": [
+            "unit test per command: a hand-built IpcRequest JSON round-trips to the correct DaemonService call and back to the correct IpcResponse shape",
+            "malformed payload (wrong shape for the command) returns an Err response with a stable code, not a deserialize panic"
+          ],
+          "specContext": "daemon-ipc.md 'id on a command is generated by the UI and echoed back in exactly one ack'.",
+          "commit": "feat(daemon): add IPC command dispatch from IpcRequest to DaemonService"
+        },
+        {
+          "id": "C3",
+          "title": "WebSocket connection handler",
+          "status": "pending",
+          "dependsOn": ["C2"],
+          "description": "daemon/src/ipc/server.rs: per-connection task using tokio-tungstenite. On connect, immediately sends one Event frame per watch* channel's current value (the 'subscribing IS the initial fetch' rule), then select!s between forwarding new watch-channel values as Event frames and reading incoming IpcRequest frames to dispatch (C2) and write back.",
+          "deliverables": [
+            "async fn handle_connection(stream: TcpStream, service: Arc<DaemonService>)",
+            "tokio-tungstenite, futures-util added to daemon/Cargo.toml",
+            "graceful handling of client disconnect (task ends, no panic, no effect on other connections or ServiceState)"
+          ],
+          "acceptanceCriteria": [
+            "a raw WebSocket test client connecting to a spun-up handler receives exactly 5 Event frames (one per watch stream) before anything else",
+            "sending a switch_active_device request receives its Ack and, before or after it, a devices_changed Event reflecting the change"
+          ],
+          "specContext": "daemon-ipc.md: 'Every watch* stream corresponds to one event name pushed whenever that slice of state changes... The daemon sends one on connect for each.'",
+          "commit": "feat(daemon): add WebSocket IPC connection handler"
+        },
+        {
+          "id": "C4",
+          "title": "flow-daemon main.rs: bind, serve, shut down cleanly",
+          "status": "pending",
+          "dependsOn": ["C3"],
+          "description": "Replace the current scaffolding-only main.rs (which just constructs AppState and prints a placeholder line) with a real #[tokio::main] that builds DaemonService, binds TcpListener on 127.0.0.1:IPC_PORT, accepts connections into C3's handler, and shuts down on Ctrl-C.",
+          "deliverables": [
+            "daemon/src/main.rs rewritten: tokio::main, DaemonService::new(), accept loop spawning handle_connection per client, tokio::signal::ctrl_c() driving graceful shutdown",
+            "tracing + tracing-subscriber added, a startup log line replacing the old println!"
+          ],
+          "acceptanceCriteria": [
+            "cargo run -p flow-daemon starts and logs 'listening on 127.0.0.1:47823' (or equivalent)",
+            "Ctrl-C exits 0, not via panic or forced kill"
+          ],
+          "specContext": "vision.md §8: 'Daemon boots... Daemon starts... Device connection established... Input sharing works... The Flutter UI should be optional... Works without UI.'",
+          "commit": "feat(daemon): wire main.rs to bind and serve the IPC WebSocket listener"
+        },
+        {
+          "id": "C5",
+          "title": "docs/contracts addendum: transport is now concrete",
+          "status": "pending",
+          "dependsOn": ["C4"],
+          "description": "daemon-ipc.md currently says the transport is 'still undecided'. Update it (not a contract version bump — the Dart interface and JSON shapes are unchanged, only the previously-open transport question is answered) to document the WebSocket-over-loopback-TCP choice, the port, and add a short 'Status: implemented by flow-daemon, not just the mock' line once C4 lands.",
+          "deliverables": [
+            "docs/contracts/daemon-ipc.md: replace the 'transport still undecided' sentence with the concrete choice + port + rationale (cross-platform, no #[cfg] branching for v0.1)",
+            "docs/contracts/README.md: update the 'Status: draft, mock-only' line to reflect a real daemon now exists",
+            "docs/contracts/CHANGELOG.md: 0.1.1 entry, non-breaking (transport decided, no shape change)"
+          ],
+          "acceptanceCriteria": [
+            "docs/contracts/README.md ground rule 1 upheld: doc and code reconciled in the same change"
+          ],
+          "specContext": "docs/contracts/daemon-ipc.md: 'The actual transport... is still undecided per the vision doc; everything here is transport-agnostic.'",
+          "commit": "docs(contracts): document the WebSocket-over-loopback-TCP IPC transport (0.1.1)"
+        },
+        {
+          "id": "C6",
+          "title": "End-to-end protocol integration test",
+          "status": "pending",
+          "dependsOn": ["C4"],
+          "description": "daemon/tests/ipc_protocol.rs: spawn the real flow-daemon service + listener in-process (not a subprocess), connect a raw tokio-tungstenite client, and assert the exact JSON byte shape for a full session — connect, receive 5 initial events, send one of each of the 9 commands, receive correct acks/events/errors. This is the test that proves the contract end-to-end in Rust, the equivalent of what track D will prove from the Dart side.",
+          "deliverables": [
+            "daemon/tests/ipc_protocol.rs covering all 9 commands and at least 2 error-code paths"
+          ],
+          "acceptanceCriteria": [
+            "cargo test -p flow-daemon --test ipc_protocol passes",
+            "assertions compare against serde_json::Value, not string equality, so field order doesn't cause false failures"
+          ],
+          "specContext": "docs/contracts/README.md ground rule 1: 'The Dart abstract class is the contract, not prose... if a doc and the code disagree, the code is wrong.' This test is what keeps the Rust code from disagreeing.",
+          "commit": "test(daemon): add end-to-end IPC protocol integration test"
+        }
+      ]
+    },
+    {
+      "id": "D",
+      "title": "flutter-ipc-adapter",
+      "goal": "Close the loop: a second DaemonRepository implementation in Flutter that talks to the real flow-daemon over IPC instead of the mock, swappable via daemonRepositoryProvider with zero changes to any screen. This is the payoff of the whole contract-first approach and the first real proof the two independently-built halves actually fit together.",
+      "tasks": [
+        {
+          "id": "D1",
+          "title": "web_socket_channel dependency + IpcDaemonRepository skeleton",
+          "status": "pending",
+          "dependsOn": ["C6"],
+          "description": "flutter/lib/data/ipc_daemon_repository.dart: class IpcDaemonRepository implements DaemonRepository connecting to ws://127.0.0.1:47823 (port sourced from a shared constant, not a magic number duplicated on both sides).",
+          "deliverables": [
+            "web_socket_channel added to flutter/pubspec.yaml",
+            "flutter/lib/data/ipc_daemon_repository.dart with the class skeleton + connection lifecycle (connect on construction, dispose closes the socket)",
+            "a small ipc_constants.dart holding the port, matching core::ipc::IPC_PORT — flagged with a comment that it must be kept in sync (or generated) since Dart can't import a Rust const directly"
+          ],
+          "acceptanceCriteria": [
+            "flutter analyze clean",
+            "constructing IpcDaemonRepository against a running flow-daemon (manual smoke test) establishes a connection without throwing"
+          ],
+          "specContext": "docs/contracts/README.md ground rule 2: 'A future real implementation (e.g. IpcDaemonRepository) is a drop-in replacement behind the same interface — the UI never imports the mock or a real client directly, only DaemonRepository.'",
+          "commit": "feat(flutter): add IpcDaemonRepository skeleton over web_socket_channel"
+        },
+        {
+          "id": "D2",
+          "title": "Implement the 5 watch* streams",
+          "status": "pending",
+          "dependsOn": ["D1"],
+          "description": "Parse incoming Event frames by event name into the 5 typed streams, broadcasting to multiple listeners with correct replay-to-late-subscriber semantics (same requirement the mock's _StateChannel had to satisfy) using a StreamController per slice, seeded from the first Event frame of each kind received after connect.",
+          "deliverables": [
+            "watchDevices/watchLinkState/watchPairingSession/watchSettings/watchPermission implemented, each a broadcast stream replaying its last known value to new listeners"
+          ],
+          "acceptanceCriteria": [
+            "a widget subscribing after connection has already received all 5 initial events still sees correct current state (mirrors the async*-vs-multi bug class from the mock; write the analogous replay test)"
+          ],
+          "specContext": "daemon-ipc.md 'the UI never needs an explicit give-me-the-current-state command — connecting to the channel and subscribing is the initial fetch.'",
+          "commit": "feat(flutter): implement IpcDaemonRepository watch* streams"
+        },
+        {
+          "id": "D3",
+          "title": "Implement the 9 commands + DaemonCommandException mapping",
+          "status": "pending",
+          "dependsOn": ["D1"],
+          "description": "Each command sends an IpcRequest with a fresh id, awaits the matching Ack/Err by id (a Map<String, Completer<void>> keyed by request id), and throws DaemonCommandException(code, message) on an Err response — reusing the existing domain type, not inventing a parallel one.",
+          "deliverables": [
+            "all 9 DaemonRepository command methods implemented on IpcDaemonRepository",
+            "request-id correlation map with cleanup on both success and error (no leaked Completers)"
+          ],
+          "acceptanceCriteria": [
+            "a rejected command (e.g. switching to an unknown device id) throws DaemonCommandException with code == \"device_not_found\", matching what the mock already throws for the same precondition"
+          ],
+          "specContext": "daemon-ipc.md: 'id on a command is generated by the UI and echoed back in exactly one ack; it's how the UI resolves the right Future.'",
+          "commit": "feat(flutter): implement IpcDaemonRepository commands with DaemonCommandException mapping"
+        },
+        {
+          "id": "D4",
+          "title": "Provider wiring: swappable daemon backend",
+          "status": "pending",
+          "dependsOn": ["D2", "D3"],
+          "description": "flutter/lib/state/repository_providers.dart's daemonRepositoryProvider currently hardcodes MockDaemonRepository. Make the choice explicit and swappable (e.g. an environment/compile-time flag or a small config value) without deleting the mock — the mock remains the default for UI-only development per the original design, IpcDaemonRepository is opt-in for daemon-integration testing.",
+          "deliverables": [
+            "daemonRepositoryProvider reads a source (e.g. --dart-define=FLOW_DAEMON_MODE=ipc) to pick MockDaemonRepository vs IpcDaemonRepository",
+            "flutter/README.md updated with the flag and a 'requires a running flow-daemon on 127.0.0.1:47823' note"
+          ],
+          "acceptanceCriteria": [
+            "default flutter run behavior is unchanged (still the mock) — this task must not be a regression for UI-only development",
+            "flutter analyze / dart format clean"
+          ],
+          "specContext": "flutter/README.md 'What's not here yet': 'Swapping in a real implementation means adding it behind DaemonRepository and overriding daemonRepositoryProvider; no UI code should need to change.'",
+          "commit": "feat(flutter): make daemonRepositoryProvider swappable between mock and IPC backends"
+        },
+        {
+          "id": "D5",
+          "title": "Cross-language contract test",
+          "status": "pending",
+          "dependsOn": ["D4"],
+          "description": "A manual-run (not CI-blocking, since it needs a real flow-daemon process and cargo present) flutter/test/data/ipc_daemon_repository_manual_test.dart or a documented shell recipe: start flow-daemon, run a Flutter integration test against IpcDaemonRepository exercising the same scenarios as mock_daemon_repository_test.dart, confirming identical externally-observable behavior between mock and real daemon.",
+          "deliverables": [
+            "test file or documented script (decide during implementation, note the choice in buildNote) plus a short section in daemon/README.md and flutter/README.md cross-linking it"
+          ],
+          "acceptanceCriteria": [
+            "running it against a live flow-daemon passes the same assertions the mock's unit tests make",
+            "clearly marked as requiring a running daemon so it's never mistaken for part of the normal (daemonless) flutter test run"
+          ],
+          "specContext": "docs/contracts/README.md ground rule 2, verified end to end rather than argued from two separate test suites.",
+          "commit": "test: add cross-language contract test between IpcDaemonRepository and flow-daemon"
+        }
+      ]
+    },
+    {
+      "id": "E",
+      "title": "platform-input-adapters",
+      "goal": "Replace the unimplemented!() stubs in platform/src/{linux,macos,windows}/mod.rs with real global input capture and injection behind the existing InputCapture/InputInjector traits (core/src/input/mod.rs) — the part of the daemon that actually does something a UI-only build never could.",
+      "tasks": [
+        {
+          "id": "E1",
+          "title": "Linux capture via evdev",
+          "status": "pending",
+          "dependsOn": ["A7"],
+          "description": "LinuxInputCapture opens the keyboard/mouse device node(s) under /dev/input via the evdev crate, translates raw evdev key/relative-motion events into core::protocol::{KeyboardEvent, MouseEvent}, and pushes them through a channel the daemon service (track F) reads from.",
+          "deliverables": [
+            "evdev crate added to platform/Cargo.toml (linux target only, via [target.'cfg(target_os=\"linux\")'.dependencies])",
+            "LinuxInputCapture::start()/stop() implemented; start() spawns a blocking read loop on a dedicated thread (evdev reads block) forwarding translated events over a std::sync::mpsc or tokio::sync::mpsc channel",
+            "a device-node discovery helper (enumerate /dev/input/event* and pick keyboard+mouse capable ones)"
+          ],
+          "acceptanceCriteria": [
+            "compiles and runs on this session's Linux container to the extent permissions allow (reading /dev/input typically needs the `input` group or root — document this requirement rather than working around it with elevated defaults)",
+            "unit tests cover the evdev-event-to-InputEvent translation function in isolation (pure function, no device I/O, fully testable without hardware access)"
+          ],
+          "acceptanceCriteriaNote": "Full manual verification (does a real keypress actually get captured) is out of scope for an unattended session — document the manual verification steps in daemon/README.md instead of claiming it as tested.",
+          "specContext": "platform/src/linux/mod.rs doc comment: 'capture and injection will bind to evdev/uinput'; vision.md §7 InputCapture trait diagram.",
+          "commit": "feat(platform): implement Linux input capture via evdev"
+        },
+        {
+          "id": "E2",
+          "title": "Linux injection via uinput",
+          "status": "pending",
+          "dependsOn": ["E1"],
+          "description": "LinuxInputInjector creates a virtual input device via evdev's uinput support and replays incoming core::protocol::InputEvent as synthetic key/motion events.",
+          "deliverables": [
+            "LinuxInputInjector::inject() implemented using evdev::uinput::VirtualDeviceBuilder"
+          ],
+          "acceptanceCriteria": [
+            "unit tests cover the InputEvent-to-uinput-event translation function in isolation",
+            "manual verification steps documented in daemon/README.md (uinput also needs elevated permission / the uinput kernel module)"
+          ],
+          "specContext": "platform/src/linux/mod.rs doc comment.",
+          "commit": "feat(platform): implement Linux input injection via uinput"
+        },
+        {
+          "id": "E3",
+          "title": "Linux capture/inject CLI harness",
+          "status": "pending",
+          "dependsOn": ["E2"],
+          "description": "A small daemon/examples/linux_input_echo.rs (or platform/examples/...) binary that captures local input and immediately re-injects it into the virtual device, the minimum loopback needed to manually sanity-check both adapters together without a second machine or the full daemon/networking stack.",
+          "deliverables": [
+            "runnable example binary + a short usage note in daemon/README.md"
+          ],
+          "acceptanceCriteria": [
+            "cargo build --example linux_input_echo succeeds",
+            "documented as a manual/local-only verification tool, not part of the automated test suite"
+          ],
+          "specContext": "vision.md §22 Phase 2/3 (Keyboard/Mouse capture validation) scaled down to a single-machine loopback sanity check.",
+          "commit": "feat(platform): add Linux input capture/inject loopback example"
+        },
+        {
+          "id": "E4",
+          "title": "macOS capture via CGEventTap",
+          "status": "pending",
+          "dependsOn": ["A7"],
+          "description": "MacosInputCapture using core-graphics (CGEventTapCreate) to install a global event tap, translating CGEvents into core::protocol events. Written and compile-checked via cross-compilation target (this session has no macOS hardware) — flag in buildNote that runtime behavior is unverified pending access to a Mac.",
+          "deliverables": [
+            "core-graphics, core-foundation crates added to platform/Cargo.toml (macos target only)",
+            "MacosInputCapture::start()/stop() implemented",
+            "a doc comment noting the required Accessibility permission and that CGEventTapCreate fails silently without it (surfaced later via track B's permission command once wired up)"
+          ],
+          "acceptanceCriteria": [
+            "cargo check --target x86_64-apple-darwin (or aarch64-apple-darwin) succeeds — full `cargo build`/run is not verifiable in this environment",
+            "translation logic (CGEvent -> InputEvent) isolated into a pure function with unit tests that don't require an actual event tap"
+          ],
+          "specContext": "platform/src/macos/mod.rs doc comment: 'capture will use a CGEventTap'; vision.md §17 notes Accessibility permission as the macOS gate.",
+          "commit": "feat(platform): implement macOS input capture via CGEventTap"
+        },
+        {
+          "id": "E5",
+          "title": "macOS injection via CGEventPost",
+          "status": "pending",
+          "dependsOn": ["E4"],
+          "description": "MacosInputInjector posting synthetic CGEvents built from incoming InputEvent.",
+          "deliverables": [
+            "MacosInputInjector::inject() implemented"
+          ],
+          "acceptanceCriteria": [
+            "cargo check --target aarch64-apple-darwin succeeds",
+            "translation logic unit tested the same way as E4"
+          ],
+          "specContext": "platform/src/macos/mod.rs doc comment: 'injection will post events via CGEventPost'.",
+          "commit": "feat(platform): implement macOS input injection via CGEventPost"
+        },
+        {
+          "id": "E6",
+          "title": "Windows capture via SetWindowsHookEx",
+          "status": "pending",
+          "dependsOn": ["A7"],
+          "description": "WindowsInputCapture using the windows crate's Win32_UI_WindowsAndMessaging + Win32_UI_Input_KeyboardAndMouse bindings to install a low-level keyboard/mouse hook, translating WH_KEYBOARD_LL/WH_MOUSE_LL callbacks into core::protocol events. Compile-checked via cross target only, same caveat as E4.",
+          "deliverables": [
+            "windows crate added to platform/Cargo.toml (windows target only) with the minimal feature set needed",
+            "WindowsInputCapture::start()/stop() implemented, hook callback running a message loop on a dedicated thread"
+          ],
+          "acceptanceCriteria": [
+            "cargo check --target x86_64-pc-windows-msvc succeeds",
+            "translation logic isolated + unit tested"
+          ],
+          "specContext": "platform/src/windows/mod.rs doc comment: 'capture will use a low-level keyboard/mouse hook (SetWindowsHookEx)'.",
+          "commit": "feat(platform): implement Windows input capture via SetWindowsHookEx"
+        },
+        {
+          "id": "E7",
+          "title": "Windows injection via SendInput",
+          "status": "pending",
+          "dependsOn": ["E6"],
+          "description": "WindowsInputInjector building INPUT structs from incoming InputEvent and calling SendInput.",
+          "deliverables": [
+            "WindowsInputInjector::inject() implemented"
+          ],
+          "acceptanceCriteria": [
+            "cargo check --target x86_64-pc-windows-msvc succeeds",
+            "translation logic unit tested"
+          ],
+          "specContext": "platform/src/windows/mod.rs doc comment: 'injection will use SendInput'.",
+          "commit": "feat(platform): implement Windows input injection via SendInput"
+        }
+      ]
+    },
+    {
+      "id": "F",
+      "title": "switch-hotkey",
+      "goal": "Make the switch key an actual local behavior of the running daemon, not just a settings value the UI can read — the interaction vision.md calls 'the defining interaction of the product.'",
+      "tasks": [
+        {
+          "id": "F1",
+          "title": "Switch-key matcher over the capture event stream",
+          "status": "pending",
+          "dependsOn": ["E1", "A4"],
+          "description": "daemon/src/hotkey/mod.rs: a stateful matcher that consumes the InputCapture event stream and the currently-configured SwitchKeyBinding (from ServiceState.settings.switch_key), detecting when the exact key combination fires, independent of which platform adapter produced the events (works against the platform-neutral InputEvent, not raw OS codes).",
+          "deliverables": [
+            "struct SwitchKeyMatcher { binding: SwitchKeyBinding, held: HashSet<String> } with a fn feed(&mut self, event: &InputEvent) -> bool (true on match)"
+          ],
+          "acceptanceCriteria": [
+            "unit tests: Scroll Lock preset matches on a single key token; Ctrl+Shift+Space preset only matches once all three are held simultaneously, not on any subset",
+            "changing settings.switch_key mid-run (via update_settings/set_switch_key) is picked up without restarting the daemon"
+          ],
+          "specContext": "vision.md §12: 'Switching is the defining interaction of the product... Users should eventually be able to choose... Custom key combinations.'",
+          "commit": "feat(daemon): add switch-key matcher over the platform-neutral input event stream"
+        },
+        {
+          "id": "F2",
+          "title": "Wire matcher output to DaemonService.switch_active_device",
+          "status": "pending",
+          "dependsOn": ["F1", "B3"],
+          "description": "daemon/src/main.rs (or a dedicated daemon/src/hotkey/runner.rs task) spawns a loop reading the platform InputCapture channel through SwitchKeyMatcher and, on a match, calls DaemonService's internal switch logic directly — the local trigger path is independent of the IPC command path from track C (a UI is optional per vision.md §8), though both end up calling the same underlying state mutation.",
+          "deliverables": [
+            "hotkey runner task spawned alongside the IPC listener in main.rs",
+            "an internal (non-IPC, non-FlowError-returning) switch_active_device_local() or equivalent DaemonService method the hotkey path calls, since there's no 'requester' to reject with an error the way an IPC command can — a mismatched hotkey press with only one device simply does nothing observable"
+          ],
+          "acceptanceCriteria": [
+            "with 2+ devices present, a matched switch-key press advances active device without any IPC client connected",
+            "the resulting devices_changed watch update is visible to a client that connects afterward (replay semantics from B2 apply)"
+          ],
+          "specContext": "vision.md §8: 'Daemon Works without UI... Flutter UI Controls/observes daemon' — the switch interaction must not require the UI to be running.",
+          "commit": "feat(daemon): wire switch-key matches to DaemonService without requiring a UI connection"
+        },
+        {
+          "id": "F3",
+          "title": "Switch debounce",
+          "status": "pending",
+          "dependsOn": ["F2"],
+          "description": "A short debounce window on the hotkey trigger path so key-repeat (holding Scroll Lock, or a noisy combo release) doesn't fire multiple switches. Explicitly a Rust-side implementation concern, not a contract requirement — daemon-ipc.md's switching section says the mock's UI-visible debounce is a UI concern, but the real daemon still needs its own debounce since it's now the thing directly reading raw key-repeat events.",
+          "deliverables": [
+            "debounce logic in the hotkey runner (e.g. ignore a repeat match within N ms of the last one)"
+          ],
+          "acceptanceCriteria": [
+            "unit test: synthetic rapid-fire matches within the debounce window produce exactly one switch"
+          ],
+          "specContext": "daemon-ipc.md 'Switching': 'a debounced/disabled row while the command's Future is in flight is a UI concern, not a wire state' — this task is the analogous concern one layer down, at the raw-input layer the UI never sees.",
+          "commit": "feat(daemon): add switch-key debounce to the hotkey trigger path"
+        }
+      ]
+    },
+    {
+      "id": "G",
+      "title": "transport-networking",
+      "goal": "Real daemon-to-daemon connectivity: discover another Flow daemon on the LAN, exchange InputEvents over it, and make the local-only mock-parity pairing (track B) actually pair with a second real machine.",
+      "tasks": [
+        {
+          "id": "G1",
+          "title": "LAN discovery",
+          "status": "pending",
+          "dependsOn": ["E1"],
+          "description": "daemon/src/discovery/mod.rs broadcasting/listening for a lightweight UDP announce (name, os, a discovery port) so start_pairing's candidate list (currently the mock's 2 hardcoded candidates) can eventually be populated by real peers found on the network. mDNS (via a crate like mdns-sd) is the preferred approach; a hand-rolled UDP broadcast is an acceptable fallback if it keeps the task scoped — decide and note in buildNote.",
+          "deliverables": [
+            "a DiscoveredPeer { name, address, os } type and an async stream/channel of discoveries"
+          ],
+          "acceptanceCriteria": [
+            "two daemon instances on the same host (bound to different ports for the test) discover each other via loopback broadcast in an integration test"
+          ],
+          "specContext": "vision.md §22 Phase 1 (Connectivity): 'Establish communication between two machines... Validate: Device discovery, Connection, Disconnect, Reconnect, Basic messages.'",
+          "commit": "feat(daemon): add LAN peer discovery"
+        },
+        {
+          "id": "G2",
+          "title": "WebSocket Transport implementation",
+          "status": "pending",
+          "dependsOn": ["G1"],
+          "description": "A WsTransport implementing core::transport::Transport (currently just a trait with send/recv) using tokio-tungstenite for the daemon-to-daemon link, distinct from track C's local IPC WebSocket server (different port, different peer, different message type — InputEvent, not IpcRequest/Response).",
+          "deliverables": [
+            "platform/independent daemon/src/transport/ws.rs or a new small crate — decide during implementation whether this belongs in daemon or warrants promoting core::transport's trait usage into its own crate; note the choice in buildNote",
+            "WsTransport::send/recv implemented over an established peer connection"
+          ],
+          "acceptanceCriteria": [
+            "two local daemon instances exchange a hand-crafted InputEvent::Keyboard(KeyDown) over the transport in an integration test and receive it verbatim"
+          ],
+          "specContext": "vision.md §10: 'The initial implementation should use: WebSocket over the local network.'",
+          "commit": "feat(daemon): implement WebSocket Transport for daemon-to-daemon links"
+        },
+        {
+          "id": "G3",
+          "title": "Real pairing over the network",
+          "status": "pending",
+          "dependsOn": ["G1", "B4"],
+          "description": "Extend track B's PairingSession machine so start_pairing's candidate list is populated from G1's live discoveries (replacing the 2 hardcoded mock candidates once a real peer is on the network — keep the hardcoded fallback behind a feature flag or dev-mode switch so the mock-parity tests from B7 keep working standalone), and pair_with_candidate performs the real PairingRequest/PairingDecision handshake (core::pairing, currently unused scaffolding) over a transient connection to the candidate's address.",
+          "deliverables": [
+            "DaemonService gains a real-vs-seeded candidate source, gated so B7's tests are unaffected",
+            "the accept/reject handshake using core::pairing::{PairingRequest, PairingDecision} sent/received over G2's transport"
+          ],
+          "acceptanceCriteria": [
+            "two local daemon instances complete a real pair_with_candidate handshake end-to-end in an integration test, ending with both sides' devices list containing the other"
+          ],
+          "specContext": "vision.md §16 Pairing: 'On Device A: Available Devices... [Pair]. On Device B: Pairing Request \"MacBook\" wants to connect. [Reject] [Accept]. Once accepted, the devices become trusted.'",
+          "commit": "feat(daemon): implement real network pairing handshake over discovered peers"
+        },
+        {
+          "id": "G4",
+          "title": "End-to-end input streaming loop",
+          "status": "pending",
+          "dependsOn": ["G2", "F2", "E2"],
+          "description": "Wire capture (E1) -> switch-aware gate (only stream when this device is Active, per F2/F3's local switch state) -> WsTransport::send (G2) on the sending side, and WsTransport::recv -> injector (E2) on the receiving side. This is the task where the product's actual core loop (vision.md's north star) first exists end to end, even if only on Linux (the only platform with both E1/E2 implemented and testable here).",
+          "deliverables": [
+            "daemon/src/pipeline/mod.rs (or similar) tying capture/transport/injection together behind the Active/Inactive device state"
+          ],
+          "acceptanceCriteria": [
+            "a manual two-instance-on-one-host test (documented in daemon/README.md, not automated — needs real input devices) demonstrates a keypress captured on the 'active' instance being injected on the 'inactive' instance's virtual device",
+            "an automated integration test covers the gating logic (events only flow while Active) using synthetic InputEvents, without real hardware"
+          ],
+          "specContext": "vision.md §12 diagram: 'Pressing Scroll Lock switches the destination of keyboard and mouse input' and the North Star: 'Just press a key and continue working.'",
+          "commit": "feat(daemon): wire capture -> transport -> injection into the end-to-end input pipeline"
+        }
+      ]
+    },
+    {
+      "id": "H",
+      "title": "security-pairing-trust",
+      "goal": "Treat keyboard/mouse events as the sensitive data they are (vision.md §17) once real network pairing (track G) exists — identity, trust, and an encrypted channel, replacing the POC's trusted-local-network assumption.",
+      "tasks": [
+        {
+          "id": "H1",
+          "title": "Device identity keypair",
+          "status": "pending",
+          "dependsOn": ["A6"],
+          "description": "Each daemon instance generates (once, persisted) an ed25519 keypair identifying it, via ed25519-dalek. Independent of track G so it can be built/tested in isolation.",
+          "deliverables": [
+            "core/src/identity/mod.rs or daemon/src/identity/mod.rs (decide scope during implementation) generating/loading a keypair from disk",
+            "ed25519-dalek added to the relevant Cargo.toml"
+          ],
+          "acceptanceCriteria": [
+            "first run generates and persists a keypair; subsequent runs load the same one",
+            "unit test covers the generate/persist/reload round trip using a temp dir"
+          ],
+          "specContext": "vision.md §17: 'The eventual system should support: Device authentication... Trusted-device identities.'",
+          "commit": "feat(daemon): add persisted device identity keypair"
+        },
+        {
+          "id": "H2",
+          "title": "Trust store",
+          "status": "pending",
+          "dependsOn": ["H1"],
+          "description": "A persisted list of paired devices' public keys + names, populated when track G3's pairing handshake completes successfully, consulted before accepting an incoming pairing/connection from an already-known device.",
+          "deliverables": [
+            "TrustStore type with add/remove/lookup by public key, backed by a JSON file under the platform config dir (directories crate)"
+          ],
+          "acceptanceCriteria": [
+            "a device pubkey added to the store persists across a reload",
+            "unit tests cover add/remove/lookup"
+          ],
+          "specContext": "vision.md §16: 'Once accepted, the devices become trusted.'",
+          "commit": "feat(daemon): add persisted trust store for paired device identities"
+        },
+        {
+          "id": "H3",
+          "title": "Encrypted channel over WsTransport",
+          "status": "pending",
+          "dependsOn": ["H1", "G2"],
+          "description": "Layer an authenticated encrypted handshake onto G2's WebSocket transport using the Noise protocol (snow crate) keyed by each side's H1 identity, so InputEvents never travel in plaintext between daemons.",
+          "deliverables": [
+            "snow added as a dependency",
+            "a NoiseTransport wrapper around WsTransport performing the handshake on connect and encrypting/decrypting every send/recv"
+          ],
+          "acceptanceCriteria": [
+            "integration test: two instances complete a Noise handshake and exchange an InputEvent that a byte-level packet sniff (asserting on the raw socket bytes, not the decoded event) does not reveal in plaintext"
+          ],
+          "specContext": "vision.md §17: 'Encrypted communication... Conceptually: Device A -> Secure Pairing -> Device Identity -> Encrypted Channel -> Input Events.'",
+          "commit": "feat(daemon): encrypt the daemon-to-daemon transport with Noise (identity-keyed)"
+        },
+        {
+          "id": "H4",
+          "title": "Replay protection and unknown-device rejection",
+          "status": "pending",
+          "dependsOn": ["H2", "H3"],
+          "description": "Reject any incoming connection whose identity isn't in the trust store (H2) before the Noise handshake completes, and add a monotonic sequence number / timestamp check on InputEvents to reject replayed frames.",
+          "deliverables": [
+            "connection-accept gate consulting TrustStore",
+            "sequence/timestamp check on the receiving side of the input pipeline (G4)"
+          ],
+          "acceptanceCriteria": [
+            "integration test: a connection attempt from an identity not in the trust store is rejected before any InputEvent can flow",
+            "integration test: a replayed (duplicate sequence number) frame is dropped, not re-injected"
+          ],
+          "specContext": "vision.md §17: 'Replay protection... Automatic rejection of unknown devices.'",
+          "commit": "feat(daemon): add replay protection and unknown-device connection rejection"
+        }
+      ]
+    },
+    {
+      "id": "I",
+      "title": "reliability-persistence",
+      "goal": "Make the daemon survive restarts, network blips, and its own crashes gracefully — vision.md's 'invisible by default' principle applied to failure modes, not just the happy path.",
+      "tasks": [
+        {
+          "id": "I1",
+          "title": "Settings and paired-device persistence",
+          "status": "pending",
+          "dependsOn": ["B5", "H2"],
+          "description": "Persist FlowSettings and the paired-devices list to disk (directories crate for the platform config path, serde_json for the file), loaded on startup instead of always reseeding ServiceState::seeded(), and saved on every settings_changed/devices_changed.",
+          "deliverables": [
+            "ServiceState::load_or_seeded() reading from disk if a config file exists",
+            "a save-on-change hook wired into B5's settings commands and B3/G3's device-list mutations"
+          ],
+          "acceptanceCriteria": [
+            "restarting flow-daemon after a settings change loads the changed value, not the default",
+            "integration test using a temp config dir"
+          ],
+          "specContext": "docs/product/vision.md §15 Settings section implies durability is expected; the mock's in-memory-only model was explicitly a mock simplification, not a contract requirement.",
+          "commit": "feat(daemon): persist settings and paired devices across restarts"
+        },
+        {
+          "id": "I2",
+          "title": "Auto-reconnect",
+          "status": "pending",
+          "dependsOn": ["G2", "I1"],
+          "description": "When settings.auto_reconnect is true and an active peer connection drops, retry with backoff, transitioning DaemonLinkState through Reconnecting per the state machine, matching the exact transition table in daemon-ipc.md.",
+          "deliverables": [
+            "reconnect loop with capped exponential backoff",
+            "DaemonLinkState transitions driven by real connection events instead of only being settable via the harness's debug method (which stays, for local dev/testing)"
+          ],
+          "acceptanceCriteria": [
+            "integration test: killing a simulated peer connection drives link_state connected -> reconnecting -> connected on recovery within the test's timeout"
+          ],
+          "specContext": "daemon-ipc.md 'Link health (DaemonLinkState)': 'connected --(active link drops)--> reconnecting --(recovered)--> connected'.",
+          "commit": "feat(daemon): add auto-reconnect with DaemonLinkState transitions"
+        },
+        {
+          "id": "I3",
+          "title": "Structured logging across the daemon",
+          "status": "pending",
+          "dependsOn": ["C4"],
+          "description": "Sweep every track (B-H) module for ad-hoc println!/eprintln! and replace with tracing spans/events (info!/warn!/error!), gated by settings.debug_logging for verbose spans, matching the Advanced settings section's 'Debug logging' toggle actually doing something once wired to a real daemon.",
+          "deliverables": [
+            "tracing::instrument or manual spans on the main service loops, hotkey runner, connection handlers",
+            "settings.debug_logging toggling the tracing-subscriber filter level at runtime (e.g. via a reload handle)"
+          ],
+          "acceptanceCriteria": [
+            "no remaining println!/eprintln! in daemon/platform/core outside main.rs's very first startup line",
+            "toggling debug_logging via update_settings visibly changes log verbosity in a manual run"
+          ],
+          "specContext": "docs/contracts/data-model.md FlowSettings.debugLogging; vision.md §15 Advanced settings: 'Debug logging.'",
+          "commit": "feat(daemon): wire structured tracing logs to the debug_logging setting"
+        },
+        {
+          "id": "I4",
+          "title": "Panic isolation and daemon supervision notes",
+          "status": "pending",
+          "dependsOn": ["I3"],
+          "description": "Ensure a panic in one connection-handler task or the hotkey runner can't take down the whole daemon (tokio tasks already isolate panics by default — verify and add a regression test), and document (not implement, since it's OS-integration/packaging scope, tracked in J4) how the daemon would be supervised for real (launchd/systemd/Windows service auto-restart).",
+          "deliverables": [
+            "regression test: a deliberately panicking connection handler doesn't affect a second concurrent connection or the hotkey runner",
+            "a 'Process supervision' section in daemon/README.md explaining the intended launchd/systemd/service model even though J4 hasn't built the unit files yet"
+          ],
+          "acceptanceCriteria": [
+            "cargo test -p flow-daemon includes the panic-isolation regression test and it passes"
+          ],
+          "specContext": "vision.md principle 1: 'Invisible by default — the user should forget the software is running' — a hard crash is the opposite of invisible.",
+          "commit": "test(daemon): add panic-isolation regression test and document supervision model"
+        }
+      ]
+    },
+    {
+      "id": "J",
+      "title": "packaging-qa",
+      "goal": "Close out the daemon phase the same way the Flutter phase's QA track did: verify everything actually holds together, reconcile every doc against the final code, and leave the repo in a state a fresh contributor (or a fresh session) can pick up cleanly.",
+      "tasks": [
+        {
+          "id": "J1",
+          "title": "Workspace lint discipline",
+          "status": "pending",
+          "dependsOn": ["A7", "B7", "C6"],
+          "description": "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both clean, with any necessary #[allow(...)] justified by a comment rather than silently suppressed workspace-wide.",
+          "deliverables": [
+            "clippy.toml or workspace-level lint config if any blanket allowances are needed",
+            "CI-equivalent local check script or documented command sequence in daemon/README.md"
+          ],
+          "acceptanceCriteria": [
+            "cargo fmt --check exits 0",
+            "cargo clippy --workspace --all-targets -- -D warnings exits 0"
+          ],
+          "specContext": "Mirrors flutter/README.md's 'flutter analyze / dart format' clean-build discipline, applied to the Rust side.",
+          "commit": "chore(daemon): clean workspace clippy/fmt, add lint check script"
+        },
+        {
+          "id": "J2",
+          "title": "Full workspace integration test sweep",
+          "status": "pending",
+          "dependsOn": ["B7", "C6", "F3", "G4", "H4", "I4"],
+          "description": "cargo test --workspace green across flow-core, flow-daemon, flow-platform (platform tests scoped to what's runnable on Linux CI; macOS/Windows-only code is check-only per E4-E7's acceptance criteria, not test-only).",
+          "deliverables": [
+            "a single documented command (or script) that runs the full suite the way a fresh contributor would"
+          ],
+          "acceptanceCriteria": [
+            "cargo test --workspace passes on Linux",
+            "cargo check --workspace --target <macos-target> and --target <windows-target> both pass (cross-compilation checks, not full builds)"
+          ],
+          "specContext": "Mirrors the Flutter QA track's Q2 (flutter analyze/format/test all clean) at the workspace level.",
+          "commit": "test(daemon): verify full workspace test/check sweep across all targets"
+        },
+        {
+          "id": "J3",
+          "title": "Cross-compilation setup notes",
+          "status": "pending",
+          "dependsOn": ["E5", "E7"],
+          "description": "Document (daemon/README.md) exactly how to add and use the macOS/Windows Rust targets from a Linux dev machine for the check-only verification tracks E4-E7 relied on, plus what's still needed (an actual Mac/PC, or CI runners) for a real build+run.",
+          "deliverables": [
+            "daemon/README.md 'Cross-compilation' section with exact rustup target add / cargo check invocations"
+          ],
+          "acceptanceCriteria": [
+            "following the documented steps from a clean checkout reproduces the cargo check results this session obtained"
+          ],
+          "specContext": "vision.md §7: 'The rest of the daemon should not need to know how each operating system implements input capture' — this task documents how that boundary is actually verified pre-hardware.",
+          "commit": "docs(daemon): document cross-compilation setup for macOS/Windows targets"
+        },
+        {
+          "id": "J4",
+          "title": "Background execution scaffolding",
+          "status": "pending",
+          "dependsOn": ["I4"],
+          "description": "Stub (not install/activate) service unit files per platform: a launchd .plist for macOS, a systemd .service for Linux, and notes/a minimal example for a Windows service wrapper, matching the 'process supervision' section I4 documented in prose.",
+          "deliverables": [
+            "packaging/launchd/com.flow.daemon.plist",
+            "packaging/systemd/flow-daemon.service",
+            "packaging/windows/README.md describing the Windows service approach (e.g. via a wrapper like nssm or a real Win32 service using the windows crate) as a future task, not implemented in this pass"
+          ],
+          "acceptanceCriteria": [
+            "plist and .service files are syntactically valid for their format (validate with plutil -lint / systemd-analyze verify where available in this environment)",
+            "none of these are wired into any install step yet — explicitly scaffolding, matching how platform/src/{macos,windows}/mod.rs started as scaffolding in the original commit"
+          ],
+          "specContext": "vision.md §20 POC Strategy: 'The first version should not immediately attempt to solve: ...Auto-start installers' — these files exist as the documented target, not as a shipped installer.",
+          "commit": "chore(packaging): add launchd/systemd service unit scaffolding"
+        },
+        {
+          "id": "J5",
+          "title": "Final docs reconciliation and CHANGELOG",
+          "status": "pending",
+          "dependsOn": ["J1", "J2", "J3", "J4"],
+          "description": "Sweep root README.md, daemon/README.md, docs/product/vision.md's POC roadmap checklist, and docs/contracts/*.md against the final state of this todos.json (mirrors the Flutter phase's Q3 reconciliation task), and bump docs/contracts/CHANGELOG.md to reflect the daemon phase's completion.",
+          "deliverables": [
+            "root README.md's 'POC roadmap' section updated to reflect which phases are actually done",
+            "daemon/README.md finalized (build/run instructions, what's implemented vs. still stubbed, manual verification steps referenced from E3/G4/I4)",
+            "docs/contracts/CHANGELOG.md final entry for this phase"
+          ],
+          "acceptanceCriteria": [
+            "every doc claim is checked against actual code/tests, not aspirational — same discipline as the Flutter phase's Q3 task",
+            "a script or manual pass confirms every task in this file is marked done before this task is marked done"
+          ],
+          "specContext": "Mirrors root todos.json's Q3 ('docs: reconcile contracts and finalize QA sweep') applied to the daemon phase.",
+          "commit": "docs: reconcile daemon docs and finalize QA sweep for the rust-daemon phase"
+        }
+      ]
+    }
+  ]
+}
