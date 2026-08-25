@@ -371,7 +371,8 @@
         {
           "id": "B2",
           "title": "Watch-channel event bus",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "DaemonService kept in the same daemon/src/service/mod.rs file as ServiceState rather than a new file — both are small enough that splitting now would be premature, and B3-B6 will grow impl DaemonService in place. state/storage fields are unused (dead_code warning) until B3 starts adding command methods that need them.",
           "dependsOn": ["B1"],
           "description": "Wrap each ServiceState slice in a tokio::sync::watch channel — watch::channel natively replays the latest value to a new subscriber, which is exactly the 'replay current value to new listener' semantics the Dart mock needed a Stream.multi workaround for (see flutter's fixed async* bug). DaemonService exposes watch_devices() -> watch::Receiver<Vec<Device>> etc., mirroring the 5 watch* methods on DaemonRepository 1:1.",
           "deliverables": [
