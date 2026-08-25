@@ -2,3 +2,4 @@
 //! `DaemonService` calls (track C).
 
 pub mod dispatch;
+pub mod server;
