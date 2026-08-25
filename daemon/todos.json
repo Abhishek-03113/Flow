@@ -552,7 +552,8 @@
         {
           "id": "C4",
           "title": "flow-daemon main.rs: bind, serve, shut down cleanly",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Also wired P5's history_logger::spawn(&service, storage.clone()) into main.rs here, since P5's own deliverable said explicitly 'a spawned task wired up in main.rs (track C4) alongside the IPC listener' — this is that wiring. db_path() uses directories::ProjectDirs::from(\"dev\", \"Flow\", \"flow-daemon\") and creates the data dir if missing; qualifier/organization strings are arbitrary (no existing convention in the repo to match) and can be revisited at packaging time (track J) if it matters for a real install. Manually verified end-to-end outside the test suite: cargo run binds a real socket on 127.0.0.1:47823, logs the expected line, a raw TCP connect confirms the port is actually open, and SIGINT (Ctrl-C) exits with code 0 — not a panic or forced kill. Command dispatch over the wire is covered by C3's automated server:: tests (a real tokio-tungstenite client against handle_connection), so C4 only needed to prove the process-level bind/log/shutdown behavior main.rs itself adds.",
           "dependsOn": ["C3"],
           "description": "Replace the current scaffolding-only main.rs (which just constructs AppState and prints a placeholder line) with a real #[tokio::main] that builds DaemonService, binds TcpListener on 127.0.0.1:IPC_PORT, accepts connections into C3's handler, and shuts down on Ctrl-C.",
           "deliverables": [
