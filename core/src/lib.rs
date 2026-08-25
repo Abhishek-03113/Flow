@@ -10,6 +10,7 @@
 pub mod device;
 pub mod error;
 pub mod input;
+pub mod ipc;
 pub mod link;
 pub mod pairing;
 pub mod permission;
