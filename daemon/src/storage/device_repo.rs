@@ -10,7 +10,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use rusqlite::{OptionalExtension, Row};
 
-use super::Storage;
+use super::{parse_rfc3339, Storage};
 
 /// A device row as stored on disk: the contract [`Device`] plus the two
 /// storage-only concerns (trust key, removability) that aren't part of
@@ -137,12 +137,6 @@ fn row_to_record(row: &Row) -> rusqlite::Result<DeviceRecord> {
         public_key: row.get(4)?,
         removable: row.get(5)?,
     })
-}
-
-fn parse_rfc3339(s: &str) -> DateTime<Utc> {
-    DateTime::parse_from_rfc3339(s)
-        .unwrap_or_else(|e| panic!("stored last_seen {s:?} is not RFC 3339: {e}"))
-        .with_timezone(&Utc)
 }
 
 fn host_os_to_str(os: HostOs) -> &'static str {
