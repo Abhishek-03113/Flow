@@ -1048,7 +1048,8 @@
         {
           "id": "H1",
           "title": "Device identity keypair",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "daemon/src/identity/mod.rs: DeviceIdentity wraps an ed25519-dalek SigningKey. load_or_generate(storage) calls P6's IdentityRepo::load_or_generate() for the persisted 64 bytes, then treats the 32-byte private_key column as the SigningKey seed and derives the public key from it via SigningKey::verifying_key() - deliberately not trusting identity_repo's own public_key column, which (per that module's own doc comment, written when P6 landed specifically anticipating this) holds independently-random bytes with no cryptographic relationship to the private key. Scoped to daemon/ rather than core/ (the task's own 'decide scope during implementation' note) since it depends on Storage/IdentityRepo, both daemon-only concrete types - core stays free of a crypto dependency it doesn't otherwise need. Added ed25519-dalek (v3.0.0) as a real dependency, confined to this module. 4 unit tests: a full sign/verify round trip proves a real, mathematically valid keypair (not just 32 arbitrary bytes reinterpreted); a second load on the same storage returns the identical identity; two separate databases generate different identities; a signature from one identity does not verify against a different identity's public key. cargo build/test/clippy clean both with and without --features bluetooth; cargo fmt clean; full workspace test suite green (79 daemon lib tests without bluetooth / 85 with).",
           "dependsOn": ["A6", "P6"],
           "description": "Each daemon instance generates (once, persisted via P6's identity repository) an ed25519 keypair identifying it, via ed25519-dalek. Independent of track G so it can be built/tested in isolation.",
           "deliverables": [
