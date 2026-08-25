@@ -283,7 +283,7 @@
         {
           "id": "T1",
           "title": "TrayPopover main view",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D6", "D7", "F5"],
           "description": "flutter/lib/features/tray/tray_popover.dart: header (app glyph, 'Cross Device' title, status text from DaemonLinkState, status dot), conditional banner row for non-connected link states, 'Using' section (active device card with switch-key chip), 'Devices' section (other devices, tap to switch), 'Pair New Device' row, divider, 'Dashboard' / 'Settings' rows (external-link chevron), muted 'Quit Cross Device' row.",
           "deliverables": ["flutter/lib/features/tray/tray_popover.dart"],
@@ -307,12 +307,13 @@
             "menuRows": "Pair New Device: '+' glyph (accent, 14px) + label. Dashboard/Settings: label + '↗' chevron (opens the app window). Quit: muted text2 label only, no action wired (out of scope for a UI prototype).",
             "sectionLabels": "'Using' and 'Devices', 10.5px weight 700 uppercase letter-spacing 0.07em text3, padding 4px 20px 6px."
           },
-          "commit": null
+          "buildNote": "Built directly as a ConsumerStatefulWidget against the F5 providers from the start (T3's job folded in here) rather than with placeholder data first — the mock/providers already existed, so a throwaway-data pass would've been pure waste. Also added statusOffline/trayGlass tokens to FlowPalette (D1 gaps found while matching TrayPopover.dc.html's own STATE_META/glass tokens exactly) and fixed light theme's statusError, which had wrongly borrowed the theme-varying `danger` value instead of the source's fixed #ff453a.",
+          "commit": "feat(flutter): implement TrayPopover main view and pairing flow (T1-T4)"
         },
         {
           "id": "T2",
           "title": "Tray pairing sub-flow",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["T1"],
           "description": "Pairing view within the same popover (back button + title replaces the main header): searching (spinner + hint), found (candidate rows + Pair button + footer hint), requesting (spinner + 'waiting for approval on {target}'), paired (success checkmark + '{target} connected' + press-switch-key hint).",
           "deliverables": ["flutter/lib/features/tray/tray_pairing_view.dart"],
@@ -325,29 +326,31 @@
             "paired": "centered: 34px green (#30d158) circle with ✓, '{pairTarget} connected', 'Press {switchKey} to switch to it.'",
             "sampleCandidates": "Office Mac Mini, Studio Linux (from F4's mock)"
           },
-          "commit": null
+          "commit": "feat(flutter): implement TrayPopover main view and pairing flow (T1-T4)"
         },
         {
           "id": "T3",
           "title": "Wire TrayPopover to Riverpod",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["T2", "F5"],
           "description": "Replace any placeholder data in T1/T2 with live ref.watch of the F5 stream providers; switch/remove/pair actions call the corresponding DaemonRepository command and surface a toast (D7) on completion, matching the copy in D7's copyExamples.",
           "deliverables": ["flutter/lib/features/tray/tray_popover.dart (updated)"],
           "acceptanceCriteria": ["No mock or repository types imported directly in the widget files — only provider watches.", "Every action shows the exact toast copy from the design (e.g. 'Switched', 'Device removed')."],
           "designContext": { "note": "Toast copy is D7.copyExamples; reuse, don't invent new strings." },
-          "commit": null
+          "buildNote": "Subsumed by T1/T2 — see their buildNote. Verified: tray_popover.dart and tray_pairing_view.dart import only state/repository_providers.dart and state/ui_providers.dart, never data/mock_daemon_repository.dart directly. 'Device removed' toast copy is reserved for the dashboard (A2/A4), which is where remove lives per the design — the tray popover itself never shows a remove action.",
+          "commit": "feat(flutter): implement TrayPopover main view and pairing flow (T1-T4)"
         },
         {
           "id": "T4",
           "title": "Tray popover widget tests",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["T3"],
           "description": "Widget tests overriding repositoryProvider with a MockDaemonRepository (or a test double) to verify: active device renders in the 'Using' card, tapping another device calls switchActiveDevice, banner appears/disappears per link state, pairing flow renders all four stages.",
           "deliverables": ["flutter/test/features/tray/tray_popover_test.dart"],
           "acceptanceCriteria": ["flutter test passes.", "Covers at least one test per DaemonLinkState banner variant."],
           "designContext": { "note": "Test cases enumerate STATE_META from T1." },
-          "commit": null
+          "buildNote": "10 tests, all passing. Found and fixed a real hang: calling repo.watchDevices().first directly from a widget test (subscribing to the Stream.multi-backed channel outside the widget tree, then letting .first's auto-cancel race the FakeAsync test zone) wedged every later tester.pump(duration) call indefinitely. Fixed by reading container.read(devicesProvider).valueOrNull instead — also just the more idiomatic way to assert provider state in a widget test.",
+          "commit": "feat(flutter): implement TrayPopover main view and pairing flow (T1-T4)"
         }
       ]
     },

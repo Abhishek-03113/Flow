@@ -85,4 +85,12 @@ class PlatformChrome {
       HostOs.linux => FlowRadii.linuxWindow,
     };
   }
+
+  double popoverRadius() {
+    return switch (os) {
+      HostOs.macos => FlowRadii.macPopover,
+      HostOs.windows => FlowRadii.windowsPopover,
+      HostOs.linux => FlowRadii.linuxPopover,
+    };
+  }
 }
