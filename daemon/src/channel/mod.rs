@@ -5,4 +5,5 @@
 
 #[cfg(all(target_os = "linux", feature = "bluetooth"))]
 pub mod bluetooth;
+pub mod negotiate;
 pub mod tcp;
