@@ -71,7 +71,7 @@ WARN flow_daemon::hotkey::runner: hotkey runner not started: input capture faile
 INFO flow_daemon: flow-daemon listening on 127.0.0.1:47823
 ```
 
-On a machine with a real capturable device, the switch key (Scroll Lock by default) actually advances the active device — cycling in device-id order starting just after whichever device is currently active, wrapping around, and skipping `Disconnected` devices — with no debounce yet (track F3).
+On a machine with a real capturable device, the switch key (Scroll Lock by default) actually advances the active device — cycling in device-id order starting just after whichever device is currently active, wrapping around, and skipping `Disconnected` devices. A 500ms debounce (`hotkey::debounce::SwitchDebouncer`, track F3) collapses key-repeat or a noisy multi-key combo release into exactly one switch per press — this daemon reads raw key events directly, unlike the Dart mock, whose debounce is a UI-visible concern per `docs/contracts/daemon-ipc.md`'s "Switching" section, not a wire-level one.
 
 ## Persistence
 
