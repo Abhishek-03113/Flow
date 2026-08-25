@@ -53,7 +53,7 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 |---|---|---|---|
 | Linux | real (`todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
 | macOS | real (E4, `CGEventTap`) | real (E5, `CGEventPost`) | cross-compile checked (`cargo check -p flow-platform --target x86_64-apple-darwin` and `--target aarch64-apple-darwin`) plus `clippy`/`fmt` on both; the `CGEvent <-> InputEvent` translation has unit tests in both directions, but they need macOS to execute — this Linux container can only compile-check them, not run them, and there's no Mac hardware here at all — see "Manual verification notes" below |
-| Windows | pending (E6) | pending (E7) | written against the `windows` crate, verified with `cargo check --target <windows-target>` only — no Windows hardware in this development environment |
+| Windows | real (E6, `WH_KEYBOARD_LL`/`WH_MOUSE_LL`) | pending (E7) | cross-compile checked (`cargo check`/`clippy --all-targets` for `flow-platform` on `x86_64-pc-windows-msvc`) plus `fmt`; the hook-struct-to-`InputEvent` translation has unit tests, but no Windows hardware exists here to run them — see "Manual verification notes" below |
 
 Cross-compilation setup instructions land in `todos.json` task J3 once the macOS/Windows adapters exist to check.
 
@@ -140,3 +140,13 @@ cargo test -p flow-platform --target <your-mac-target>   # runs inject_translate
 ```
 
 What to look for on real hardware: injected keypresses/clicks/scrolls/moves are indistinguishable from real input to other applications (the whole point of `CGEventPost`); a posted `MouseEvent::Move` moves the cursor by the given delta from wherever it already was, not to a fixed point; and the E3-style loopback idea (capture -> inject on one machine) would need care to avoid feedback loops, since posted events re-enter the same HID event stream a listen-only tap also observes — unlike Linux, where E3's virtual device is a distinct kernel input node the read loop never taps.
+
+### E6: Windows capture via SetWindowsHookEx
+
+`platform/src/windows/capture.rs` (`WindowsInputCapture`) installs `WH_KEYBOARD_LL` and `WH_MOUSE_LL` hooks on a dedicated thread and pumps that thread's message queue (`GetMessageW`/`DispatchMessageW`), the OS's own requirement for low-level hooks — the callback runs on whichever thread called `SetWindowsHookExW`. Hook procedures are plain `extern "system"` function pointers with no user-data slot (unlike `CGEventTapCreate`'s closure-based callback), so the translator and output channel live in thread-local storage instead, populated before the hooks go up and cleared after the message loop exits; `stop()` posts `WM_QUIT` to that specific thread via `PostThreadMessageW` to unblock it. Translation (`translate.rs`) has one wrinkle the other two platforms don't: the low-level mouse hook reports an *absolute* cursor position (`MSLLHOOKSTRUCT.pt`), not a delta, so `EventTranslator` tracks the last reported position itself and diffs consecutive moves — the first move after `start()` has nothing to diff against and is dropped. No Windows hardware exists in this environment, so beyond `cargo check`/`clippy --all-targets -D warnings`/`cargo fmt` for `flow-platform` on `x86_64-pc-windows-msvc`, nothing here executed; `translate.rs`'s unit tests construct synthetic `KBDLLHOOKSTRUCT`/`MSLLHOOKSTRUCT` values directly (no hook needed) but, like E4/E5's tests, need Windows to actually run:
+
+```sh
+cargo test -p flow-platform --target <your-windows-target>   # runs translate.rs's unit tests for real
+```
+
+What to look for on real hardware: `start()` succeeds without any special permission (unlike macOS's Accessibility gate, low-level hooks need no user consent, though some antivirus/EDR software flags them); typing/clicking/scrolling produces the expected `InputEvent`s, including per-side modifier names (`LSHIFT` vs `RSHIFT`) and a normalized one-unit-per-notch `Scroll`; and `stop()` returns once the posted `WM_QUIT` is processed — near-instant, similar to macOS's `CFRunLoop::stop()` and unlike Linux's idle-poll delay.
