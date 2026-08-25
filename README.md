@@ -79,13 +79,13 @@ Build the daemon workspace with `cargo build --workspace`; see `flutter/README.m
 
 The proof of concept validates the core interaction before investing in full platform complexity:
 
-1. **Connectivity** — establish a reliable connection between two daemons.
-2. **Keyboard** — capture and transmit keyboard events.
-3. **Mouse** — add movement, clicks, and scroll.
-4. **Switching** — implement Scroll Lock-based device switching.
-5. **Flutter control plane** — build the first real UI (status, pairing, switch key, settings).
-6. **Reliability** — stress-test network interruptions, restarts, and rapid switching.
-7. **Native daemon** — harden the POC into the production Rust daemon across macOS, Linux, and Windows.
+1. **Connectivity** — establish a reliable connection between two daemons. ✅ Implemented in the real Rust daemon (`daemon/todos.json` track G): TCP and Bluetooth discovery, medium negotiation, and a real pairing handshake all work end to end — verified by automated tests against real sockets, not yet by running two independently-started `flow-daemon` processes on two physical machines (see `daemon/README.md`'s top status line for exactly what's still standalone plumbing vs. wired into `main.rs`).
+2. **Keyboard** — capture and transmit keyboard events. ✅ Real per-OS capture/injection (`flow-platform`, tracks E1/E4/E6) and a real streaming pipeline (track G8) exist; only Linux capture/injection has run against real hardware in this project's own development environment (no macOS/Windows machine, no `/dev/input` in this container) — see "Platform adapters" in `daemon/README.md`.
+3. **Mouse** — add movement, clicks, and scroll. ✅ Same `InputEvent`/pipeline covers mouse alongside keyboard from the start (`core::protocol::MouseEvent`) — not a separate later addition in the Rust implementation.
+4. **Switching** — implement Scroll Lock-based device switching. ✅ `daemon/todos.json` track F: a configurable switch-key binding (Scroll Lock is one of several presets), detected locally without needing the Flutter UI running.
+5. **Flutter control plane** — build the first real UI (status, pairing, switch key, settings). ✅ Done in an earlier phase — see `flutter/README.md`.
+6. **Reliability** — stress-test network interruptions, restarts, and rapid switching. ◑ Auto-reconnect, structured logging, and per-task panic isolation exist and are tested (`daemon/todos.json` track I); genuine multi-hour/rapid-switching stress testing against real hardware hasn't happened — this environment can't run two real daemons against each other continuously.
+7. **Native daemon** — harden the POC into the production Rust daemon across macOS, Linux, and Windows. ✅ Every task in `daemon/todos.json` (tracks A-J) is done; see `daemon/README.md` for the full, honest account of what's verified how on each OS.
 
 ## Success criteria
 
