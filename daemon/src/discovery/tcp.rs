@@ -15,20 +15,14 @@ use serde::{Deserialize, Serialize};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
+use super::DiscoveredPeer;
+
 /// The well-known UDP port every Flow daemon's discovery listener binds
 /// to in real deployment. Distinct from `flow_core::ipc::IPC_PORT`
 /// (local Flutter<->daemon) and from wherever a peer's own `TcpChannel`
 /// listener ends up bound (advertised inside the announce packet
 /// itself, since it can vary per daemon).
 pub const DISCOVERY_PORT: u16 = 47824;
-
-/// A peer discovered via a broadcast announce.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DiscoveredPeer {
-    pub name: String,
-    pub os: HostOs,
-    pub address: ChannelAddress,
-}
 
 /// The wire shape of one announce packet.
 #[derive(Debug, Clone, Serialize, Deserialize)]
