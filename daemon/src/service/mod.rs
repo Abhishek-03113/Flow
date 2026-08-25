@@ -221,6 +221,7 @@ impl DaemonService {
     /// `sharedContractConstants.mockParityTimings`, but present in the
     /// Dart mock it mirrors; see this module's `buildNote` in
     /// `daemon/todos.json`).
+    #[tracing::instrument(skip(self))]
     pub async fn switch_active_device(&self, device_id: &str) -> Result<(), FlowError> {
         let target_id = DeviceId(device_id.to_string());
         {
@@ -290,6 +291,7 @@ impl DaemonService {
 
     /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is
     /// never removable, matching the mock.
+    #[tracing::instrument(skip(self))]
     pub async fn remove_device(&self, device_id: &str) -> Result<(), FlowError> {
         if device_id == LOCAL_DEVICE_ID {
             return Err(FlowError::DeviceNotRemovable(DeviceId(
@@ -318,6 +320,7 @@ impl DaemonService {
 
     /// Begins searching for pairing candidates. Errors if a pairing
     /// session is already active anywhere but idle.
+    #[tracing::instrument(skip(self))]
     pub async fn start_pairing(&self) -> Result<(), FlowError> {
         {
             let mut state = self.state.write().await;
@@ -340,6 +343,7 @@ impl DaemonService {
     /// Cancels any in-progress pairing session, returning it to idle.
     /// Aborts whatever timer is pending so a stale firing can't resurrect
     /// the cancelled session.
+    #[tracing::instrument(skip(self))]
     pub async fn cancel_pairing(&self) -> Result<(), FlowError> {
         {
             let mut state = self.state.write().await;
@@ -362,6 +366,7 @@ impl DaemonService {
     /// a live discovery (`note_discovered_peer`) is paired with over a
     /// real `Channel` handshake; a mock `candidates_pool` candidate
     /// keeps the original timer-only mock-parity flow.
+    #[tracing::instrument(skip(self))]
     pub async fn pair_with_candidate(&self, candidate_id: &str) -> Result<(), FlowError> {
         let (candidate, address) = {
             let mut state = self.state.write().await;
@@ -716,6 +721,7 @@ impl DaemonService {
     }
 
     /// Sets the switch-key binding. Requires at least one key token.
+    #[tracing::instrument(skip(self))]
     pub async fn set_switch_key(&self, binding: SwitchKeyBinding) -> Result<(), FlowError> {
         if binding.keys.is_empty() {
             return Err(FlowError::InvalidSwitchKey);
@@ -730,12 +736,14 @@ impl DaemonService {
 
     /// Merges `patch` into the current settings (only the `Some` fields
     /// change), matching `FlowSettings::apply_patch`.
+    #[tracing::instrument(skip(self))]
     pub async fn update_settings(&self, patch: SettingsPatch) -> Result<(), FlowError> {
         self.apply_settings_patch(patch).await;
         Ok(())
     }
 
     /// Restores [`FlowSettings::defaults`] exactly.
+    #[tracing::instrument(skip(self))]
     pub async fn reset_settings(&self) -> Result<(), FlowError> {
         let defaults = FlowSettings::defaults();
         {
@@ -764,6 +772,7 @@ impl DaemonService {
     /// Grants the OS input-capture permission. Matches the mock's
     /// always-succeeds behavior — a real OS-level denial is explicit
     /// future work once track E's platform adapters can report one.
+    #[tracing::instrument(skip(self))]
     pub async fn request_permission(&self) -> Result<(), FlowError> {
         let permission = {
             let mut state = self.state.write().await;

@@ -10,6 +10,7 @@ pub mod discovery;
 pub mod hotkey;
 pub mod identity;
 pub mod ipc;
+pub mod logging;
 pub mod pipeline;
 pub mod service;
 pub mod storage;
