@@ -17,14 +17,19 @@ class SwitchKeyBinding {
     SwitchKeyBinding(label: 'Scroll Lock', keys: ['ScrollLock']),
     SwitchKeyBinding(label: 'Pause', keys: ['Pause']),
     SwitchKeyBinding(label: 'F13', keys: ['F13']),
-    SwitchKeyBinding(label: 'Ctrl + Shift + Space', keys: ['Ctrl', 'Shift', 'Space']),
+    SwitchKeyBinding(
+      label: 'Ctrl + Shift + Space',
+      keys: ['Ctrl', 'Shift', 'Space'],
+    ),
   ];
 
   static SwitchKeyBinding get defaultBinding => presets.first;
 
   @override
   bool operator ==(Object other) {
-    if (other is! SwitchKeyBinding || other.label != label || other.keys.length != keys.length) {
+    if (other is! SwitchKeyBinding ||
+        other.label != label ||
+        other.keys.length != keys.length) {
       return false;
     }
     for (var i = 0; i < keys.length; i++) {

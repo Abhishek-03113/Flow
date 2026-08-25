@@ -45,7 +45,8 @@ class FlowSettings {
       launchAtLogin: patch.launchAtLogin ?? launchAtLogin,
       showTrayIcon: patch.showTrayIcon ?? showTrayIcon,
       autoReconnect: patch.autoReconnect ?? autoReconnect,
-      autoConnectPairedDevices: patch.autoConnectPairedDevices ?? autoConnectPairedDevices,
+      autoConnectPairedDevices:
+          patch.autoConnectPairedDevices ?? autoConnectPairedDevices,
       shareKeyboard: patch.shareKeyboard ?? shareKeyboard,
       shareMouse: patch.shareMouse ?? shareMouse,
       debugLogging: patch.debugLogging ?? debugLogging,
