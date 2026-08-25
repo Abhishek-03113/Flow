@@ -1,5 +1,8 @@
 import 'dart:async';
+import 'dart:convert';
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../domain/daemon_command_exception.dart';
@@ -10,6 +13,7 @@ import '../domain/pairing.dart';
 import '../domain/permission_status.dart';
 import '../domain/settings.dart';
 import '../domain/switch_key_binding.dart';
+import 'ipc_codec.dart';
 import 'ipc_constants.dart';
 import 'replay_channel.dart';
 
@@ -19,13 +23,22 @@ import 'replay_channel.dart';
 /// interface — see `docs/contracts/README.md` ground rule 2. The UI never
 /// imports this class directly, only through `daemonRepositoryProvider`.
 ///
-/// Connects on construction; [dispose] closes the socket. Message parsing
-/// (state events -> the five [watch] streams) is track D2's job, and the
-/// nine commands are track D3's — this class is the connection-lifecycle
-/// skeleton both build on.
+/// Connects on construction; [dispose] closes the socket.
 class IpcDaemonRepository implements DaemonRepository {
-  IpcDaemonRepository({Uri? uri})
-    : _channel = WebSocketChannel.connect(uri ?? flowDaemonIpcUri()) {
+  /// Connects to `flow-daemon` at [uri] (defaults to
+  /// [flowDaemonIpcUri]).
+  factory IpcDaemonRepository({Uri? uri}) {
+    return IpcDaemonRepository.withChannel(
+      WebSocketChannel.connect(uri ?? flowDaemonIpcUri()),
+    );
+  }
+
+  /// Drives the repository over an already-constructed channel instead of
+  /// a real WebSocket — e.g. an in-memory `StreamChannelController` pair
+  /// in tests, so the event-parsing/replay logic can be exercised without
+  /// a live `flow-daemon` process.
+  @visibleForTesting
+  IpcDaemonRepository.withChannel(this._channel) {
     _subscription = _channel.stream.listen(
       _handleMessage,
       onError: _handleTransportError,
@@ -33,7 +46,7 @@ class IpcDaemonRepository implements DaemonRepository {
     );
   }
 
-  final WebSocketChannel _channel;
+  final StreamChannel<dynamic> _channel;
   late final StreamSubscription<dynamic> _subscription;
 
   /// Pending command replies, keyed by request id — resolved by
@@ -47,7 +60,35 @@ class IpcDaemonRepository implements DaemonRepository {
   final _permission = ReplayChannel<PermissionStatus>();
 
   void _handleMessage(dynamic data) {
-    // Event frame parsing (D2) and ack/err resolution (D3) land here.
+    final json = jsonDecode(data as String) as Map<String, dynamic>;
+    final event = json['event'];
+    if (event is String) {
+      _handleEvent(event, json['payload']);
+      return;
+    }
+    // Ack/err resolution by request id lands in track D3.
+  }
+
+  /// Routes one `event` frame by name into its matching [ReplayChannel]
+  /// — the Dart-side realization of `daemon-ipc.md`'s "every `watch*`
+  /// stream corresponds to one event name" rule.
+  void _handleEvent(String event, dynamic payload) {
+    switch (event) {
+      case 'devices_changed':
+        _devices.emit(devicesFromJson(payload));
+      case 'link_state_changed':
+        _linkState.emit(daemonLinkStateFromJson(payload as String));
+      case 'pairing_session_changed':
+        _pairingSession.emit(
+          pairingSessionFromJson(payload as Map<String, dynamic>),
+        );
+      case 'settings_changed':
+        _settings.emit(flowSettingsFromJson(payload as Map<String, dynamic>));
+      case 'permission_changed':
+        _permission.emit(
+          permissionStatusFromJson(payload as Map<String, dynamic>),
+        );
+    }
   }
 
   void _handleTransportError(Object error, StackTrace stackTrace) {
