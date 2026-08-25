@@ -158,24 +158,24 @@
         {
           "id": "F5",
           "title": "Riverpod state wiring",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F4"],
           "description": "Add flutter_riverpod. flutter/lib/state/: a repositoryProvider (Provider<DaemonRepository>, default MockDaemonRepository, overridable in tests and later for a real IPC client), StreamProviders for devices/linkState/pairingSession/settings/permission, and any small transient UI-only state (theme mode override, tray-open bool) as separate providers so daemon-derived state and pure-UI state never live in the same notifier.",
           "deliverables": ["flutter/lib/state/repository_providers.dart", "flutter/lib/state/ui_providers.dart"],
           "acceptanceCriteria": ["Widgets never construct MockDaemonRepository directly, only via ref.watch(repositoryProvider) or the derived stream providers.", "`flutter analyze` clean."],
           "designContext": { "note": "Pure wiring task, no new design context beyond F1-F4." },
-          "commit": null
+          "commit": "feat(flutter): wire Riverpod providers over DaemonRepository (F5, F6)"
         },
         {
           "id": "F6",
           "title": "Project dependencies and lint baseline",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F5"],
           "description": "Finalize pubspec.yaml (flutter_riverpod, flutter_lints), confirm `flutter pub get`, `flutter analyze`, and `flutter test` all run clean on the foundation layer before UI work starts on top of it.",
           "deliverables": ["flutter/pubspec.yaml"],
           "acceptanceCriteria": ["flutter analyze: 0 issues.", "flutter test: passes (even if only placeholder/domain tests exist so far)."],
           "designContext": { "note": "No design context — tooling task." },
-          "commit": null
+          "commit": "feat(flutter): wire Riverpod providers over DaemonRepository (F5, F6)"
         }
       ]
     },
