@@ -52,7 +52,7 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 | Platform | Capture | Injection | Verified how |
 |---|---|---|---|
 | Linux | real (`todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
-| macOS | real (E4, `CGEventTap`) | pending (E5) | cross-compile checked (`cargo check -p flow-platform --target x86_64-apple-darwin`) plus `clippy`/`fmt`; the `CGEvent -> InputEvent` translation has unit tests, but they need macOS to execute — this Linux container can only compile-check them, not run them, and there's no Mac hardware here at all — see "Manual verification notes" below |
+| macOS | real (E4, `CGEventTap`) | real (E5, `CGEventPost`) | cross-compile checked (`cargo check -p flow-platform --target x86_64-apple-darwin` and `--target aarch64-apple-darwin`) plus `clippy`/`fmt` on both; the `CGEvent <-> InputEvent` translation has unit tests in both directions, but they need macOS to execute — this Linux container can only compile-check them, not run them, and there's no Mac hardware here at all — see "Manual verification notes" below |
 | Windows | pending (E6) | pending (E7) | written against the `windows` crate, verified with `cargo check --target <windows-target>` only — no Windows hardware in this development environment |
 
 Cross-compilation setup instructions land in `todos.json` task J3 once the macOS/Windows adapters exist to check.
@@ -130,3 +130,13 @@ cargo test -p flow-platform --target <your-mac-target>   # runs translate.rs's u
 ```
 
 **Requires the Accessibility permission** (System Settings > Privacy & Security > Accessibility) for whatever process calls `MacosInputCapture::start()` — `CGEventTapCreate` fails silently (a null tap, not a loud error) without it, surfaced here as `MacosCaptureError::TapCreationFailed`. What to look for on real hardware: `start()` returns `Ok(())` only once that permission is granted; typing/clicking/scrolling produces the expected `InputEvent`s on the channel, including the correct `modifiers` list for chorded keys; and `stop()` returns promptly (`CFRunLoop::stop()` unblocks `CFRunLoop::run_current()` on the capture thread almost immediately, unlike E1's idle-poll delay).
+
+### E5: macOS injection via CGEventPost
+
+`platform/src/macos/injector.rs` (`MacosInputInjector`) posts synthetic `CGEvent`s built from incoming `InputEvent`s via `CGEventPost`, through the pure(-ish) `inject_translate::to_cg_event` function (the reverse of E4's `EventTranslator`; "pure-ish" since building a `CGEvent` is a real Core Graphics call, not just struct construction, but it needs no tap or permission). One notable design choice: `MouseEvent::Move` carries a relative delta, but `CGEvent::new_mouse_event` wants an absolute position — this daemon doesn't track the cursor's actual location, so the posted event is anchored at wherever the cursor currently is (read via a throwaway `CGEvent::new(source).location()`) with the delta layered on top via the `MOUSE_EVENT_DELTA_X`/`Y` fields, which `CGEventPost` honors for relative motion. Verified with `cargo check -p flow-platform --target x86_64-apple-darwin` and `--target aarch64-apple-darwin` (both `cargo check` and `clippy --all-targets`, per E5's acceptance criteria specifying `aarch64-apple-darwin`), plus `cargo fmt` — no macOS hardware exists here, so `inject_translate.rs`'s 7 unit tests (constructing `InputEvent`s and asserting on the resulting `CGEvent`'s type/fields, the same style as E4's tests) have never actually executed:
+
+```sh
+cargo test -p flow-platform --target <your-mac-target>   # runs inject_translate.rs's unit tests for real
+```
+
+What to look for on real hardware: injected keypresses/clicks/scrolls/moves are indistinguishable from real input to other applications (the whole point of `CGEventPost`); a posted `MouseEvent::Move` moves the cursor by the given delta from wherever it already was, not to a fixed point; and the E3-style loopback idea (capture -> inject on one machine) would need care to avoid feedback loops, since posted events re-enter the same HID event stream a listen-only tap also observes — unlike Linux, where E3's virtual device is a distinct kernel input node the read loop never taps.

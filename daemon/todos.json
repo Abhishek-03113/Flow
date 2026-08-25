@@ -779,7 +779,7 @@
         {
           "id": "E5",
           "title": "macOS injection via CGEventPost",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["E4"],
           "description": "MacosInputInjector posting synthetic CGEvents built from incoming InputEvent.",
           "deliverables": [
@@ -790,7 +790,8 @@
             "translation logic unit tested the same way as E4"
           ],
           "specContext": "platform/src/macos/mod.rs doc comment: 'injection will post events via CGEventPost'.",
-          "commit": "feat(platform): implement macOS input injection via CGEventPost"
+          "commit": "feat(platform): implement macOS input injection via CGEventPost",
+          "buildNote": "MacosInputInjector::new() -> Result<Self, MacosInjectError> opens one CGEventSource (HIDSystemState) reused across inject() calls; inject() posts via CGEventPost(HID) and returns Ok(()) even when translation yields nothing (an unrecognized key name), matching E2's silent-no-op semantics for untranslatable events. Pure(-ish) translation lives in inject_translate::to_cg_event, the reverse of E4's EventTranslator: keyboard events round-trip key names back to CGKeyCode via a reversed match table (code_for_name) mirroring translate::key_name's cases plus its '0x..' hex fallback parsed via u16::from_str_radix; mouse buttons map to their dedicated Left/RightMouseDown/Up types or OtherMouseDown/Up+MOUSE_EVENT_BUTTON_NUMBER=2 for middle, matching what translate.rs reads back; scroll maps dy/dx to CGEvent::new_scroll_event's two wheel axes (added core-graphics' 'highsierra' feature in E4 already covers this). The one real design choice: MouseEvent::Move is a relative delta but CGEvent::new_mouse_event wants an absolute position, and this daemon tracks no cursor state of its own, so move_cg_event anchors the event at the cursor's actual current location (read via a throwaway CGEvent::new(source).location()) and layers the delta on top via the MOUSE_EVENT_DELTA_X/Y fields, which CGEventPost honors for relative motion - documented in both the module doc comment and daemon/README.md rather than left implicit. 7 unit tests build InputEvents and assert on the resulting CGEvent's get_type()/field values (CGEventType lacks PartialEq, so tests compare `as u32` rather than deriving it themselves). Verified with `cargo check`/`clippy --all-targets -D warnings`/`cargo fmt` on both `x86_64-apple-darwin` and `aarch64-apple-darwin` (this task's stated target) for flow-platform specifically, all clean; no macOS hardware exists in this environment, so none of this executed beyond compiling - documented in daemon/README.md's new 'E5' section."
         },
         {
           "id": "E6",
