@@ -612,7 +612,8 @@
         {
           "id": "D1",
           "title": "web_socket_channel dependency + IpcDaemonRepository skeleton",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "This session installed the Flutter SDK (3.47.1 stable) into the remote environment specifically to verify D-track work with real flutter analyze/flutter test/dart format runs, matching the same tooling discipline the Rust tracks had (cargo build/test/clippy/fmt) — this wasn't available at session start. Extracted MockDaemonRepository's private _StateChannel<T> into a shared, public flutter/lib/data/replay_channel.dart (ReplayChannel<T>), per the 'reuse before writing new' instruction — it's exactly the late-subscriber-replay primitive IpcDaemonRepository's watch* streams need too. Made the internal value nullable (T?) to support IPC's case (no current value until the first Event frame arrives, verified by MockDaemonRepository never actually hitting that path since it always seeds a value at construction) while keeping the public `T get value` getter non-nullable (cast) so all ~19 existing call sites in mock_daemon_repository.dart needed zero changes — verified by running the existing 49 Flutter tests unchanged after the refactor, before touching the new IPC file at all. The 9 command methods currently throw UnimplementedError (wired in D3); watch* methods return real (but not-yet-fed) ReplayChannel streams. Manually verified (temp script under flutter/tool/, deleted after, git status confirms nothing left behind): constructing IpcDaemonRepository against a real running flow-daemon binary connects without throwing and disposes cleanly.",
           "dependsOn": ["C6"],
           "description": "flutter/lib/data/ipc_daemon_repository.dart: class IpcDaemonRepository implements DaemonRepository connecting to ws://127.0.0.1:47823 (port sourced from a shared constant, not a magic number duplicated on both sides).",
           "deliverables": [

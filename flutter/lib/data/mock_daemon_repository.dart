@@ -8,44 +8,7 @@ import '../domain/pairing.dart';
 import '../domain/permission_status.dart';
 import '../domain/settings.dart';
 import '../domain/switch_key_binding.dart';
-
-/// Broadcasts a value to every listener and replays the current value to
-/// each new subscriber, so `watch()` doubles as the initial fetch — see
-/// `docs/contracts/daemon-ipc.md`'s "connecting to the channel and
-/// subscribing is the initial fetch" rule.
-///
-/// Built on [Stream.multi] rather than an `async*` generator wrapping a
-/// broadcast stream: `async*` needs at least one microtask before its
-/// `yield*` establishes the nested subscription, which can silently drop
-/// an [emit] that lands in that gap. `Stream.multi`'s listener callback
-/// runs synchronously on `.listen()`, so the live subscription is already
-/// in place by the time this call returns — no dropped events.
-class _StateChannel<T> {
-  _StateChannel(this._value);
-
-  T _value;
-  final _controller = StreamController<T>.broadcast();
-
-  T get value => _value;
-
-  void emit(T value) {
-    _value = value;
-    _controller.add(value);
-  }
-
-  Stream<T> watch() {
-    return Stream<T>.multi((controller) {
-      controller.add(_value);
-      final sub = _controller.stream.listen(
-        controller.add,
-        onError: controller.addError,
-      );
-      controller.onCancel = sub.cancel;
-    });
-  }
-
-  void close() => _controller.close();
-}
+import 'replay_channel.dart';
 
 /// In-memory stand-in for the daemon, implementing [DaemonRepository]
 /// exactly as specified in `docs/contracts/daemon-ipc.md`. This is the
@@ -60,11 +23,11 @@ class _StateChannel<T> {
 /// schedule.
 class MockDaemonRepository implements DaemonRepository {
   MockDaemonRepository() {
-    _devices = _StateChannel<List<Device>>(_seedDevices());
-    _linkState = _StateChannel(DaemonLinkState.connected);
-    _pairingSession = _StateChannel(PairingSession.idle);
-    _settings = _StateChannel(FlowSettings.defaults());
-    _permission = _StateChannel(
+    _devices = ReplayChannel<List<Device>>(_seedDevices());
+    _linkState = ReplayChannel(DaemonLinkState.connected);
+    _pairingSession = ReplayChannel(PairingSession.idle);
+    _settings = ReplayChannel(FlowSettings.defaults());
+    _permission = ReplayChannel(
       const PermissionStatus(name: 'Accessibility access', granted: false),
     );
   }
@@ -90,11 +53,11 @@ class MockDaemonRepository implements DaemonRepository {
   static const _pairedAutoIdleDuration = Duration(milliseconds: 1600);
   static const _switchDebounce = Duration(milliseconds: 400);
 
-  late final _StateChannel<List<Device>> _devices;
-  late final _StateChannel<DaemonLinkState> _linkState;
-  late final _StateChannel<PairingSession> _pairingSession;
-  late final _StateChannel<FlowSettings> _settings;
-  late final _StateChannel<PermissionStatus> _permission;
+  late final ReplayChannel<List<Device>> _devices;
+  late final ReplayChannel<DaemonLinkState> _linkState;
+  late final ReplayChannel<PairingSession> _pairingSession;
+  late final ReplayChannel<FlowSettings> _settings;
+  late final ReplayChannel<PermissionStatus> _permission;
 
   final _timers = <Timer>[];
 
