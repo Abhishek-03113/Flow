@@ -3,4 +3,6 @@
 //! layer, distinct from `crate::ipc` (the local Flutter<->daemon
 //! boundary).
 
+#[cfg(all(target_os = "linux", feature = "bluetooth"))]
+pub mod bluetooth;
 pub mod tcp;
