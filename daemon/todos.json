@@ -59,6 +59,18 @@
       "note": "daemon-ipc.md explicitly says these are NOT part of the contract for a real daemon (real latency depends on network + human accept/reject) — the mock-parity service (track B) matches them anyway so swapping the Flutter provider from mock to real-daemon-over-IPC is visually seamless during development, not because a real daemon must hit these numbers in production."
     }
   },
+  "persistenceModel": {
+    "library": "rusqlite (bundled feature — statically-linked SQLite, no system libsqlite3 dependency needed on the macOS/Windows cross-compile targets) + rusqlite_migration for versioned schema",
+    "concurrencyModel": "single Connection wrapped in Arc<tokio::sync::Mutex<_>>, every query run inside tokio::task::spawn_blocking since rusqlite is synchronous",
+    "dbFile": "one SQLite file under the platform data dir (via the directories crate); tests always use Connection::open_in_memory(), never the real filesystem",
+    "tables": {
+      "settings": "single row, one column per FlowSettings field, switch_key as label + JSON token array",
+      "devices": "paired devices — id/name/os/last_seen/public_key/removable. Doubles as the trust store: a device's public_key column IS its trust record, no separate trust file. DeviceState is never a column — always runtime-derived, starting Disconnected on load until a live connection re-establishes it.",
+      "connection_history": "append-only event log (device_id, event_type, occurred_at, detail), populated by observing the DaemonService watch-channel event bus (track P5) rather than by instrumenting every command handler",
+      "identity": "single row, this daemon's own ed25519 keypair (public_key, private_key), generated once and reused across restarts"
+    },
+    "origin": "User requirement: 'We'll need to maintain the user settings somewhere and maintain the connection history and things like that somewhere instead of deriving every run or keeping in memory.' Track P (persistence-storage) implements this and sits right after core-contract-parity — settings/device persistence is foundational to the very first working DaemonService (B1), not a late reliability-track afterthought as originally drafted."
+  },
   "tracks": [
     {
       "id": "A",
@@ -196,6 +208,117 @@
       ]
     },
     {
+      "id": "P",
+      "title": "persistence-storage",
+      "goal": "A local SQLite-backed store for everything that must outlive a single daemon run — settings, paired devices (doubling as the trust store), this device's own identity keypair, and a connection history log — so state stops being 'derive it every run or keep it only in memory' and starts being a real durable record. Positioned right after core-contract-parity and ahead of the command service so the very first working DaemonService loads from here instead of always reseeding in memory.",
+      "tasks": [
+        {
+          "id": "P1",
+          "title": "SQLite connection layer",
+          "status": "pending",
+          "dependsOn": ["A7"],
+          "description": "Add rusqlite (bundled feature — statically-linked SQLite, no system libsqlite3 dependency, matters for the cross-compiled macOS/Windows checks in tracks E/J3) to flow-daemon. A single-connection Storage type wrapping rusqlite::Connection in Arc<tokio::sync::Mutex<_>>, with every query executed inside tokio::task::spawn_blocking since rusqlite is synchronous. Production opens the DB file under the platform data dir (directories crate); tests open ':memory:' so this and every later persistence test never touches the real filesystem.",
+          "deliverables": [
+            "rusqlite (bundled) + rusqlite_migration added to daemon/Cargo.toml",
+            "daemon/src/storage/mod.rs: struct Storage { conn: Arc<Mutex<Connection>> }, Storage::open(path) / Storage::open_in_memory() constructors",
+            "PRAGMA journal_mode=WAL and PRAGMA foreign_keys=ON set on open"
+          ],
+          "acceptanceCriteria": [
+            "Storage::open_in_memory() usable from a #[tokio::test] without touching disk",
+            "N concurrent tasks writing through spawn_blocking + the shared Mutex don't deadlock or panic under a basic concurrency test"
+          ],
+          "specContext": "User requirement (this task's origin): 'We'll need to maintain the user settings somewhere and maintain the connection history and things like that somewhere instead of deriving every run or keeping in memory.'",
+          "commit": "feat(daemon): add SQLite connection layer (rusqlite, bundled)"
+        },
+        {
+          "id": "P2",
+          "title": "Schema and migrations",
+          "status": "pending",
+          "dependsOn": ["P1"],
+          "description": "Versioned schema via rusqlite_migration: settings (single row), devices (paired devices + trust public key), connection_history (append-only event log), identity (this daemon's own keypair, one row). Migrations run automatically on Storage::open/open_in_memory — never a manual 'run migrate' step.",
+          "deliverables": [
+            "daemon/src/storage/schema.rs (or migrations/*.sql) defining the 4 tables",
+            "devices: id TEXT PRIMARY KEY, name TEXT, os TEXT, last_seen TEXT (ISO 8601), public_key BLOB NULL, removable INTEGER NOT NULL DEFAULT 1",
+            "connection_history: id INTEGER PRIMARY KEY AUTOINCREMENT, device_id TEXT NOT NULL, event_type TEXT NOT NULL, occurred_at TEXT NOT NULL, detail TEXT NULL, indexed on (device_id, occurred_at)",
+            "settings: single row (id INTEGER PRIMARY KEY CHECK (id = 1)), one column per FlowSettings field, switch_key stored as label + JSON-encoded token array",
+            "identity: single row (id INTEGER PRIMARY KEY CHECK (id = 1)), public_key BLOB, private_key BLOB"
+          ],
+          "acceptanceCriteria": [
+            "opening a fresh :memory: DB applies all migrations and all 4 tables exist",
+            "re-opening an already-migrated DB is a no-op (idempotent)"
+          ],
+          "specContext": "Consolidates what would otherwise be 3 separate ad-hoc JSON files (settings, trust store, identity) into one schema, so they can't drift out of sync with each other.",
+          "commit": "feat(daemon): add SQLite schema and migrations for settings/devices/history/identity"
+        },
+        {
+          "id": "P3",
+          "title": "Settings repository",
+          "status": "pending",
+          "dependsOn": ["P2"],
+          "description": "SettingsRepo::load(&self) -> FlowSettings returns FlowSettings::defaults() and inserts the default row if the table is empty (first-run bootstrap); SettingsRepo::save(&self, &FlowSettings) persists it. Track B's DaemonService loads from here at startup and writes here on every settings_changed, instead of always reconstructing defaults in memory.",
+          "deliverables": [
+            "daemon/src/storage/settings_repo.rs"
+          ],
+          "acceptanceCriteria": [
+            "load() on an empty DB returns FlowSettings::defaults() and persists it",
+            "save() then a fresh load() (simulating a restart) returns the saved value, not the default"
+          ],
+          "specContext": "data-model.md FlowSettings.",
+          "commit": "feat(daemon): add settings repository backed by SQLite"
+        },
+        {
+          "id": "P4",
+          "title": "Device + trust repository",
+          "status": "pending",
+          "dependsOn": ["P2"],
+          "description": "DeviceRepo covers both paired-device storage and trust lookups in one place, since a paired device's public key IS its trust entry — no separate trust store. list()/upsert()/remove()/find_by_id() plus is_trusted(public_key) -> bool for track H's pairing gate.",
+          "deliverables": [
+            "daemon/src/storage/device_repo.rs",
+            "upsert persists id/name/os/last_seen/public_key/removable; DeviceState itself is NOT a column — always runtime/derived (a device loaded from disk starts as Disconnected until a live connection re-establishes it, never resurrected as Active from a stale row)"
+          ],
+          "acceptanceCriteria": [
+            "a device upserted then reloaded (simulating a restart) round-trips every field except state",
+            "is_trusted() returns true only for a public key that matches a stored device row"
+          ],
+          "specContext": "User requirement: paired-device/trust data must survive a restart instead of resetting to the mock's 3-device seed every time flow-daemon starts.",
+          "commit": "feat(daemon): add device + trust repository backed by SQLite"
+        },
+        {
+          "id": "P5",
+          "title": "Connection history logger",
+          "status": "pending",
+          "dependsOn": ["P2", "B2"],
+          "description": "A background task subscribing to DaemonService's devices/pairing_session/link_state watch channels (B2), diffing each new value against the last-seen one, and appending a connection_history row for meaningful transitions (device state change, pairing session reaching paired/failed, link state change) — observing the existing event bus rather than requiring every command handler in B3-B6/F2/G3 to remember to log history explicitly.",
+          "deliverables": [
+            "daemon/src/storage/history_logger.rs: a spawned task wired up in main.rs (track C4) alongside the IPC listener and hotkey runner",
+            "ConnectionHistoryRepo::append(...) and ::recent(device_id, limit) query methods"
+          ],
+          "acceptanceCriteria": [
+            "switching the active device (B3) produces exactly one connection_history row without B3 itself being touched",
+            "a completed pairing (B4) produces a paired row; a failed one produces a pairing_failed row",
+            "integration test drives the service through a few transitions and asserts the resulting history rows, using an in-memory DB"
+          ],
+          "specContext": "User requirement: 'maintain the connection history... instead of deriving every run or keeping in memory.' Deliberately decoupled from the command handlers so no existing track B/F/G task needs to change.",
+          "commit": "feat(daemon): add connection history logger observing the DaemonService event bus"
+        },
+        {
+          "id": "P6",
+          "title": "Identity repository",
+          "status": "pending",
+          "dependsOn": ["P2"],
+          "description": "IdentityRepo::load_or_generate() -> Keypair backing track H1 — generates and persists an ed25519 keypair into the identity table on first run, loads the existing one on every subsequent run. Replaces H1's original plain-file storage plan.",
+          "deliverables": [
+            "daemon/src/storage/identity_repo.rs"
+          ],
+          "acceptanceCriteria": [
+            "first call on an empty DB generates and persists a keypair; a second call (fresh Storage handle, same DB file) returns the identical keypair"
+          ],
+          "specContext": "vision.md §17 'Trusted-device identities' — now durable across restarts instead of the process losing its identity every run.",
+          "commit": "feat(daemon): add identity repository for the daemon's persisted keypair"
+        }
+      ]
+    },
+    {
       "id": "B",
       "title": "daemon-command-service",
       "goal": "An in-memory DaemonService in flow-daemon that behaviorally matches MockDaemonRepository exactly (same seed data, same state machine, same timings) — the Rust-side equivalent of the Dart mock. This is the track that proves the contract is implementable in Rust before any real OS input capture or networking exists, and becomes the real backend once track C exposes it over IPC.",
@@ -204,19 +327,20 @@
           "id": "B1",
           "title": "ServiceState scaffold",
           "status": "pending",
-          "dependsOn": ["A7"],
-          "description": "New daemon/src/service/mod.rs. ServiceState holds all 5 watched slices (devices, link_state, pairing_session, settings, permission) seeded per sharedContractConstants.mockParitySeedData, replacing/extending core::state::AppState (which today only has a bare devices map + active_device) with the full contract shape.",
+          "dependsOn": ["A7", "P3", "P4"],
+          "description": "New daemon/src/service/mod.rs. ServiceState holds all 5 watched slices (devices, link_state, pairing_session, settings, permission). Devices and settings are load-or-seed: on a fresh (empty) database this looks identical to sharedContractConstants.mockParitySeedData via P3/P4's first-run bootstrap; on a subsequent run it loads whatever was actually persisted. Replaces/extends core::state::AppState (which today only has a bare devices map + active_device) with the full contract shape.",
           "deliverables": [
             "daemon/src/service/mod.rs: struct ServiceState { devices: HashMap<DeviceId, Device>, link_state: DaemonLinkState, pairing_session: PairingSession, settings: FlowSettings, permission: PermissionStatus, candidates_pool: Vec<PairingCandidate> }",
-            "ServiceState::seeded() constructing the exact 3-device/2-candidate mock parity data",
+            "ServiceState::load_or_seed(storage: &Storage) reading via P3/P4's repositories, falling back to the exact 3-device/2-candidate mock parity data only when the DB is empty",
             "core::state::AppState either absorbed into ServiceState or kept minimal and wrapped — decide during implementation, note the choice in buildNote"
           ],
           "acceptanceCriteria": [
-            "ServiceState::seeded().devices.len() == 3, local device (\"d1\") flagged not-removable",
-            "cargo test -p flow-daemon has a seed-data assertion test"
+            "ServiceState::load_or_seed() against a fresh :memory: DB has devices.len() == 3, local device (\"d1\") flagged not-removable — matching the old seeded() behavior exactly",
+            "ServiceState::load_or_seed() against a DB with a previously-saved device list returns that list instead, proving persistence actually took effect",
+            "cargo test -p flow-daemon covers both cases"
           ],
-          "specContext": "sharedContractConstants.mockParitySeedData; docs/contracts/README.md ground rule 2: 'MockDaemonRepository must implement the interface exactly, including timing behavior that's part of the contract.'",
-          "commit": "feat(daemon): add ServiceState with mock-parity seed data"
+          "specContext": "sharedContractConstants.mockParitySeedData (first-run only, now); docs/contracts/README.md ground rule 2; user requirement to stop deriving state every run.",
+          "commit": "feat(daemon): add ServiceState with SQLite-backed load-or-seed startup"
         },
         {
           "id": "B2",
@@ -751,11 +875,12 @@
           "id": "G3",
           "title": "Real pairing over the network",
           "status": "pending",
-          "dependsOn": ["G1", "B4"],
-          "description": "Extend track B's PairingSession machine so start_pairing's candidate list is populated from G1's live discoveries (replacing the 2 hardcoded mock candidates once a real peer is on the network — keep the hardcoded fallback behind a feature flag or dev-mode switch so the mock-parity tests from B7 keep working standalone), and pair_with_candidate performs the real PairingRequest/PairingDecision handshake (core::pairing, currently unused scaffolding) over a transient connection to the candidate's address.",
+          "dependsOn": ["G1", "B4", "P4"],
+          "description": "Extend track B's PairingSession machine so start_pairing's candidate list is populated from G1's live discoveries (replacing the 2 hardcoded mock candidates once a real peer is on the network — keep the hardcoded fallback behind a feature flag or dev-mode switch so the mock-parity tests from B7 keep working standalone), and pair_with_candidate performs the real PairingRequest/PairingDecision handshake (core::pairing, currently unused scaffolding) over a transient connection to the candidate's address. On success, the paired device (id/name/os/public_key) is upserted via P4's DeviceRepo, not just added to in-memory ServiceState — this is what makes H2's trust gate recognize it on a future connection.",
           "deliverables": [
             "DaemonService gains a real-vs-seeded candidate source, gated so B7's tests are unaffected",
-            "the accept/reject handshake using core::pairing::{PairingRequest, PairingDecision} sent/received over G2's transport"
+            "the accept/reject handshake using core::pairing::{PairingRequest, PairingDecision} sent/received over G2's transport",
+            "a successful handshake calls DeviceRepo::upsert (P4) so the pairing survives a restart"
           ],
           "acceptanceCriteria": [
             "two local daemon instances complete a real pair_with_candidate handshake end-to-end in an integration test, ending with both sides' devices list containing the other"
@@ -790,34 +915,34 @@
           "id": "H1",
           "title": "Device identity keypair",
           "status": "pending",
-          "dependsOn": ["A6"],
-          "description": "Each daemon instance generates (once, persisted) an ed25519 keypair identifying it, via ed25519-dalek. Independent of track G so it can be built/tested in isolation.",
+          "dependsOn": ["A6", "P6"],
+          "description": "Each daemon instance generates (once, persisted via P6's identity repository) an ed25519 keypair identifying it, via ed25519-dalek. Independent of track G so it can be built/tested in isolation.",
           "deliverables": [
-            "core/src/identity/mod.rs or daemon/src/identity/mod.rs (decide scope during implementation) generating/loading a keypair from disk",
+            "core/src/identity/mod.rs or daemon/src/identity/mod.rs (decide scope during implementation): a Keypair wrapper type, generation logic, calling into P6's IdentityRepo for storage",
             "ed25519-dalek added to the relevant Cargo.toml"
           ],
           "acceptanceCriteria": [
-            "first run generates and persists a keypair; subsequent runs load the same one",
-            "unit test covers the generate/persist/reload round trip using a temp dir"
+            "first run generates and persists a keypair via P6; subsequent runs load the same one",
+            "unit test covers the generate/persist/reload round trip using an in-memory DB"
           ],
           "specContext": "vision.md §17: 'The eventual system should support: Device authentication... Trusted-device identities.'",
-          "commit": "feat(daemon): add persisted device identity keypair"
+          "commit": "feat(daemon): add device identity keypair, persisted via SQLite"
         },
         {
           "id": "H2",
-          "title": "Trust store",
+          "title": "Pairing trust gate",
           "status": "pending",
-          "dependsOn": ["H1"],
-          "description": "A persisted list of paired devices' public keys + names, populated when track G3's pairing handshake completes successfully, consulted before accepting an incoming pairing/connection from an already-known device.",
+          "dependsOn": ["H1", "P4"],
+          "description": "Consult P4's device repository (is_trusted(public_key)) before accepting an incoming pairing/connection from an already-known device — no separate trust store, since a paired device's row and its public key column already are the trust record. G3's pairing handshake calls DeviceRepo::upsert on success, which is what makes a device trusted going forward.",
           "deliverables": [
-            "TrustStore type with add/remove/lookup by public key, backed by a JSON file under the platform config dir (directories crate)"
+            "a connection-accept gate function/module wired into G's networking layer, calling P4's is_trusted()"
           ],
           "acceptanceCriteria": [
-            "a device pubkey added to the store persists across a reload",
-            "unit tests cover add/remove/lookup"
+            "a device whose public key was upserted via P4 is reported trusted; an unknown key is not",
+            "unit tests cover both cases against an in-memory DB"
           ],
           "specContext": "vision.md §16: 'Once accepted, the devices become trusted.'",
-          "commit": "feat(daemon): add persisted trust store for paired device identities"
+          "commit": "feat(daemon): add pairing trust gate backed by the device repository"
         },
         {
           "id": "H3",
@@ -857,30 +982,13 @@
     {
       "id": "I",
       "title": "reliability-persistence",
-      "goal": "Make the daemon survive restarts, network blips, and its own crashes gracefully — vision.md's 'invisible by default' principle applied to failure modes, not just the happy path.",
+      "goal": "Make the daemon survive restarts, network blips, and its own crashes gracefully — vision.md's 'invisible by default' principle applied to failure modes, not just the happy path. Settings/device persistence itself moved to track P (done ahead of this track, not deferred here) since it's now foundational, not a reliability afterthought.",
       "tasks": [
         {
           "id": "I1",
-          "title": "Settings and paired-device persistence",
-          "status": "pending",
-          "dependsOn": ["B5", "H2"],
-          "description": "Persist FlowSettings and the paired-devices list to disk (directories crate for the platform config path, serde_json for the file), loaded on startup instead of always reseeding ServiceState::seeded(), and saved on every settings_changed/devices_changed.",
-          "deliverables": [
-            "ServiceState::load_or_seeded() reading from disk if a config file exists",
-            "a save-on-change hook wired into B5's settings commands and B3/G3's device-list mutations"
-          ],
-          "acceptanceCriteria": [
-            "restarting flow-daemon after a settings change loads the changed value, not the default",
-            "integration test using a temp config dir"
-          ],
-          "specContext": "docs/product/vision.md §15 Settings section implies durability is expected; the mock's in-memory-only model was explicitly a mock simplification, not a contract requirement.",
-          "commit": "feat(daemon): persist settings and paired devices across restarts"
-        },
-        {
-          "id": "I2",
           "title": "Auto-reconnect",
           "status": "pending",
-          "dependsOn": ["G2", "I1"],
+          "dependsOn": ["G2", "P3"],
           "description": "When settings.auto_reconnect is true and an active peer connection drops, retry with backoff, transitioning DaemonLinkState through Reconnecting per the state machine, matching the exact transition table in daemon-ipc.md.",
           "deliverables": [
             "reconnect loop with capped exponential backoff",
@@ -893,7 +1001,7 @@
           "commit": "feat(daemon): add auto-reconnect with DaemonLinkState transitions"
         },
         {
-          "id": "I3",
+          "id": "I2",
           "title": "Structured logging across the daemon",
           "status": "pending",
           "dependsOn": ["C4"],
@@ -910,10 +1018,10 @@
           "commit": "feat(daemon): wire structured tracing logs to the debug_logging setting"
         },
         {
-          "id": "I4",
+          "id": "I3",
           "title": "Panic isolation and daemon supervision notes",
           "status": "pending",
-          "dependsOn": ["I3"],
+          "dependsOn": ["I2"],
           "description": "Ensure a panic in one connection-handler task or the hotkey runner can't take down the whole daemon (tokio tasks already isolate panics by default — verify and add a regression test), and document (not implement, since it's OS-integration/packaging scope, tracked in J4) how the daemon would be supervised for real (launchd/systemd/Windows service auto-restart).",
           "deliverables": [
             "regression test: a deliberately panicking connection handler doesn't affect a second concurrent connection or the hotkey runner",
@@ -936,7 +1044,7 @@
           "id": "J1",
           "title": "Workspace lint discipline",
           "status": "pending",
-          "dependsOn": ["A7", "B7", "C6"],
+          "dependsOn": ["A7", "P6", "B7", "C6"],
           "description": "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both clean, with any necessary #[allow(...)] justified by a comment rather than silently suppressed workspace-wide.",
           "deliverables": [
             "clippy.toml or workspace-level lint config if any blanket allowances are needed",
@@ -953,7 +1061,7 @@
           "id": "J2",
           "title": "Full workspace integration test sweep",
           "status": "pending",
-          "dependsOn": ["B7", "C6", "F3", "G4", "H4", "I4"],
+          "dependsOn": ["P5", "B7", "C6", "F3", "G4", "H4", "I3"],
           "description": "cargo test --workspace green across flow-core, flow-daemon, flow-platform (platform tests scoped to what's runnable on Linux CI; macOS/Windows-only code is check-only per E4-E7's acceptance criteria, not test-only).",
           "deliverables": [
             "a single documented command (or script) that runs the full suite the way a fresh contributor would"
@@ -984,7 +1092,7 @@
           "id": "J4",
           "title": "Background execution scaffolding",
           "status": "pending",
-          "dependsOn": ["I4"],
+          "dependsOn": ["I3"],
           "description": "Stub (not install/activate) service unit files per platform: a launchd .plist for macOS, a systemd .service for Linux, and notes/a minimal example for a Windows service wrapper, matching the 'process supervision' section I4 documented in prose.",
           "deliverables": [
             "packaging/launchd/com.flow.daemon.plist",

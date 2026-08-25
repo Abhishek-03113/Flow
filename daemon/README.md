@@ -47,6 +47,10 @@ cargo fmt --check
 
 Cross-compilation setup instructions land in `todos.json` task J3 once the macOS/Windows adapters exist to check.
 
+## Persistence
+
+Settings, paired devices (which double as the trust store), this daemon's own identity keypair, and a connection history log all live in a single local SQLite database (`rusqlite`, bundled — no system SQLite dependency) under the platform data directory, applied via versioned migrations on startup. Nothing here is derived fresh on every run or held only in memory: a fresh database bootstraps to the same seed data the mock uses (3 devices, defaults), and every subsequent run loads what was actually persisted. `daemon/todos.json` track **P** (`persistence-storage`) builds this, positioned right after the core contract types and ahead of the command service itself, since `DaemonService`'s startup state depends on it.
+
 ## Process supervision (not yet implemented)
 
 The daemon is meant to run independent of any UI, ideally started at login/boot and restarted automatically if it crashes (`docs/product/vision.md` principle 7). This phase scaffolds but does not install service unit files (`todos.json` J4: a `launchd` plist, a `systemd` unit, notes for a Windows service wrapper) — actually registering the daemon to auto-start is future work beyond this plan.
