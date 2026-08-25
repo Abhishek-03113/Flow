@@ -41,11 +41,10 @@ impl Storage {
     /// any pending migrations.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
-        let conn = tokio::task::spawn_blocking(move || {
-            Self::open_and_configure(Connection::open(path)?)
-        })
-        .await
-        .expect("storage init task panicked")?;
+        let conn =
+            tokio::task::spawn_blocking(move || Self::open_and_configure(Connection::open(path)?))
+                .await
+                .expect("storage init task panicked")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -55,11 +54,10 @@ impl Storage {
     /// Tests use this exclusively so no persistence test ever touches the
     /// real filesystem.
     pub async fn open_in_memory() -> Result<Self, StorageError> {
-        let conn = tokio::task::spawn_blocking(|| {
-            Self::open_and_configure(Connection::open_in_memory()?)
-        })
-        .await
-        .expect("storage init task panicked")?;
+        let conn =
+            tokio::task::spawn_blocking(|| Self::open_and_configure(Connection::open_in_memory()?))
+                .await
+                .expect("storage init task panicked")?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })

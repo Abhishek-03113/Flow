@@ -80,7 +80,10 @@ impl DeviceRepo {
                         record.device.id.0,
                         record.device.name,
                         host_os_to_str(record.device.os),
-                        record.device.last_seen.to_rfc3339_opts(SecondsFormat::Secs, true),
+                        record
+                            .device
+                            .last_seen
+                            .to_rfc3339_opts(SecondsFormat::Secs, true),
                         record.public_key,
                         record.removable,
                     ],
