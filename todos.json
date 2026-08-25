@@ -102,7 +102,7 @@
         {
           "id": "F2",
           "title": "Domain entities",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F1"],
           "description": "Create the Dart types from data-model.md: Device, HostOs, DeviceState, DaemonLinkState, PairingCandidate, PairingSession, PairingStage, SwitchKeyBinding, FlowSettings, PointerSensitivity, PermissionStatus, SettingsPatch. Plain immutable classes (const constructors, copyWith where mutated), no codegen — YAGNI, this project doesn't need freezed/json_serializable for a handful of small types.",
           "deliverables": [
@@ -122,18 +122,18 @@
             "sourceState": "Component.state in Cross-Device UI v2.dc.html: devices: [{id,name,os,status}], toggles: {launchAtLogin,showTray,autoReconnect,autoConnect,shareKeyboard,shareMouse,debugLogging}, sensitivity: 'normal', switchKey: 'Scroll Lock'.",
             "presets": "PRESETS = ['Scroll Lock', 'Pause', 'F13', 'Ctrl + Shift + Space'] — use as SwitchKeyBinding.presets static list."
           },
-          "commit": null
+          "commit": "feat(flutter): add domain entities (F2, F3)"
         },
         {
           "id": "F3",
           "title": "DaemonRepository abstract interface",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F2"],
           "description": "flutter/lib/domain/daemon_repository.dart: the abstract class from daemon-ipc.md — 5 watch* streams, 9 commands. This is the seam every UI feature and the mock both depend on; nothing else in lib/ may reference MockDaemonRepository directly.",
           "deliverables": ["flutter/lib/domain/daemon_repository.dart"],
           "acceptanceCriteria": ["Method signatures match daemon-ipc.md exactly.", "Doc comments on the class point back to docs/contracts/daemon-ipc.md."],
           "designContext": { "note": "No new design context — this is the interface daemon-ipc.md already specifies." },
-          "commit": null
+          "commit": "feat(flutter): add domain entities (F2, F3)"
         },
         {
           "id": "F4",
