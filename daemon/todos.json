@@ -255,7 +255,8 @@
         {
           "id": "P2",
           "title": "Schema and migrations",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Added a StorageError enum (thiserror, wraps rusqlite::Error + rusqlite_migration::Error) since Storage::open now has two distinct failure sources; open()/open_in_memory() signatures changed from rusqlite::Result<Self> to Result<Self, StorageError> as a result (P1 was the only prior caller — tests only, no behavior change). Single M::up(...) migration holds all 4 tables as one multi-statement block, per the plan's 'single SQLite database' framing; future schema changes append a new M::up entry rather than editing this one.",
           "dependsOn": ["P1"],
           "description": "Versioned schema via rusqlite_migration: settings (single row), devices (paired devices + trust public key), connection_history (append-only event log), identity (this daemon's own keypair, one row). Migrations run automatically on Storage::open/open_in_memory — never a manual 'run migrate' step.",
           "deliverables": [
