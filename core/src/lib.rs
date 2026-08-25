@@ -9,6 +9,7 @@
 
 pub mod device;
 pub mod input;
+pub mod link;
 pub mod pairing;
 pub mod protocol;
 pub mod state;
