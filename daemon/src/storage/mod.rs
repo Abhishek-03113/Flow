@@ -10,6 +10,7 @@
 //! `persistenceModel.concurrencyModel`.
 
 pub mod device_repo;
+pub mod identity_repo;
 mod schema;
 pub mod settings_repo;
 
