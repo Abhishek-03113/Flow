@@ -587,7 +587,8 @@
         {
           "id": "C6",
           "title": "End-to-end protocol integration test",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Implemented before C5 (docs addendum) despite listing order, since C5's dependsOn is only [\"C4\"] (same as C6's) — not actually sequential in the dependency graph — and C5's doc text needed to reference this test file as something that already exists, not something promised. Chose a scenario that exercises all 9 commands + 2 error paths (PairingNotReady, PermissionAlreadyGranted) without waiting for the full pairing state machine to complete: start_pairing then cancel_pairing immediately (before the 1.2s search timer), so pair_with_candidate lands on idle -> PairingNotReady rather than needing a real multi-second wait — keeps the test's real wall-clock cost to just switch_active_device's 400ms debounce (test finishes in <1s). Hit and fixed a real bug in the test itself during writing: an early helper that returned as soon as it saw a request's ack frame missed the accompanying state-change event when that event happened to arrive *after* the ack (order between them isn't part of the contract) — replaced with recv_frames(ws, id, count) that reads an exact, hand-known frame count per step and sorts the ack from the event(s) among them, rather than stopping early.",
           "dependsOn": ["C4"],
           "description": "daemon/tests/ipc_protocol.rs: spawn the real flow-daemon service + listener in-process (not a subprocess), connect a raw tokio-tungstenite client, and assert the exact JSON byte shape for a full session — connect, receive 5 initial events, send one of each of the 9 commands, receive correct acks/events/errors. This is the test that proves the contract end-to-end in Rust, the equivalent of what track D will prove from the Dart side.",
           "deliverables": [
