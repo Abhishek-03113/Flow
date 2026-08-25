@@ -273,4 +273,49 @@ mod tests {
         // all).
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+
+    /// `daemon/todos.json` I3's regression test: `tokio::spawn` already
+    /// isolates a panic to its own task (the runtime catches it and
+    /// reports it only through that task's own `JoinHandle`) — this
+    /// confirms that holds for the exact spawn shape `main.rs`'s
+    /// connection-accept loop actually uses, not just in the abstract.
+    /// A connection handler panicking for whatever reason (a bug, an
+    /// unexpected malformed frame) must not take down a second,
+    /// completely unrelated connection running concurrently on the same
+    /// daemon.
+    ///
+    /// The hotkey runner (`hotkey::runner::spawn`) uses the identical
+    /// `tokio::spawn(async move { ... })` primitive this test exercises,
+    /// so the same isolation guarantee applies to it for the same
+    /// reason — it isn't separately re-tested here because doing so for
+    /// real needs a capturable input device this project's own
+    /// development container doesn't have (`daemon/README.md`'s "E1:
+    /// Linux capture via evdev" manual verification note), the same gap
+    /// that already makes `hotkey::runner::spawn` return `None` (not
+    /// panic) in this environment whenever it's actually called from
+    /// `main.rs`.
+    #[tokio::test]
+    async fn a_panicking_connection_handler_does_not_affect_a_concurrent_one() {
+        let real_addr = spawn_test_server().await;
+
+        let panicking = tokio::spawn(async {
+            panic!("deliberately panicking connection handler, per this test's own design");
+        });
+
+        let mut ws = connect(real_addr).await;
+        for _ in 0..5 {
+            let msg = ws.next().await.expect("frame").expect("ok frame");
+            let text = msg.into_text().expect("text frame");
+            let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+            assert!(value["event"].is_string(), "expected an initial event");
+        }
+
+        // The panic is reported only through its own task's JoinHandle
+        // — it never reaches this test's own task, let alone the whole
+        // process.
+        assert!(
+            panicking.await.is_err(),
+            "the deliberately panicking task should report an Err, not silently succeed"
+        );
+    }
 }
