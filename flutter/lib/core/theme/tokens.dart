@@ -18,6 +18,7 @@ class FlowPalette {
     required this.border,
     required this.chromeBg,
     required this.winGlass,
+    required this.trayGlass,
     required this.mat1,
     required this.mat2,
     required this.mat3,
@@ -37,12 +38,18 @@ class FlowPalette {
     required this.statusIdle,
     required this.statusPending,
     required this.statusError,
+    required this.statusOffline,
     required this.wallpaper,
   });
 
   final Color border;
   final Color chromeBg;
   final Color winGlass;
+
+  /// `TrayPopover.dc.html`'s own `glass` token — a distinct tint from
+  /// [winGlass] used only by the tray popover, not the onboarding/app
+  /// windows.
+  final Color trayGlass;
   final Color mat1;
   final Color mat2;
   final Color mat3;
@@ -63,6 +70,11 @@ class FlowPalette {
   final Color statusPending;
   final Color statusError;
 
+  /// `#8e8e93` in the source — the `disconnected` link state's dot
+  /// color, distinct from the four semantic status colors above (also
+  /// fixed regardless of theme).
+  final Color statusOffline;
+
   /// Layered radial-gradient wallpaper behind the desktop/menu-bar mock.
   final Gradient wallpaper;
 
@@ -70,6 +82,7 @@ class FlowPalette {
     border: Color(0x24FFFFFF), // rgba(255,255,255,0.14)
     chromeBg: Color(0xD1282828), // rgba(40,40,44,0.82)
     winGlass: Color(0xCC1A1A1E), // rgba(26,26,30,0.8)
+    trayGlass: Color(0xAD1C1C20), // rgba(28,28,32,0.68)
     mat1: Color(0x0EFFFFFF), // rgba(255,255,255,0.055)
     mat2: Color(0x1AFFFFFF), // rgba(255,255,255,0.1)
     mat3: Color(0x24FFFFFF), // rgba(255,255,255,0.14)
@@ -96,6 +109,7 @@ class FlowPalette {
     statusIdle: Color(0xFF0A84FF),
     statusPending: Color(0xFFFF9F0A),
     statusError: Color(0xFFFF453A),
+    statusOffline: Color(0xFF8E8E93),
     wallpaper: RadialGradient(
       center: Alignment(-0.7, -0.8),
       radius: 1.3,
@@ -107,6 +121,7 @@ class FlowPalette {
     border: Color(0x17000000), // rgba(0,0,0,0.09)
     chromeBg: Color(0xE0F6F6F9), // rgba(246,246,249,0.88)
     winGlass: Color(0xDBFAFAFC), // rgba(250,250,252,0.86)
+    trayGlass: Color(0xBDFCFCFE), // rgba(252,252,254,0.74)
     mat1: Color(0x0C0A0C14), // rgba(10,12,20,0.045)
     mat2: Color(0x130A0C14), // rgba(10,12,20,0.075)
     mat3: Color(0x1A0A0C14), // rgba(10,12,20,0.1)
@@ -132,7 +147,14 @@ class FlowPalette {
     statusActive: Color(0xFF30D158),
     statusIdle: Color(0xFF0A84FF),
     statusPending: Color(0xFFFF9F0A),
-    statusError: Color(0xFFD92D20),
+    // Status dot colors are fixed hex in the design source (TrayPopover.
+    // dc.html's STATE_META, and the main file's activeDotBig/dotS
+    // defaults) regardless of theme — unlike `danger`/`dangerSoft`, which
+    // genuinely do vary per theme for generic error chrome (buttons,
+    // banners). #D92D20 here would have been borrowing the theme-varying
+    // `danger` value for a token the source never varies.
+    statusError: Color(0xFFFF453A),
+    statusOffline: Color(0xFF8E8E93),
     wallpaper: RadialGradient(
       center: Alignment(-0.6, -0.9),
       radius: 1.3,
@@ -147,6 +169,13 @@ class FlowPalette {
 class FlowRadii {
   const FlowRadii._();
 
+  // Window radius is popover radius + 2px in the source (onboardWindow/
+  // appWindow both use `plat.radius + 2`) — kept as separate named
+  // constants rather than derived arithmetic so both read as intentional
+  // design values, not an accident of one being computed from the other.
+  static const macPopover = 16.0;
+  static const windowsPopover = 10.0;
+  static const linuxPopover = 12.0;
   static const macWindow = 18.0;
   static const windowsWindow = 12.0;
   static const linuxWindow = 14.0;
