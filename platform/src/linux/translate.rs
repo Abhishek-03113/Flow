@@ -9,11 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use evdev::{EventSummary, KeyCode, RelativeAxisCode};
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
 
-/// evdev's `EV_KEY` value for a press.
-const KEY_DOWN: i32 = 1;
+/// evdev's `EV_KEY` value for a press. Shared with `inject_translate`,
+/// which needs the same values going the other direction.
+pub(super) const KEY_DOWN: i32 = 1;
 /// evdev's `EV_KEY` value for a release. Autorepeat (value `2`) has no
 /// equivalent in the contract and is dropped.
-const KEY_UP: i32 = 0;
+pub(super) const KEY_UP: i32 = 0;
 
 /// Converts raw evdev events into `flow_core` [`InputEvent`]s.
 ///

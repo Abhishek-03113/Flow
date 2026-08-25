@@ -726,7 +726,7 @@
         {
           "id": "E2",
           "title": "Linux injection via uinput",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["E1"],
           "description": "LinuxInputInjector creates a virtual input device via evdev's uinput support and replays incoming core::protocol::InputEvent as synthetic key/motion events.",
           "deliverables": [
@@ -737,7 +737,8 @@
             "manual verification steps documented in daemon/README.md (uinput also needs elevated permission / the uinput kernel module)"
           ],
           "specContext": "platform/src/linux/mod.rs doc comment.",
-          "commit": "feat(platform): implement Linux input injection via uinput"
+          "commit": "feat(platform): implement Linux input injection via uinput",
+          "buildNote": "LinuxInputInjector::new() -> io::Result<Self> (not Default, since opening /dev/uinput is fallible) builds one VirtualDevice declaring the full EV_KEY range (0..=0x2ff, input-event-codes.h's KEY_MAX) plus the four relative axes E1 translates, so any key name translate::key_name can produce is injectable and not just a hardcoded letter subset. Pure translation lives in inject_translate::to_uinput_events (the reverse of E1's EventTranslator): KeyboardEvent's key string round-trips back to a KeyCode via KeyCode::from_str(&format!(\"KEY_{key}\")), MouseEvent::Move/Scroll skip zero-delta axes and return None when both are zero, and VirtualDevice::emit() auto-appends the SYN_REPORT batch terminator so a two-axis Move/Scroll lands as one atomic report. Reused translate::KEY_DOWN/KEY_UP (made pub(super)) rather than redefining them. 9 unit tests cover both key directions (including a modifier key's own name), unknown-key rejection, zero-delta suppression, scroll axis mapping, and mouse buttons. This container has no /dev/uinput (confirmed via ls; running as root), so beyond cargo build/test/clippy/fmt, the virtual device and real injected input are unverified - documented in daemon/README.md's new 'E2: Linux injection via uinput' manual-verification section instead of claimed as tested."
         },
         {
           "id": "E3",
