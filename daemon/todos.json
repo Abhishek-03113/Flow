@@ -411,7 +411,8 @@
         {
           "id": "B4",
           "title": "Pairing commands and async state-machine timers",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "DaemonService now derives Clone (all fields are Arc/Storage/watch::Sender, all cheaply Clone) so timer callbacks can hold their own owned handle instead of borrowing self across .await/tokio::spawn. The single pending-timer slot is an Arc<tokio::sync::Mutex<Option<JoinHandle<()>>>> rather than one handle per stage — only one timer is ever in flight at a time in this state machine, so one slot covers search->found, requesting->paired, and paired->idle uniformly. cancel_pairing flips state to Idle under the write lock BEFORE aborting the timer (not after), so even if abort() loses the race with an already-elapsed timer, that timer's own 'stage != expected' guard (checked under the same lock) is what actually prevents a stale mutation — abort() is an optimization to stop wasted work, the guard is the real correctness mechanism; verified by cancelling_mid_timer_leaves_no_orphaned_mutation advancing well past every timer afterward. No PairingStage::Failed path is implemented — the Dart mock (flutter/lib/data/mock_daemon_repository.dart) never produces Failed either (pair_with_candidate always proceeds to Paired), so there is nothing to mirror; Failed stays available in the PairingSession enum for a future real (non-mock-parity) implementation.",
           "dependsOn": ["B2"],
           "description": "start_pairing/cancel_pairing/pair_with_candidate driving PairingSession through its stage machine using tokio::time::sleep for the mock-parity timings (searching->found 1200ms, requesting->paired 1500ms, terminal->idle 1600ms), spawned as a cancellable tokio task so cancel_pairing can abort an in-flight timer.",
           "deliverables": [
