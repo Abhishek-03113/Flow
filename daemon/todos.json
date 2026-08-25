@@ -706,7 +706,7 @@
         {
           "id": "E1",
           "title": "Linux capture via evdev",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A7"],
           "description": "LinuxInputCapture opens the keyboard/mouse device node(s) under /dev/input via the evdev crate, translates raw evdev key/relative-motion events into core::protocol::{KeyboardEvent, MouseEvent}, and pushes them through a channel the daemon service (track F) reads from.",
           "deliverables": [
@@ -720,7 +720,8 @@
           ],
           "acceptanceCriteriaNote": "Full manual verification (does a real keypress actually get captured) is out of scope for an unattended session — document the manual verification steps in daemon/README.md instead of claiming it as tested.",
           "specContext": "platform/src/linux/mod.rs doc comment: 'capture and injection will bind to evdev/uinput'; vision.md §7 InputCapture trait diagram.",
-          "commit": "feat(platform): implement Linux input capture via evdev"
+          "commit": "feat(platform): implement Linux input capture via evdev",
+          "buildNote": "LinuxInputCapture::new(sender: mpsc::Sender<InputEvent>) takes its output channel at construction (not returned from start()) since InputCapture only has start()/stop(); start() discovers devices, sets each non-blocking, and spawns a thread polling fetch_events() with a 5ms idle sleep, checking an AtomicBool stop flag each pass, so stop() can join it without killing a blocking read. Translation lives in a separate stateful EventTranslator (held_modifiers: HashSet<Modifier>, requiring Modifier to derive Hash - added, wire-format-neutral) so keyboard events carry the full modifier set from a single evdev key code, unit-tested with 8 cases covering plain keys, autorepeat drop, modifier hold/release, fixed modifier ordering, mouse buttons, and relative axes. Two deliberate simplifications, not hidden: each relative axis (REL_X/REL_Y/REL_WHEEL/REL_HWHEEL) becomes its own MouseEvent::Move/Scroll rather than combining axes reported before the same SYN_REPORT into one event; and device discovery is a heuristic (supported_keys() or supported_relative_axes() non-empty) rather than a precise keyboard/mouse classifier. This container has neither /dev/input nor /dev/uinput (confirmed via ls; running as root), so beyond cargo build/test/clippy/fmt, discovery/read-loop/real-keypress behavior is unverified - documented in daemon/README.md's new 'E1: Linux capture via evdev' manual-verification section instead of claimed as tested."
         },
         {
           "id": "E2",
