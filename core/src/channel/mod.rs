@@ -165,6 +165,7 @@ mod tests {
         let (mut a, mut b) = ChannelPair::new_pair();
         let request = PairingRequest {
             device_name: "MacBook".to_string(),
+            device_os: crate::device::HostOs::Macos,
             address: "192.168.1.42:47900".to_string(),
         };
         a.send(ChannelMessage::Pairing(PairingWireMessage::Request(

@@ -15,6 +15,7 @@ use crate::device::HostOs;
 #[serde(rename_all = "snake_case")]
 pub struct PairingRequest {
     pub device_name: String,
+    pub device_os: HostOs,
     pub address: String,
 }
 
