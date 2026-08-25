@@ -17,7 +17,9 @@ use tokio::net::TcpListener;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt::init();
+    // `debug_logging`'s persisted value isn't known until settings load
+    // below; starts at the non-debug level and gets synced once it is.
+    let logging = flow_daemon::logging::init(false);
 
     let storage = Storage::open(db_path())
         .await
@@ -25,6 +27,7 @@ async fn main() {
     let service = Arc::new(DaemonService::new(storage.clone()).await);
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
+    let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
 
     let listener = TcpListener::bind(("127.0.0.1", IPC_PORT))
         .await

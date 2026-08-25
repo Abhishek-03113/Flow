@@ -24,11 +24,16 @@ type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 /// client disconnects. Never panics on a client error; a bad frame or a
 /// dropped socket just ends this task, leaving every other connection
 /// and `ServiceState` itself untouched.
+#[tracing::instrument(skip_all)]
 pub async fn handle_connection(stream: TcpStream, service: Arc<DaemonService>) {
     let ws_stream = match tokio_tungstenite::accept_async(stream).await {
         Ok(ws) => ws,
-        Err(_) => return,
+        Err(err) => {
+            tracing::debug!("websocket handshake failed: {err}");
+            return;
+        }
     };
+    tracing::debug!("ipc connection established");
     let (mut sink, mut source) = ws_stream.split();
 
     let mut devices_rx = service.watch_devices();
