@@ -6,7 +6,6 @@
 //! remember to log anything explicitly (`daemon/todos.json` task P5).
 
 use flow_core::device::Device;
-use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{PairingSession, PairingStage};
 use tokio::task::JoinHandle;
 

@@ -6,7 +6,7 @@
 //! live connection re-establishes it, never resurrected as `Active` from
 //! a stale row.
 
-use chrono::{DateTime, SecondsFormat, Utc};
+use chrono::SecondsFormat;
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use rusqlite::{OptionalExtension, Row};
 
@@ -157,6 +157,8 @@ fn host_os_from_str(s: &str) -> HostOs {
 
 #[cfg(test)]
 mod tests {
+    use chrono::{DateTime, Utc};
+
     use super::*;
     use crate::storage::Storage;
 

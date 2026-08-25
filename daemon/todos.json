@@ -515,7 +515,8 @@
         {
           "id": "C2",
           "title": "Command dispatch: IpcRequest -> DaemonService call",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Added serde (with derive) to daemon's own [dependencies] — daemon/src/ipc/dispatch.rs needs #[derive(Deserialize)] on its two small payload-shape structs (DeviceIdPayload, CandidateIdPayload) and DeserializeOwned as a trait bound, neither of which daemon previously needed directly (flow-core re-exported serde types were enough before). 'start_pairing'/'cancel_pairing'/'reset_settings'/'request_permission' with a payload of Value::Null are accepted without error since those DaemonService methods take no arguments and never look at payload at all — there's nothing to validate, matching the envelope's own 'payload: object|null' shape. invalid_payload and unknown_command are two new error codes outside FlowError's 9 contract codes, deliberately: they're IPC-transport-boundary concerns (malformed JSON, an unrecognized command string), not DaemonService preconditions, so they don't belong in flow_core::error — daemon-ipc.md's own forward-compat note ('a real daemon can add codes... without this being a breaking change') covers exactly this.",
           "dependsOn": ["C1", "B7"],
           "description": "daemon/src/ipc/dispatch.rs: a single async fn dispatch(service: &DaemonService, req: IpcRequest) -> IpcResponse matching req.command against the 9 known commands, deserializing req.payload into the right argument type, calling the DaemonService method, and mapping Ok/Err into Ack/Err.",
           "deliverables": [
