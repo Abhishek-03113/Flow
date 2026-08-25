@@ -516,18 +516,18 @@
         {
           "id": "S1",
           "title": "Top-level FlowApp navigation",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["T3", "O3", "A2", "A3", "A4", "A5", "A6"],
           "description": "flutter/lib/app.dart: ProviderScope + MaterialApp wiring FlowTheme (D2), routing between the tray popover, onboarding flow, and app window. Real OS tray-icon integration (a system_tray-style plugin, actually docking into the platform menu bar/tray) is explicitly out of scope here — YAGNI until there's a daemon to dock against; this task only makes the three surfaces reachable inside one Flutter app for development and demo purposes.",
           "deliverables": ["flutter/lib/app.dart", "flutter/lib/main.dart (updated)"],
           "acceptanceCriteria": ["App launches to the dev harness (S2) by default in debug builds.", "No plugin dependency added for real tray docking (tracked as a future task once a daemon exists to connect to)."],
           "designContext": { "note": "Mirrors the .dc.html's own view switch (menubar/app/onboarding/platforms) but as real navigation, not a template sc-if." },
-          "commit": null
+          "commit": "feat(flutter): wire app shell and dev harness (S1, S2)"
         },
         {
           "id": "S2",
           "title": "Dev harness screen",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["S1"],
           "description": "flutter/lib/features/harness/dev_harness.dart: the top control strip from the .dc.html canvas — View (Menu Bar / App Window / First Launch / All Platforms), Connection state, Platform, Theme selectors — driving the same providers every real screen reads, so every combination is reachable for visual QA without touching the mock's internal timers by hand.",
           "deliverables": ["flutter/lib/features/harness/dev_harness.dart"],
@@ -536,7 +536,8 @@
             "viewOptions": "['Menu Bar','App Window','First Launch','All Platforms']",
             "compareFrame": "360x470px rounded 14px frame per platform, wallpaper bg, platform bar at correct edge, popover anchored inset from that edge scaled to 0.9x."
           },
-          "commit": null
+          "buildNote": "Control strip is a horizontally-scrolling Row rather than a wrapping Wrap — with the full Connection segmented control (6 options) plus View/Platform/Theme all on one bar, a single row can exceed the window width depending on font metrics, and Wrap only wraps between children, not within one that's already too wide on its own; a scroll view sidesteps that regardless of window size or font. Menu Bar view's tray icon toggles a real, provider-backed popover (trayOpenProvider) rather than a static mockup. 5 widget tests, including one exercising the full 'All Platforms' compare strip.",
+          "commit": "feat(flutter): wire app shell and dev harness (S1, S2)"
         }
       ]
     },
