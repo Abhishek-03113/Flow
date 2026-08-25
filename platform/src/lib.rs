@@ -15,6 +15,6 @@ mod windows;
 #[cfg(target_os = "linux")]
 pub use linux::{LinuxInputCapture, LinuxInputInjector};
 #[cfg(target_os = "macos")]
-pub use macos::{MacosInputCapture, MacosInputInjector};
+pub use macos::{MacosCaptureError, MacosInputCapture, MacosInputInjector};
 #[cfg(target_os = "windows")]
 pub use windows::{WindowsInputCapture, WindowsInputInjector};

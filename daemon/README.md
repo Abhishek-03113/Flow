@@ -52,7 +52,7 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 | Platform | Capture | Injection | Verified how |
 |---|---|---|---|
 | Linux | real (`todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
-| macOS | pending (E4) | pending (E5) | written against `core-graphics`, verified with `cargo check --target <apple-target>` only — no Mac hardware in this development environment |
+| macOS | real (E4, `CGEventTap`) | pending (E5) | cross-compile checked (`cargo check -p flow-platform --target x86_64-apple-darwin`) plus `clippy`/`fmt`; the `CGEvent -> InputEvent` translation has unit tests, but they need macOS to execute — this Linux container can only compile-check them, not run them, and there's no Mac hardware here at all — see "Manual verification notes" below |
 | Windows | pending (E6) | pending (E7) | written against the `windows` crate, verified with `cargo check --target <windows-target>` only — no Windows hardware in this development environment |
 
 Cross-compilation setup instructions land in `todos.json` task J3 once the macOS/Windows adapters exist to check.
@@ -120,3 +120,13 @@ cargo run -p flow-daemon --example linux_input_echo
 ```
 
 Type or move the mouse (on a physical device the process can read); each event should print, and the same event should be observable on the new "Flow Virtual Input" device (e.g. via `evtest /dev/input/eventN`). Ctrl+C to stop — this repo's own container has neither `/dev/input` nor `/dev/uinput`, so only `cargo build --example linux_input_echo` (and, indirectly, E1/E2's unit tests) verify this here.
+
+### E4: macOS capture via CGEventTap
+
+`platform/src/macos/capture.rs` (`MacosInputCapture`) installs a `CGEventTap` (HID-level, listen-only) on a dedicated thread with its own `CFRunLoop`, translating each tapped `CGEvent` through the pure `EventTranslator` (`translate.rs`) and forwarding it over an `mpsc::Sender<InputEvent>` supplied at construction — the same shape as `LinuxInputCapture`. This container has no macOS hardware at all, so beyond `cargo check -p flow-platform --target x86_64-apple-darwin`/`clippy`/`fmt`, nothing here executed; `translate.rs`'s 12 unit tests construct synthetic `CGEvent`s via `CGEventSource` and exercise the translation logic in isolation, but — unlike E1/E2's Linux tests, which this container *can* run — they need an actual macOS process to execute at all, so they're written and cross-compile-checked only. On a Mac:
+
+```sh
+cargo test -p flow-platform --target <your-mac-target>   # runs translate.rs's unit tests for real
+```
+
+**Requires the Accessibility permission** (System Settings > Privacy & Security > Accessibility) for whatever process calls `MacosInputCapture::start()` — `CGEventTapCreate` fails silently (a null tap, not a loud error) without it, surfaced here as `MacosCaptureError::TapCreationFailed`. What to look for on real hardware: `start()` returns `Ok(())` only once that permission is granted; typing/clicking/scrolling produces the expected `InputEvent`s on the channel, including the correct `modifiers` list for chorded keys; and `stop()` returns promptly (`CFRunLoop::stop()` unblocks `CFRunLoop::run_current()` on the capture thread almost immediately, unlike E1's idle-poll delay).
