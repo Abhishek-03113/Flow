@@ -814,7 +814,7 @@
         {
           "id": "E7",
           "title": "Windows injection via SendInput",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["E6"],
           "description": "WindowsInputInjector building INPUT structs from incoming InputEvent and calling SendInput.",
           "deliverables": [
@@ -825,7 +825,8 @@
             "translation logic unit tested"
           ],
           "specContext": "platform/src/windows/mod.rs doc comment: 'injection will use SendInput'.",
-          "commit": "feat(platform): implement Windows input injection via SendInput"
+          "commit": "feat(platform): implement Windows input injection via SendInput",
+          "buildNote": "WindowsInputInjector is a stateless Default-derived unit struct (no fallible resource like macOS's CGEventSource or Linux's uinput device to open - SendInput needs nothing but the INPUT array itself), with inject() returning WindowsInjectError::SendInputBlocked when SendInput's return value (events actually queued) is less than the number sent, per its documented 'another thread already blocked input' semantics rather than treating it as a generic failure. Pure translation lives in inject_translate::to_input, the reverse of E6's EventTranslator: keyboard events reverse translate::key_name via code_for_name (single-char letters/digits and F1-F24 derived arithmetically exactly as key_name derived them, a reversed if-else chain for the remaining named keys since VIRTUAL_KEY is a newtype and can't appear directly in match patterns, and a '0x..' hex fallback), reusing the same round-trip design as every other platform's inject_translate module. One real design difference from macOS: SendInput's MOUSEINPUT.dx/dy is a genuinely relative delta when MOUSEEVENTF_ABSOLUTE isn't set, so MouseEvent::Move needed no cursor-anchoring workaround (unlike E5, which had to read the current cursor position first). Scroll denormalizes translate::wheel_delta's per-notch value back to a raw WHEEL_DELTA multiple; since MOUSEEVENTF_WHEEL and MOUSEEVENTF_HWHEEL are mutually exclusive on one INPUT, to_input returns Vec<INPUT> rather than a single value so a Scroll with both axes set becomes two INPUT entries sent in one SendInput call - the same per-axis-event shape E2's Linux uinput injector already established, reused rather than inventing a different pattern. 10 unit tests build InputEvents and read back the resulting INPUT's union fields (unsafe reads, but only ever of data the same test just wrote via to_input). Verified with cargo check/clippy --all-targets -D warnings/cargo fmt for flow-platform on x86_64-pc-windows-msvc (this task's stated target), all clean; re-verified every other previously-checked target (native Linux workspace tests, x86_64/aarch64-apple-darwin) stayed clean after this change too. No Windows hardware exists in this environment, so none of this executed beyond compiling - documented in daemon/README.md's new 'E7' section. This closes out track E (E1-E7): every platform now has both capture and injection implemented, though only Linux's is exercised beyond compilation in this environment."
         }
       ]
     },
