@@ -14,3 +14,6 @@ flutter/**/generated_plugin_registrant.dart
 .DS_Store
 .vscode/
 .idea/
+
+# Claude Design export (reference only, not project source)
+/design/claude-design-export/
