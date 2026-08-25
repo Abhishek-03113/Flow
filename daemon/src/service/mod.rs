@@ -459,6 +459,22 @@ impl DaemonService {
             .await;
         self.settings_tx.send_replace(settings);
     }
+
+    /// Grants the OS input-capture permission. Matches the mock's
+    /// always-succeeds behavior — a real OS-level denial is explicit
+    /// future work once track E's platform adapters can report one.
+    pub async fn request_permission(&self) -> Result<(), FlowError> {
+        let permission = {
+            let mut state = self.state.write().await;
+            if state.permission.granted {
+                return Err(FlowError::PermissionAlreadyGranted);
+            }
+            state.permission.granted = true;
+            state.permission.clone()
+        };
+        self.permission_tx.send_replace(permission);
+        Ok(())
+    }
 }
 
 fn seed_device_records() -> Vec<DeviceRecord> {
@@ -901,5 +917,27 @@ mod tests {
 
         let settings = service.watch_settings().borrow().clone();
         assert_eq!(settings, FlowSettings::defaults());
+    }
+
+    #[tokio::test]
+    async fn request_permission_grants_when_not_yet_granted() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert!(!service.watch_permission().borrow().granted);
+        service.request_permission().await.expect("grant permission");
+        assert!(service.watch_permission().borrow().granted);
+    }
+
+    #[tokio::test]
+    async fn request_permission_when_already_granted_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        service.request_permission().await.expect("grant permission");
+        assert_eq!(
+            service.request_permission().await,
+            Err(FlowError::PermissionAlreadyGranted)
+        );
     }
 }
