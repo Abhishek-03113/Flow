@@ -414,18 +414,19 @@
         {
           "id": "A1",
           "title": "AppWindow shell",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D5", "D6"],
           "description": "flutter/lib/features/app_window/app_window_shell.dart: WindowChrome + sidebar (Overview/Dashboard nav item, Settings/General|Devices|Input|Advanced nav items) + content area that swaps sections.",
           "deliverables": ["flutter/lib/features/app_window/app_window_shell.dart"],
           "acceptanceCriteria": ["Window 720x470px, sidebar 176px wide per componentSizes.", "Nav item selected state: bg mat2 + text1; unselected: transparent + text2."],
           "designContext": { "nav": "sidebarLabel 10px weight 700 uppercase text3. Primary group: ['Dashboard']. Settings group: ['General','Devices','Input','Advanced']. Item padding 8px 11px radius 9px fontSize 12.5px weight 590.", "windowTitle": "'Cross Device' on Dashboard, 'Settings' on any settings section." },
-          "commit": null
+          "buildNote": "Section index is local widget state (same pattern as onboarding's step index) — nothing outside the window needs to observe/drive which tab is open.",
+          "commit": "feat(flutter): implement app window dashboard and settings (A1-A6)"
         },
         {
           "id": "A2",
           "title": "Dashboard section",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A1", "F5"],
           "description": "flutter/lib/features/app_window/sections/dashboard_section.dart: hero card (Controlling: active device name + big status dot + switch-key chip + status label), 'Paired devices' header with 'Pair new device' ghost button (routes to tray pairing per design — see quote below), device rows with per-row Switch (if inactive) / Remove (if not the local device) actions.",
           "deliverables": ["flutter/lib/features/app_window/sections/dashboard_section.dart"],
@@ -434,12 +435,12 @@
             "heroCard": "padding 18px 20px radius 15px bg accentSoft border 1px; heroLabel 'Controlling' 10.5px uppercase text3; heroRow: 11px active-green dot + name 22px weight 680 + keyHint chip; heroMeta = link-state label below.",
             "quote": "openTrayPairing: () => { switch to menubar view, open tray; toast('Pairing lives in the menu bar'); }"
           },
-          "commit": null
+          "commit": "feat(flutter): implement app window dashboard and settings (A1-A6)"
         },
         {
           "id": "A3",
           "title": "General settings section",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A1", "F5"],
           "description": "flutter/lib/features/app_window/sections/general_section.dart: 'Launch at login' and platform-adaptive 'Show in system tray'/'Show in menu bar' toggles, plus an Appearance segmented control (Dark/Light) bound to the app theme.",
           "deliverables": ["flutter/lib/features/app_window/sections/general_section.dart"],
@@ -450,12 +451,13 @@
               { "label": "Show in system tray / Show in menu bar", "desc": "Keep the icon visible." }
             ]
           },
-          "commit": null
+          "buildNote": "Appearance segmented control binds to themeModeProvider (state/ui_providers.dart) — Dark/Light only, matching the source (no System option in this design).",
+          "commit": "feat(flutter): implement app window dashboard and settings (A1-A6)"
         },
         {
           "id": "A4",
           "title": "Devices settings section",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A1", "F5"],
           "description": "flutter/lib/features/app_window/sections/devices_section.dart: full device list with 'last seen' meta instead of the dashboard's 'active/connected' meta, remove action, plus 'Reconnect automatically' and 'Connect paired devices' toggles.",
           "deliverables": ["flutter/lib/features/app_window/sections/devices_section.dart"],
@@ -466,12 +468,13 @@
               { "label": "Connect paired devices", "desc": "Reconnect trusted computers on launch." }
             ]
           },
-          "commit": null
+          "buildNote": "Device.lastSeen is a real DateTime (not a canned string like the source's 'Now'/'2 min ago'), formatted by a small local _relativeTime() helper — no intl dependency added for 3 tiers of granularity.",
+          "commit": "feat(flutter): implement app window dashboard and settings (A1-A6)"
         },
         {
           "id": "A5",
           "title": "Input settings section",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A1", "F5"],
           "description": "flutter/lib/features/app_window/sections/input_section.dart: switch-key display card with a 'Record shortcut' toggle button (label flips to 'Cancel' while recording; while recording the key display pulses via cd-breathe and shows 'Press any key…'), the 4 preset chips, Share keyboard/mouse toggles, Pointer sensitivity segmented control (Low/Normal/High).",
           "deliverables": ["flutter/lib/features/app_window/sections/input_section.dart"],
@@ -485,12 +488,13 @@
             ],
             "keyDisplay": "20px weight 660, color accent + cd-breathe animation while recording else text1 static."
           },
-          "commit": null
+          "buildNote": "Recording uses a Focus widget + HardwareKeyboard.instance modifier state, formatted via the exact algorithm in recordingFormat above. Extracted the StatusDot pulse animation into a public BreathePulse wrapper (core/widgets/primitives.dart) so the key display text can reuse the same cd-breathe pulse instead of duplicating an AnimationController.",
+          "commit": "feat(flutter): implement app window dashboard and settings (A1-A6)"
         },
         {
           "id": "A6",
           "title": "Advanced settings section",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["A1", "F5"],
           "description": "flutter/lib/features/app_window/sections/advanced_section.dart: static Diagnostics row (copy only, not daemon-sourced — see contracts README 'out of scope for 0.1.0'), Detailed logging toggle, permission row (reuse the same PermissionStatus watch/requestPermission as onboarding), red 'Reset all settings' button calling resetSettings().",
           "deliverables": ["flutter/lib/features/app_window/sections/advanced_section.dart"],
@@ -500,7 +504,7 @@
             "debugToggle": { "label": "Detailed logging", "desc": "Keep a log for support requests." },
             "dangerButton": "'Reset all settings', bg dangerSoft, color danger, alignSelf flex-start."
           },
-          "commit": null
+          "commit": "feat(flutter): implement app window dashboard and settings (A1-A6)"
         }
       ]
     },

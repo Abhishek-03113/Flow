@@ -38,20 +38,23 @@ class StatusDot extends StatelessWidget {
       ),
     );
     if (!pulse) return dot;
-    return _Breathe(child: dot);
+    return BreathePulse(child: dot);
   }
 }
 
-class _Breathe extends StatefulWidget {
-  const _Breathe({required this.child});
+/// Wraps [child] in the `cd-breathe` opacity pulse (1.0 <-> 0.4, ease-
+/// in-out, looping) used for connecting/reconnecting/switching status
+/// dots and the switch-key display while recording a new shortcut.
+class BreathePulse extends StatefulWidget {
+  const BreathePulse({super.key, required this.child});
 
   final Widget child;
 
   @override
-  State<_Breathe> createState() => _BreatheState();
+  State<BreathePulse> createState() => BreathePulseState();
 }
 
-class _BreatheState extends State<_Breathe>
+class BreathePulseState extends State<BreathePulse>
     with SingleTickerProviderStateMixin {
   late final _controller = AnimationController(
     vsync: this,
