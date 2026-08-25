@@ -743,7 +743,7 @@
         {
           "id": "E3",
           "title": "Linux capture/inject CLI harness",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["E2"],
           "description": "A small daemon/examples/linux_input_echo.rs (or platform/examples/...) binary that captures local input and immediately re-injects it into the virtual device, the minimum loopback needed to manually sanity-check both adapters together without a second machine or the full daemon/networking stack.",
           "deliverables": [
@@ -754,7 +754,8 @@
             "documented as a manual/local-only verification tool, not part of the automated test suite"
           ],
           "specContext": "vision.md §22 Phase 2/3 (Keyboard/Mouse capture validation) scaled down to a single-machine loopback sanity check.",
-          "commit": "feat(platform): add Linux input capture/inject loopback example"
+          "commit": "feat(platform): add Linux input capture/inject loopback example",
+          "buildNote": "Placed at daemon/examples/linux_input_echo.rs (the plan's first-listed option) since flow-daemon already depends on flow-platform - reuses that existing edge rather than adding a new examples/ target under platform/. Wires LinuxInputCapture straight into LinuxInputInjector: prints every captured event via {event:?} then immediately replays it via inject(). No signal handling - Ctrl+C just kills the process, which is fine for a manual tool since the virtual device is torn down on exit regardless; documented as such in its own doc comment and daemon/README.md rather than adding a graceful-shutdown dependency YAGNI doesn't call for. Guarded with #[cfg(target_os = \"linux\")]/#[cfg(not(...))] so `cargo build --workspace --examples` stays buildable once macOS/Windows platform work lands. Verified with `cargo build -p flow-daemon --example linux_input_echo` only - this container has neither /dev/input nor /dev/uinput, so the actual loopback behavior is unverified beyond E1/E2's own unit tests, per daemon/README.md's new 'E3' section."
         },
         {
           "id": "E4",

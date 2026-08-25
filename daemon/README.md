@@ -110,3 +110,13 @@ ls -la /dev/uinput
 ```
 
 What to look for: `LinuxInputInjector::new()` returns `Ok(_)` (a `PermissionDenied` means the account isn't in the right group), a new `/dev/input/eventN` node named "Flow Virtual Input" appears while the injector is alive, and `evtest` (or the E3 harness) shows the expected `EV_KEY`/`EV_REL` events with correct codes and values for each `inject()` call, including that a `MouseEvent::Move`/`Scroll`'s two axes land as one atomic `SYN_REPORT`-terminated batch rather than two separate reports.
+
+### E3: Linux capture/inject loopback harness
+
+`daemon/examples/linux_input_echo.rs` wires E1's `LinuxInputCapture` straight into E2's `LinuxInputInjector`: every captured event is printed, then immediately replayed onto the virtual device, the minimum one-machine sanity check that exercises both adapters together. Needs the same `/dev/input`/`/dev/uinput` access as E1/E2, so it's manual/local-only — not part of `cargo test`.
+
+```sh
+cargo run -p flow-daemon --example linux_input_echo
+```
+
+Type or move the mouse (on a physical device the process can read); each event should print, and the same event should be observable on the new "Flow Virtual Input" device (e.g. via `evtest /dev/input/eventN`). Ctrl+C to stop — this repo's own container has neither `/dev/input` nor `/dev/uinput`, so only `cargo build --example linux_input_echo` (and, indirectly, E1/E2's unit tests) verify this here.
