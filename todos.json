@@ -138,7 +138,7 @@
         {
           "id": "F4",
           "title": "MockDaemonRepository",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F3"],
           "description": "In-memory implementation of DaemonRepository using StreamControllers (broadcast, seeded with current state on listen). Reproduce the exact state machines and seed data from the .dc.html prototype so the UI feels alive: 3 seed devices, pairing timing (~1.2s to find, ~1.5s to accept, ~1.6s auto-return to idle), 400ms switch debounce, two pairing candidates (Office Mac Mini, Studio Linux) that disappear once paired.",
           "deliverables": ["flutter/lib/data/mock_daemon_repository.dart"],
@@ -153,7 +153,7 @@
             "timings": { "pairingSearchToFound": "1200ms", "pairingRequestingToPaired": "1500ms", "pairedAutoReturnToIdle": "1600ms", "switchDebounce": "400ms" },
             "quote": "TrayPopover.dc.html switchTo(): sets switching:id, then after 400ms flips devices[id].status='active' and demotes the previous active to 'inactive'."
           },
-          "commit": null
+          "commit": "feat(flutter): implement MockDaemonRepository (F4)"
         },
         {
           "id": "F5",

@@ -12,6 +12,9 @@ class PermissionStatus {
   final bool granted;
 
   PermissionStatus copyWith({String? name, bool? granted}) {
-    return PermissionStatus(name: name ?? this.name, granted: granted ?? this.granted);
+    return PermissionStatus(
+      name: name ?? this.name,
+      granted: granted ?? this.granted,
+    );
   }
 }

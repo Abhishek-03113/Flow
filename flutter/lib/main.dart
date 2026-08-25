@@ -17,9 +17,7 @@ class _ScaffoldPlaceholderApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return const MaterialApp(
       title: 'Flow',
-      home: Scaffold(
-        body: Center(child: Text('Flow UI — under construction')),
-      ),
+      home: Scaffold(body: Center(child: Text('Flow UI — under construction'))),
     );
   }
 }

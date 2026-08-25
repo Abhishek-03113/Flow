@@ -7,7 +7,11 @@ enum PairingStage { idle, searching, found, requesting, paired, failed }
 
 /// A nearby device discovered while searching, not yet paired.
 class PairingCandidate {
-  const PairingCandidate({required this.id, required this.name, required this.os});
+  const PairingCandidate({
+    required this.id,
+    required this.name,
+    required this.os,
+  });
 
   final String id;
   final String name;
@@ -15,7 +19,10 @@ class PairingCandidate {
 
   @override
   bool operator ==(Object other) {
-    return other is PairingCandidate && other.id == id && other.name == name && other.os == os;
+    return other is PairingCandidate &&
+        other.id == id &&
+        other.name == name &&
+        other.os == os;
   }
 
   @override
