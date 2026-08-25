@@ -6,6 +6,7 @@
 //! instead.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
@@ -13,6 +14,7 @@ use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{PairingCandidate, PairingSession};
 use flow_core::permission::PermissionStatus;
 use flow_core::settings::FlowSettings;
+use tokio::sync::{watch, RwLock};
 
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
@@ -72,6 +74,74 @@ impl ServiceState {
             },
             candidates_pool: candidate_seeds(),
         }
+    }
+}
+
+/// Devices as an ordered list (`data-model.md`'s `Device` wire type is a
+/// list, `ServiceState.devices` is a map for O(1) lookup by id) — sorted
+/// by id for a deterministic watch value.
+fn devices_list(state: &ServiceState) -> Vec<Device> {
+    let mut list: Vec<Device> = state.devices.values().cloned().collect();
+    list.sort_by(|a, b| a.id.0.cmp(&b.id.0));
+    list
+}
+
+/// Wraps [`ServiceState`] in a `tokio::sync::watch` channel per slice.
+/// `watch::Sender`/`Receiver` natively replay the latest value to a newly
+/// subscribing receiver, which is exactly the "connecting... is the
+/// initial fetch" semantics `docs/contracts/daemon-ipc.md` requires —
+/// the same semantics `MockDaemonRepository`'s `_StateChannel` needed a
+/// `Stream.multi` rewrite on the Dart side to get right (an `async*`
+/// generator can silently drop an emission racing its first microtask).
+pub struct DaemonService {
+    state: Arc<RwLock<ServiceState>>,
+    storage: Storage,
+    devices_tx: watch::Sender<Vec<Device>>,
+    link_state_tx: watch::Sender<DaemonLinkState>,
+    pairing_session_tx: watch::Sender<PairingSession>,
+    settings_tx: watch::Sender<FlowSettings>,
+    permission_tx: watch::Sender<PermissionStatus>,
+}
+
+impl DaemonService {
+    pub async fn new(storage: Storage) -> Self {
+        let state = ServiceState::load_or_seed(&storage).await;
+
+        let (devices_tx, _) = watch::channel(devices_list(&state));
+        let (link_state_tx, _) = watch::channel(state.link_state);
+        let (pairing_session_tx, _) = watch::channel(state.pairing_session.clone());
+        let (settings_tx, _) = watch::channel(state.settings.clone());
+        let (permission_tx, _) = watch::channel(state.permission.clone());
+
+        Self {
+            state: Arc::new(RwLock::new(state)),
+            storage,
+            devices_tx,
+            link_state_tx,
+            pairing_session_tx,
+            settings_tx,
+            permission_tx,
+        }
+    }
+
+    pub fn watch_devices(&self) -> watch::Receiver<Vec<Device>> {
+        self.devices_tx.subscribe()
+    }
+
+    pub fn watch_link_state(&self) -> watch::Receiver<DaemonLinkState> {
+        self.link_state_tx.subscribe()
+    }
+
+    pub fn watch_pairing_session(&self) -> watch::Receiver<PairingSession> {
+        self.pairing_session_tx.subscribe()
+    }
+
+    pub fn watch_settings(&self) -> watch::Receiver<FlowSettings> {
+        self.settings_tx.subscribe()
+    }
+
+    pub fn watch_permission(&self) -> watch::Receiver<PermissionStatus> {
+        self.permission_tx.subscribe()
     }
 }
 
@@ -184,5 +254,40 @@ mod tests {
         assert!(state
             .devices
             .contains_key(&DeviceId("only-device".to_string())));
+    }
+
+    #[tokio::test]
+    async fn a_subscriber_immediately_sees_the_seeded_state_with_no_prior_emit() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        // No emit has happened yet — a fresh subscriber must still see the
+        // seeded value, proving late-subscribe replay (the exact bug class
+        // the Dart mock's async*-based _StateChannel hit before its
+        // Stream.multi rewrite).
+        let devices = service.watch_devices().borrow().clone();
+        assert_eq!(devices.len(), 3);
+        assert_eq!(devices[0].id, DeviceId("d1".to_string()));
+
+        assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Connected);
+        assert_eq!(
+            *service.watch_pairing_session().borrow(),
+            PairingSession::idle()
+        );
+        assert_eq!(
+            *service.watch_settings().borrow(),
+            FlowSettings::defaults()
+        );
+        assert!(!service.watch_permission().borrow().granted);
+    }
+
+    #[tokio::test]
+    async fn each_subscriber_gets_its_own_receiver_all_seeing_the_same_replayed_value() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        let a = service.watch_devices();
+        let b = service.watch_devices();
+        assert_eq!(a.borrow().len(), b.borrow().len());
     }
 }
