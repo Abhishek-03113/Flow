@@ -5,17 +5,18 @@
 //! after that first run, whatever was actually persisted comes back
 //! instead.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
-use flow_core::pairing::{PairingCandidate, PairingSession};
+use flow_core::pairing::{PairingCandidate, PairingSession, PairingStage};
 use flow_core::permission::PermissionStatus;
 use flow_core::settings::FlowSettings;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
+use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
@@ -30,6 +31,13 @@ pub const LOCAL_DEVICE_ID: &str = "d1";
 /// Delay before a `switch_active_device` command takes effect, matching
 /// `MockDaemonRepository._switchDebounce`.
 const SWITCH_DEBOUNCE: Duration = Duration::from_millis(400);
+
+/// `sharedContractConstants.mockParityTimings.pairingSearchToFoundMs`.
+const PAIRING_SEARCH_TO_FOUND: Duration = Duration::from_millis(1200);
+/// `sharedContractConstants.mockParityTimings.pairingRequestToPairedMs`.
+const PAIRING_REQUEST_TO_PAIRED: Duration = Duration::from_millis(1500);
+/// `sharedContractConstants.mockParityTimings.pairingTerminalToIdleMs`.
+const PAIRING_TERMINAL_TO_IDLE: Duration = Duration::from_millis(1600);
 
 pub struct ServiceState {
     pub devices: HashMap<DeviceId, Device>,
@@ -99,6 +107,7 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
 /// the same semantics `MockDaemonRepository`'s `_StateChannel` needed a
 /// `Stream.multi` rewrite on the Dart side to get right (an `async*`
 /// generator can silently drop an emission racing its first microtask).
+#[derive(Clone)]
 pub struct DaemonService {
     state: Arc<RwLock<ServiceState>>,
     storage: Storage,
@@ -107,6 +116,11 @@ pub struct DaemonService {
     pairing_session_tx: watch::Sender<PairingSession>,
     settings_tx: watch::Sender<FlowSettings>,
     permission_tx: watch::Sender<PermissionStatus>,
+    /// The single in-flight pairing timer (search->found,
+    /// requesting->paired, or paired->idle), if any. `cancel_pairing`
+    /// aborts whatever is here; each timer clears its own slot once it
+    /// fires so a later cancel never aborts an already-finished task.
+    pairing_timer: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 impl DaemonService {
@@ -127,6 +141,7 @@ impl DaemonService {
             pairing_session_tx,
             settings_tx,
             permission_tx,
+            pairing_timer: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -215,6 +230,187 @@ impl DaemonService {
 
         self.devices_tx.send_replace(devices);
         Ok(())
+    }
+
+    /// Begins searching for pairing candidates. Errors if a pairing
+    /// session is already active anywhere but idle.
+    pub async fn start_pairing(&self) -> Result<(), FlowError> {
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage != PairingStage::Idle {
+                return Err(FlowError::PairingInProgress);
+            }
+            state.pairing_session = PairingSession {
+                stage: PairingStage::Searching,
+                ..PairingSession::idle()
+            };
+        }
+        self.emit_pairing_session().await;
+
+        let service = self.clone();
+        let handle = tokio::spawn(async move { service.on_search_elapsed().await });
+        self.set_pairing_timer(handle).await;
+        Ok(())
+    }
+
+    /// Cancels any in-progress pairing session, returning it to idle.
+    /// Aborts whatever timer is pending so a stale firing can't resurrect
+    /// the cancelled session.
+    pub async fn cancel_pairing(&self) -> Result<(), FlowError> {
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage == PairingStage::Idle {
+                return Err(FlowError::PairingNotActive);
+            }
+            // Flip to idle before aborting the timer: even if the abort
+            // request loses the race with an in-flight timer task, that
+            // task's own stage guard (checked under this same lock) will
+            // see Idle and bail out without mutating state.
+            state.pairing_session = PairingSession::idle();
+        }
+        self.cancel_pending_timer().await;
+        self.emit_pairing_session().await;
+        Ok(())
+    }
+
+    /// Requests pairing with one of the current session's candidates.
+    /// Requires the session to be in `Found`.
+    pub async fn pair_with_candidate(&self, candidate_id: &str) -> Result<(), FlowError> {
+        let candidate = {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage != PairingStage::Found {
+                return Err(FlowError::PairingNotReady);
+            }
+            let candidate = state
+                .pairing_session
+                .candidates
+                .iter()
+                .find(|c| c.id == candidate_id)
+                .cloned()
+                .ok_or_else(|| FlowError::CandidateNotFound(candidate_id.to_string()))?;
+            state.pairing_session.stage = PairingStage::Requesting;
+            state.pairing_session.target_name = Some(candidate.name.clone());
+            candidate
+        };
+        self.emit_pairing_session().await;
+
+        let service = self.clone();
+        let handle =
+            tokio::spawn(async move { service.on_pair_request_elapsed(candidate).await });
+        self.set_pairing_timer(handle).await;
+        Ok(())
+    }
+
+    /// `Searching -> Found`, offering whichever of `candidates_pool`
+    /// isn't already a known device name — matches
+    /// `MockDaemonRepository.startPairing`'s `_later` callback.
+    async fn on_search_elapsed(&self) {
+        tokio::time::sleep(PAIRING_SEARCH_TO_FOUND).await;
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage != PairingStage::Searching {
+                return;
+            }
+            let known: HashSet<&str> = state.devices.values().map(|d| d.name.as_str()).collect();
+            let candidates: Vec<PairingCandidate> = state
+                .candidates_pool
+                .iter()
+                .filter(|c| !known.contains(c.name.as_str()))
+                .cloned()
+                .collect();
+            state.pairing_session = PairingSession {
+                stage: PairingStage::Found,
+                candidates,
+                target_name: None,
+                error: None,
+            };
+        }
+        self.take_pairing_timer().await;
+        self.emit_pairing_session().await;
+    }
+
+    /// `Requesting -> Paired`: persists the newly paired device and
+    /// chains the paired->idle timer, matching
+    /// `MockDaemonRepository.pairWithCandidate`'s nested `_later`.
+    async fn on_pair_request_elapsed(&self, candidate: PairingCandidate) {
+        tokio::time::sleep(PAIRING_REQUEST_TO_PAIRED).await;
+
+        let new_device = {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage != PairingStage::Requesting {
+                return;
+            }
+            let device = Device {
+                id: DeviceId(candidate.id.clone()),
+                name: candidate.name.clone(),
+                os: candidate.os,
+                state: DeviceState::Inactive,
+                last_seen: Utc::now(),
+            };
+            state.devices.insert(device.id.clone(), device.clone());
+            state.pairing_session.stage = PairingStage::Paired;
+            device
+        };
+
+        DeviceRepo::new(self.storage.clone())
+            .upsert(DeviceRecord {
+                device: new_device,
+                public_key: None,
+                removable: true,
+            })
+            .await;
+
+        self.take_pairing_timer().await;
+        self.emit_devices().await;
+        self.emit_pairing_session().await;
+
+        let service = self.clone();
+        let handle = tokio::spawn(async move { service.on_paired_elapsed().await });
+        self.set_pairing_timer(handle).await;
+    }
+
+    /// `Paired -> Idle`, automatically, matching
+    /// `MockDaemonRepository.pairWithCandidate`'s innermost `_later`.
+    async fn on_paired_elapsed(&self) {
+        tokio::time::sleep(PAIRING_TERMINAL_TO_IDLE).await;
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage != PairingStage::Paired {
+                return;
+            }
+            state.pairing_session = PairingSession::idle();
+        }
+        self.take_pairing_timer().await;
+        self.emit_pairing_session().await;
+    }
+
+    async fn emit_pairing_session(&self) {
+        let session = self.state.read().await.pairing_session.clone();
+        self.pairing_session_tx.send_replace(session);
+    }
+
+    async fn emit_devices(&self) {
+        let devices = devices_list(&*self.state.read().await);
+        self.devices_tx.send_replace(devices);
+    }
+
+    /// Installs `handle` as the pending pairing timer.
+    async fn set_pairing_timer(&self, handle: JoinHandle<()>) {
+        *self.pairing_timer.lock().await = Some(handle);
+    }
+
+    /// Clears the pending-timer slot without aborting — used by a timer
+    /// callback clearing its own now-irrelevant reference once it has
+    /// already run to completion.
+    async fn take_pairing_timer(&self) -> Option<JoinHandle<()>> {
+        self.pairing_timer.lock().await.take()
+    }
+
+    /// Clears and aborts whatever timer is pending, if any.
+    async fn cancel_pending_timer(&self) {
+        if let Some(handle) = self.take_pairing_timer().await {
+            handle.abort();
+        }
     }
 }
 
@@ -448,5 +644,126 @@ mod tests {
         // Simulate a restart against the same database.
         let reloaded = ServiceState::load_or_seed(&storage).await;
         assert!(!reloaded.devices.contains_key(&DeviceId("d3".to_string())));
+    }
+
+    #[tokio::test]
+    async fn start_pairing_while_already_pairing_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        service.start_pairing().await.expect("first start_pairing");
+        assert_eq!(
+            service.start_pairing().await,
+            Err(FlowError::PairingInProgress)
+        );
+    }
+
+    #[tokio::test]
+    async fn pair_with_candidate_before_found_or_with_unknown_id_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert_eq!(
+            service.pair_with_candidate("cand-office-mini").await,
+            Err(FlowError::PairingNotReady)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pair_with_candidate_with_an_unknown_id_once_found_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let mut sessions = service.watch_pairing_session();
+        let _ = sessions.borrow_and_update();
+
+        service.start_pairing().await.expect("start pairing");
+        sessions.changed().await.expect("searching update");
+        sessions.changed().await.expect("found update");
+        assert_eq!(sessions.borrow_and_update().stage, PairingStage::Found);
+
+        assert_eq!(
+            service.pair_with_candidate("no-such-candidate").await,
+            Err(FlowError::CandidateNotFound("no-such-candidate".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_pairing_when_idle_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert_eq!(
+            service.cancel_pairing().await,
+            Err(FlowError::PairingNotActive)
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn full_pairing_flow_reaches_paired_then_returns_to_idle() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let mut sessions = service.watch_pairing_session();
+        let mut devices = service.watch_devices();
+        let _ = sessions.borrow_and_update();
+        let _ = devices.borrow_and_update();
+
+        service.start_pairing().await.expect("start pairing");
+
+        // idle -> searching (emitted synchronously by start_pairing itself)
+        sessions.changed().await.expect("searching update");
+        assert_eq!(sessions.borrow_and_update().stage, PairingStage::Searching);
+
+        // searching -> found
+        sessions.changed().await.expect("found update");
+        let found = sessions.borrow_and_update().clone();
+        assert_eq!(found.stage, PairingStage::Found);
+        assert_eq!(found.candidates.len(), 2);
+        let candidate_id = found.candidates[0].id.clone();
+        let candidate_name = found.candidates[0].name.clone();
+
+        service
+            .pair_with_candidate(&candidate_id)
+            .await
+            .expect("pair with candidate");
+
+        // found -> requesting (emitted synchronously by pair_with_candidate itself)
+        sessions.changed().await.expect("requesting update");
+        assert_eq!(sessions.borrow_and_update().stage, PairingStage::Requesting);
+
+        // requesting -> paired, plus the new device joining the list
+        sessions.changed().await.expect("paired update");
+        let paired = sessions.borrow_and_update().clone();
+        assert_eq!(paired.stage, PairingStage::Paired);
+        assert_eq!(paired.target_name.as_deref(), Some(candidate_name.as_str()));
+
+        devices.changed().await.expect("devices update");
+        let device_list = devices.borrow_and_update().clone();
+        assert!(device_list.iter().any(|d| d.id.0 == candidate_id));
+
+        // paired -> idle, automatically
+        sessions.changed().await.expect("idle update");
+        let idle = sessions.borrow_and_update().clone();
+        assert_eq!(idle, PairingSession::idle());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancelling_mid_timer_leaves_no_orphaned_mutation() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let mut sessions = service.watch_pairing_session();
+        let _ = sessions.borrow_and_update();
+
+        service.start_pairing().await.expect("start pairing");
+        sessions.changed().await.expect("searching update");
+        assert_eq!(sessions.borrow_and_update().stage, PairingStage::Searching);
+
+        service.cancel_pairing().await.expect("cancel pairing");
+        assert_eq!(*sessions.borrow(), PairingSession::idle());
+
+        // Advance well past every mock-parity timer; nothing should fire
+        // and resurrect the cancelled session.
+        tokio::time::advance(PAIRING_SEARCH_TO_FOUND + PAIRING_REQUEST_TO_PAIRED).await;
+        tokio::task::yield_now().await;
+        assert_eq!(*sessions.borrow(), PairingSession::idle());
     }
 }
