@@ -1185,7 +1185,8 @@
         {
           "id": "J1",
           "title": "Workspace lint discipline",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Verified fresh rather than assumed carried-over from every prior task's own per-task check: cargo fmt --check exits 0 and cargo clippy --workspace --all-targets -- -D warnings exits 0, for the whole workspace as it stands after all of tracks A-I. Also verified the bluetooth feature variant (cargo clippy -p flow-daemon --features bluetooth --all-targets -- -D warnings, also clean) since the plain --workspace invocation never touches that feature-gated code at all. Checked for any #[allow(...)] anywhere in core/daemon/platform's src/ via grep: none exist - every lint clippy would otherwise flag was fixed or the code restructured to avoid it across this entire session's ~20 tasks, not suppressed, so no clippy.toml or workspace-level blanket allowance was needed (deliberately not adding one speculatively, per YAGNI - there is nothing for it to allow). daemon/README.md's 'Testing and linting' section expanded from the bare 3-command block into the actual full check sequence a contributor needs (native workspace sweep, then the bluetooth-feature variant separately), plus an explicit note about the no-allow-anywhere discipline and what a future one would need (a justifying comment, not a silent blanket rule).",
           "dependsOn": ["A7", "P6", "B7", "C6"],
           "description": "cargo fmt --check and cargo clippy --workspace --all-targets -- -D warnings both clean, with any necessary #[allow(...)] justified by a comment rather than silently suppressed workspace-wide.",
           "deliverables": [

@@ -27,11 +27,22 @@ This binds a WebSocket listener on `127.0.0.1:47823` (`docs/contracts/daemon-ipc
 
 ## Testing and linting
 
+The default (no extra features, native target) sweep — this is the bar every commit in this repo is expected to clear, and what `daemon/todos.json` J1 formalizes:
+
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --check
 ```
+
+`flow-daemon` also has a `bluetooth` Cargo feature (Linux-only — `channel::bluetooth`, `discovery::bluetooth`, track G4/G5) that the default sweep above doesn't touch at all, so check it too:
+
+```sh
+cargo test -p flow-daemon --features bluetooth
+cargo clippy -p flow-daemon --features bluetooth --all-targets -- -D warnings
+```
+
+There is currently no `#[allow(...)]` anywhere in `core`/`daemon`/`platform` — every lint the workspace clippy configuration flags is either fixed outright or the code is restructured to avoid it, not suppressed. If a future change genuinely needs one, justify it with a comment at the point of use (a workspace-wide `clippy.toml` blanket-allowance isn't warranted today since nothing needs one yet — adding one speculatively would be lint config for a problem that doesn't exist).
 
 **Cross-language contract test** (`daemon/todos.json` task D5): `flutter/test/data/ipc_daemon_repository_manual_test.dart` runs the same 13 scenarios `mock_daemon_repository_test.dart` proves against the Dart mock, against a real `flow-daemon` process instead — confirming the Rust and Dart sides agree, not just that each independently passes its own tests. Manual and not part of either `cargo test` or a plain `flutter test`:
 
