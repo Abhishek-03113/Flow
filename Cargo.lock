@@ -284,6 +284,7 @@ dependencies = [
 name = "flow-daemon"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "directories",
  "flow-core",
