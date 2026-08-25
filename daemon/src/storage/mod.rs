@@ -9,7 +9,9 @@
 //! `Arc<tokio::sync::Mutex<_>>`, per `daemon/todos.json`'s
 //! `persistenceModel.concurrencyModel`.
 
+pub mod connection_history_repo;
 pub mod device_repo;
+pub mod history_logger;
 pub mod identity_repo;
 mod schema;
 pub mod settings_repo;
@@ -17,6 +19,7 @@ pub mod settings_repo;
 use std::path::Path;
 use std::sync::Arc;
 
+use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
@@ -87,6 +90,15 @@ impl Storage {
         .await
         .expect("storage worker task panicked")
     }
+}
+
+/// Parses a stored RFC 3339 timestamp column. Shared by every repo that
+/// stores a `chrono::DateTime<Utc>` as `TEXT`, so the parsing/panic
+/// message stays in one place instead of being copy-pasted per repo.
+pub(crate) fn parse_rfc3339(s: &str) -> DateTime<Utc> {
+    DateTime::parse_from_rfc3339(s)
+        .unwrap_or_else(|e| panic!("stored timestamp {s:?} is not RFC 3339: {e}"))
+        .with_timezone(&Utc)
 }
 
 #[cfg(test)]
