@@ -9,11 +9,22 @@
 //! `Arc<tokio::sync::Mutex<_>>`, per `daemon/todos.json`'s
 //! `persistenceModel.concurrencyModel`.
 
+mod schema;
+
 use std::path::Path;
 use std::sync::Arc;
 
 use rusqlite::Connection;
 use tokio::sync::Mutex;
+
+/// Everything that can go wrong opening or migrating the database.
+#[derive(Debug, thiserror::Error)]
+pub enum StorageError {
+    #[error("sqlite error: {0}")]
+    Sqlite(#[from] rusqlite::Error),
+    #[error("migration error: {0}")]
+    Migration(#[from] rusqlite_migration::Error),
+}
 
 /// A handle to the daemon's single SQLite connection. Cheap to clone —
 /// clones share the same underlying connection.
@@ -23,23 +34,12 @@ pub struct Storage {
 }
 
 impl Storage {
-    /// Opens (creating if needed) the database file at `path`.
-    pub async fn open(path: impl AsRef<Path>) -> rusqlite::Result<Self> {
+    /// Opens (creating if needed) the database file at `path`, applying
+    /// any pending migrations.
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
-        let conn =
-            tokio::task::spawn_blocking(move || Self::open_and_configure(Connection::open(path)))
-                .await
-                .expect("storage init task panicked")?;
-        Ok(Self {
-            conn: Arc::new(Mutex::new(conn)),
-        })
-    }
-
-    /// Opens a private in-memory database. Tests use this exclusively so
-    /// no persistence test ever touches the real filesystem.
-    pub async fn open_in_memory() -> rusqlite::Result<Self> {
-        let conn = tokio::task::spawn_blocking(|| {
-            Self::open_and_configure(Connection::open_in_memory())
+        let conn = tokio::task::spawn_blocking(move || {
+            Self::open_and_configure(Connection::open(path)?)
         })
         .await
         .expect("storage init task panicked")?;
@@ -48,10 +48,24 @@ impl Storage {
         })
     }
 
-    fn open_and_configure(conn: rusqlite::Result<Connection>) -> rusqlite::Result<Connection> {
-        let conn = conn?;
+    /// Opens a private in-memory database, migrated to the latest schema.
+    /// Tests use this exclusively so no persistence test ever touches the
+    /// real filesystem.
+    pub async fn open_in_memory() -> Result<Self, StorageError> {
+        let conn = tokio::task::spawn_blocking(|| {
+            Self::open_and_configure(Connection::open_in_memory()?)
+        })
+        .await
+        .expect("storage init task panicked")?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+        })
+    }
+
+    fn open_and_configure(mut conn: Connection) -> Result<Connection, StorageError> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
+        schema::migrations().to_latest(&mut conn)?;
         Ok(conn)
     }
 

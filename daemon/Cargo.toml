@@ -14,3 +14,4 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rusqlite_migration = "1"
 directories = "5"
+thiserror = "2"
