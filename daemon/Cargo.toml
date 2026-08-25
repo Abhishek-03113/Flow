@@ -10,7 +10,9 @@ path = "src/main.rs"
 [dependencies]
 flow-core = { path = "../core" }
 flow-platform = { path = "../platform" }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "sync", "time"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rusqlite_migration = "1"
 directories = "5"

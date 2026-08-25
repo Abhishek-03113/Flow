@@ -533,7 +533,8 @@
         {
           "id": "C3",
           "title": "WebSocket connection handler",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Hit and fixed a real Send-bound bug during implementation: building the 5 initial-event sends as one `[send_event(...).await, ...]` array-literal expression keeps every `watch::Ref` guard's temporary alive (via Rust's temporary lifetime extension across the whole array expression) until the array is fully evaluated, and `watch::Ref` isn't `Send` — so the connection's future became unspawnable ('future cannot be sent between threads safely'). Fixed by cloning each watch value out of its guard into an owned local in its own statement before that statement's `.await`, matching the pattern already used in the loop body. tokio gained `net` feature (TcpListener/TcpStream) alongside the existing sync/time/macros/rt-multi-thread. Test harness binds a real TcpListener on 127.0.0.1:0 (ephemeral port) and connects a real tokio-tungstenite client rather than mocking the socket, so the WebSocket handshake and framing are exercised for real, not just the dispatch logic C2 already covers.",
           "dependsOn": ["C2"],
           "description": "daemon/src/ipc/server.rs: per-connection task using tokio-tungstenite. On connect, immediately sends one Event frame per watch* channel's current value (the 'subscribing IS the initial fetch' rule), then select!s between forwarding new watch-channel values as Event frames and reading incoming IpcRequest frames to dispatch (C2) and write back.",
           "deliverables": [
