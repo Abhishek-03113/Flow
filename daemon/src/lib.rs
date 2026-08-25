@@ -5,6 +5,7 @@
 //! against the crate, not the binary — can reach `service`/`storage` the
 //! same way `main.rs` does.
 
+pub mod channel;
 pub mod hotkey;
 pub mod ipc;
 pub mod service;

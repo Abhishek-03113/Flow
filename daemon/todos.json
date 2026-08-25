@@ -918,7 +918,7 @@
         {
           "id": "G2",
           "title": "TCP Channel implementation",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["G1"],
           "description": "TcpChannel implementing Channel, wrapping tokio-tungstenite for the daemon-to-daemon link over Wi-Fi/local network — distinct from track C's local IPC WebSocket server (different port, different peer, different message type: ChannelMessage, not IpcRequest/Response). tokio-tungstenite is used ONLY inside this module — nothing outside daemon/src/channel/tcp.rs (or equivalent) may import it directly, per the wrap-third-party-deps rule G1 exists to enforce.",
           "deliverables": [
@@ -930,7 +930,8 @@
             "grep for tokio_tungstenite outside daemon/src/channel/tcp.rs (and its tests) comes back empty"
           ],
           "specContext": "vision.md §10: 'The initial implementation should use: WebSocket over the local network.' docs/architecture/channels.md 'TcpChannel'.",
-          "commit": "feat(daemon): implement TcpChannel (WebSocket over Wi-Fi/local network)"
+          "commit": "feat(daemon): implement TcpChannel (WebSocket over Wi-Fi/local network)",
+          "buildNote": "daemon/src/channel/tcp.rs. TcpChannel wraps WebSocketStream<MaybeTlsStream<TcpStream>> (not a bare WebSocketStream<TcpStream>) so both connect() (tokio_tungstenite::connect_async, which always returns a MaybeTlsStream) and accept() (tokio_tungstenite::accept_async on an already-accepted TcpStream, explicitly wrapped as MaybeTlsStream::Plain(stream)) produce the same concrete type - avoids an enum or Box<dyn> just to unify the two construction paths' underlying stream types. Added async-trait to daemon/Cargo.toml since implementing a Channel trait defined via #[async_trait] (G1) requires the same macro on every impl block, not just the trait definition. send()/recv() serialize/deserialize ChannelMessage as JSON text frames via existing serde_json; recv() loops past Ping/Pong/Binary frames (tungstenite answers pings automatically) rather than treating them as protocol errors, returning only on a Text frame, a Close frame, EOF, or a transport error - all four map to ChannelError::ConnectionLost except a JSON error, which maps to ChannelError::Serialization. Verified the wrap-third-party-deps acceptance criterion directly: `grep -rln tokio_tungestenite daemon/src --include='*.rs'` returns exactly ipc/server.rs (track C3, the pre-existing local IPC boundary) and channel/tcp.rs (this task) - nothing else. 4 unit tests run against a real loopback TCP socket (127.0.0.1:0, not mocked) within the test process: a hand-crafted ChannelMessage::Input(InputEvent::Keyboard(KeyDown)) received verbatim by the peer (this task's literal acceptance criterion, satisfied without needing two separate OS processes - a real TCP connection between two TcpChannel instances in the same test proves the same thing), a Heartbeat round-trip in the other direction, both ends reporting ChannelKind::Tcp, and a closed connection's peer read reporting ConnectionLost. Full workspace test suite (61 daemon lib tests total) and clippy --all-targets -D warnings both clean. Nothing outside this module's own tests calls TcpChannel::connect/accept yet - no discovery loop (G3) or pairing handshake (G7) is wired to it, so this lands the real transport without yet making two daemons able to find and talk to each other end to end; documented as such in daemon/README.md's Channels section rather than overclaiming."
         },
         {
           "id": "G3",
