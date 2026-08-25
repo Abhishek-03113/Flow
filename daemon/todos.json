@@ -838,7 +838,7 @@
         {
           "id": "F1",
           "title": "Switch-key matcher over the capture event stream",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["E1", "A4"],
           "description": "daemon/src/hotkey/mod.rs: a stateful matcher that consumes the InputCapture event stream and the currently-configured SwitchKeyBinding (from ServiceState.settings.switch_key), detecting when the exact key combination fires, independent of which platform adapter produced the events (works against the platform-neutral InputEvent, not raw OS codes).",
           "deliverables": [
@@ -849,7 +849,8 @@
             "changing settings.switch_key mid-run (via update_settings/set_switch_key) is picked up without restarting the daemon"
           ],
           "specContext": "vision.md §12: 'Switching is the defining interaction of the product... Users should eventually be able to choose... Custom key combinations.'",
-          "commit": "feat(daemon): add switch-key matcher over the platform-neutral input event stream"
+          "commit": "feat(daemon): add switch-key matcher over the platform-neutral input event stream",
+          "buildNote": "daemon/src/hotkey/mod.rs, exposed via a new `pub mod hotkey;` in daemon/src/lib.rs. SwitchKeyMatcher's fields match the plan's suggested shape (binding: SwitchKeyBinding, held: HashSet<String>) plus a feed(&mut self, event: &InputEvent) -> bool method as specified. Key design point not spelled out in the plan: SwitchKeyBinding.keys tokens are polymorphic - \"Ctrl\"/\"Shift\"/\"Alt\"/\"Meta\" are modifier names checked against the triggering KeyDown event's own `modifiers: Vec<Modifier>` field (already a live, per-side-unified snapshot every platform translator maintains), while every other token (\"ScrollLock\", \"F13\", \"Space\", ...) is a literal key name checked against `held`, which this matcher tracks itself since the protocol has no other notion of \"is this specific key currently down\". Key-name comparison (both `held` and the checked token) is case-insensitive via to_ascii_uppercase(), since the token vocabulary (data-model.md's presets, e.g. \"ScrollLock\") and each platform's own key_name() output (e.g. Linux's evdev-derived \"SCROLLLOCK\") were designed independently in separate tracks and never shared a casing convention - discovered while writing this task's own tests, not assumed. Modifier tokens are matched case-sensitively against the fixed \"Ctrl\"/\"Shift\"/\"Alt\"/\"Meta\" vocabulary instead, since those are the contract's own canonical strings, not raw platform output. set_binding() covers the 'live reconfiguration' acceptance criterion at the matcher level (clears `held` on swap, since a combination spanning the swap isn't coherent against either binding); the actual live wiring to ServiceState.settings.switch_key via watch_settings() is F2's job, as F2's own deliverables describe. 6 unit tests cover: Scroll Lock's single-token match, Ctrl+Shift+Space only matching once all three are simultaneously held (not on any subset), releasing a modifier before the final key preventing a match, a key release never triggering a match, a mouse event never triggering a match, and set_binding() taking effect without reconstructing the matcher."
         },
         {
           "id": "F2",
