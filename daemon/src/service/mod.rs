@@ -9,10 +9,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
+use flow_core::channel::{Channel, ChannelAddress, ChannelError};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
-use flow_core::pairing::{PairingCandidate, PairingSession, PairingStage};
+use flow_core::pairing::{
+    PairingCandidate, PairingDecision, PairingRequest, PairingSession, PairingStage,
+};
 use flow_core::permission::PermissionStatus;
 use flow_core::settings::{FlowSettings, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
@@ -20,6 +23,8 @@ use tokio::sync::{watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+use crate::channel::{handshake, negotiate};
+use crate::discovery::DiscoveredPeer;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
@@ -50,6 +55,17 @@ pub struct ServiceState {
     /// (track B4) offers whichever of these aren't already a known
     /// device name, mirroring `MockDaemonRepository._candidateSeeds`.
     pub candidates_pool: Vec<PairingCandidate>,
+    /// Live peers discovered over a real `Channel` medium
+    /// (`note_discovered_peer`, track G7), keyed by `PairingCandidate.id`
+    /// alongside where to reach them. Kept separate from
+    /// `candidates_pool`: whenever this is non-empty for a given
+    /// candidate, `pair_with_candidate` performs a real handshake for it
+    /// instead of the timer-only mock flow — and since nothing in this
+    /// codebase populates it outside of `note_discovered_peer` being
+    /// called explicitly, `B7`'s mock-parity tests (which never call it)
+    /// keep exercising the pure mock flow unchanged, with no separate
+    /// feature flag needed.
+    pub discovered_candidates: HashMap<String, (PairingCandidate, ChannelAddress)>,
 }
 
 impl ServiceState {
@@ -88,6 +104,7 @@ impl ServiceState {
                 granted: false,
             },
             candidates_pool: candidate_seeds(),
+            discovered_candidates: HashMap::new(),
         }
     }
 }
@@ -341,9 +358,12 @@ impl DaemonService {
     }
 
     /// Requests pairing with one of the current session's candidates.
-    /// Requires the session to be in `Found`.
+    /// Requires the session to be in `Found`. A candidate that came from
+    /// a live discovery (`note_discovered_peer`) is paired with over a
+    /// real `Channel` handshake; a mock `candidates_pool` candidate
+    /// keeps the original timer-only mock-parity flow.
     pub async fn pair_with_candidate(&self, candidate_id: &str) -> Result<(), FlowError> {
-        let candidate = {
+        let (candidate, address) = {
             let mut state = self.state.write().await;
             if state.pairing_session.stage != PairingStage::Found {
                 return Err(FlowError::PairingNotReady);
@@ -355,21 +375,34 @@ impl DaemonService {
                 .find(|c| c.id == candidate_id)
                 .cloned()
                 .ok_or_else(|| FlowError::CandidateNotFound(candidate_id.to_string()))?;
+            let address = state
+                .discovered_candidates
+                .get(candidate_id)
+                .map(|(_, address)| address.clone());
             state.pairing_session.stage = PairingStage::Requesting;
             state.pairing_session.target_name = Some(candidate.name.clone());
-            candidate
+            (candidate, address)
         };
         self.emit_pairing_session().await;
 
         let service = self.clone();
-        let handle = tokio::spawn(async move { service.on_pair_request_elapsed(candidate).await });
+        let handle = match address {
+            Some(address) => {
+                tokio::spawn(
+                    async move { service.on_real_pairing_request(candidate, address).await },
+                )
+            }
+            None => tokio::spawn(async move { service.on_pair_request_elapsed(candidate).await }),
+        };
         self.set_pairing_timer(handle).await;
         Ok(())
     }
 
     /// `Searching -> Found`, offering whichever of `candidates_pool`
-    /// isn't already a known device name — matches
-    /// `MockDaemonRepository.startPairing`'s `_later` callback.
+    /// (the mock-parity fallback) and `discovered_candidates` (real,
+    /// live-discovered peers) isn't already a known device name —
+    /// matches `MockDaemonRepository.startPairing`'s `_later` callback,
+    /// extended with G7's real candidates.
     async fn on_search_elapsed(&self) {
         tokio::time::sleep(PAIRING_SEARCH_TO_FOUND).await;
         {
@@ -381,8 +414,9 @@ impl DaemonService {
             let candidates: Vec<PairingCandidate> = state
                 .candidates_pool
                 .iter()
-                .filter(|c| !known.contains(c.name.as_str()))
                 .cloned()
+                .chain(state.discovered_candidates.values().map(|(c, _)| c.clone()))
+                .filter(|c| !known.contains(c.name.as_str()))
                 .collect();
             state.pairing_session = PairingSession {
                 stage: PairingStage::Found,
@@ -393,6 +427,46 @@ impl DaemonService {
         }
         self.take_pairing_timer().await;
         self.emit_pairing_session().await;
+    }
+
+    /// Registers a live-discovered peer (`discovery::tcp`/`::bluetooth`)
+    /// as a pairing candidate. If a search is already past `Searching`
+    /// (i.e. `Found`), folds it into the current session's candidate
+    /// list immediately, since `on_search_elapsed` already ran and won't
+    /// re-run to pick it up on its own; a peer discovered during
+    /// `Searching` or before `start_pairing` is simply cached here for
+    /// whichever `on_search_elapsed`/`start_pairing` runs next.
+    pub async fn note_discovered_peer(&self, peer: DiscoveredPeer) {
+        let candidate_id = format!("live:{}", peer.name);
+        let candidate = PairingCandidate {
+            id: candidate_id.clone(),
+            name: peer.name.clone(),
+            os: peer.os,
+        };
+        let should_emit = {
+            let mut state = self.state.write().await;
+            state
+                .discovered_candidates
+                .insert(candidate_id.clone(), (candidate.clone(), peer.address));
+            let already_known = state.devices.values().any(|d| d.name == candidate.name);
+            let already_offered = state
+                .pairing_session
+                .candidates
+                .iter()
+                .any(|c| c.id == candidate.id);
+            if !already_known
+                && !already_offered
+                && state.pairing_session.stage == PairingStage::Found
+            {
+                state.pairing_session.candidates.push(candidate);
+                true
+            } else {
+                false
+            }
+        };
+        if should_emit {
+            self.emit_pairing_session().await;
+        }
     }
 
     /// `Requesting -> Paired`: persists the newly paired device and
@@ -430,18 +504,180 @@ impl DaemonService {
         self.emit_devices().await;
         self.emit_pairing_session().await;
 
+        self.schedule_terminal_to_idle(PairingStage::Paired).await;
+    }
+
+    /// `Requesting -> Paired` or `Requesting -> Failed`, driven by a real
+    /// handshake over whichever `Channel` medium `connect_best_available`
+    /// (G6) negotiates for `address` — the real-network counterpart to
+    /// `on_pair_request_elapsed`'s timer-only mock flow, taken whenever
+    /// `candidate` came from a live discovery rather than the mock
+    /// `candidates_pool`.
+    async fn on_real_pairing_request(&self, candidate: PairingCandidate, address: ChannelAddress) {
+        match self.request_real_pairing(&address).await {
+            Ok(PairingDecision::Accept) => {
+                let new_device = {
+                    let mut state = self.state.write().await;
+                    if state.pairing_session.stage != PairingStage::Requesting {
+                        return;
+                    }
+                    let device = Device {
+                        id: DeviceId(candidate.id.clone()),
+                        name: candidate.name.clone(),
+                        os: candidate.os,
+                        state: DeviceState::Inactive,
+                        last_seen: Utc::now(),
+                    };
+                    state.devices.insert(device.id.clone(), device.clone());
+                    state.pairing_session.stage = PairingStage::Paired;
+                    device
+                };
+
+                DeviceRepo::new(self.storage.clone())
+                    .upsert(DeviceRecord {
+                        device: new_device,
+                        public_key: None,
+                        removable: true,
+                    })
+                    .await;
+
+                self.take_pairing_timer().await;
+                self.emit_devices().await;
+                self.emit_pairing_session().await;
+                self.schedule_terminal_to_idle(PairingStage::Paired).await;
+            }
+            Ok(PairingDecision::Reject) => {
+                self.fail_pairing("the peer rejected the pairing request".to_string())
+                    .await;
+            }
+            Err(err) => {
+                self.fail_pairing(format!("pairing failed: {err}")).await;
+            }
+        }
+    }
+
+    /// Negotiates a `Channel` for `address` (G6) and runs the initiator
+    /// side of the pairing exchange (`channel::handshake`) over it.
+    /// Written entirely against the `Channel` trait — no branch on
+    /// `ChannelKind` anywhere in this method or in `channel::handshake` —
+    /// proof that G1's abstraction holds all the way up to pairing.
+    async fn request_real_pairing(
+        &self,
+        address: &ChannelAddress,
+    ) -> Result<PairingDecision, ChannelError> {
+        let mut channel = negotiate::connect_best_available(std::slice::from_ref(address)).await?;
+        let (local_name, local_os) = self.local_device_identity().await;
+        let request = PairingRequest {
+            device_name: local_name,
+            device_os: local_os,
+            // This device's own reachable address isn't tracked yet —
+            // that would need a self-advertised listening address,
+            // which is out of this task's scope (see this task's
+            // buildNote) — left blank rather than fabricated.
+            address: String::new(),
+        };
+        handshake::request_pairing(channel.as_mut(), request).await
+    }
+
+    /// This device's own name/OS, as already recorded for
+    /// [`LOCAL_DEVICE_ID`] — used to fill out an outgoing
+    /// `PairingRequest`. Falls back to a generic name if the local
+    /// device record is ever missing, which shouldn't happen in
+    /// practice since `load_or_seed` always seeds it.
+    async fn local_device_identity(&self) -> (String, HostOs) {
+        let state = self.state.read().await;
+        state
+            .devices
+            .get(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .map(|device| (device.name.clone(), device.os))
+            .unwrap_or_else(|| ("Flow".to_string(), HostOs::Linux))
+    }
+
+    /// Accepts an already-negotiated `Channel` from an incoming pairing
+    /// attempt (a peer's own `pair_with_candidate`), runs the responder
+    /// side of the handshake, and — on acceptance — upserts the
+    /// initiator as a paired device on this side too, so
+    /// `docs/product/vision.md` §16's "once accepted, the devices become
+    /// trusted" holds symmetrically for both ends of one handshake, not
+    /// just the initiator's.
+    ///
+    /// Always accepts for now: the Flutter-facing contract has no
+    /// incoming-pairing-request command/UI yet
+    /// (`docs/contracts/daemon-ipc.md`'s `PairingSession` only models the
+    /// *initiating* side's view) — a real accept/reject prompt on this
+    /// side is a natural follow-up requiring a new contract command,
+    /// out of this task's scope; flagged honestly here rather than
+    /// silently assumed. See this task's `buildNote`.
+    pub async fn accept_pairing_request(
+        &self,
+        mut channel: Box<dyn Channel>,
+    ) -> Result<(), ChannelError> {
+        let (request, decision) =
+            handshake::respond_to_pairing(channel.as_mut(), |_request| PairingDecision::Accept)
+                .await?;
+        if decision != PairingDecision::Accept {
+            return Ok(());
+        }
+
+        let device_id = DeviceId(format!("peer:{}", request.device_name));
+        let device = Device {
+            id: device_id.clone(),
+            name: request.device_name,
+            os: request.device_os,
+            state: DeviceState::Inactive,
+            last_seen: Utc::now(),
+        };
+        {
+            let mut state = self.state.write().await;
+            state.devices.insert(device_id, device.clone());
+        }
+        DeviceRepo::new(self.storage.clone())
+            .upsert(DeviceRecord {
+                device,
+                public_key: None,
+                removable: true,
+            })
+            .await;
+        self.emit_devices().await;
+        Ok(())
+    }
+
+    /// Moves the pairing session to `Failed` with `message`, unless it
+    /// has already moved on (e.g. `cancel_pairing` raced it back to
+    /// `Idle`), and schedules the same `Failed -> Idle` timer
+    /// `Paired -> Idle` uses.
+    async fn fail_pairing(&self, message: String) {
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage != PairingStage::Requesting {
+                return;
+            }
+            state.pairing_session.stage = PairingStage::Failed;
+            state.pairing_session.error = Some(message);
+        }
+        self.take_pairing_timer().await;
+        self.emit_pairing_session().await;
+        self.schedule_terminal_to_idle(PairingStage::Failed).await;
+    }
+
+    /// Spawns the `expected -> Idle` timer (`Paired -> Idle` or
+    /// `Failed -> Idle`) and installs it as the pending pairing timer.
+    async fn schedule_terminal_to_idle(&self, expected: PairingStage) {
         let service = self.clone();
-        let handle = tokio::spawn(async move { service.on_paired_elapsed().await });
+        let handle = tokio::spawn(async move { service.on_terminal_elapsed(expected).await });
         self.set_pairing_timer(handle).await;
     }
 
-    /// `Paired -> Idle`, automatically, matching
-    /// `MockDaemonRepository.pairWithCandidate`'s innermost `_later`.
-    async fn on_paired_elapsed(&self) {
+    /// `Paired -> Idle` or `Failed -> Idle`, automatically, after
+    /// `PAIRING_TERMINAL_TO_IDLE` — matches
+    /// `MockDaemonRepository.pairWithCandidate`'s innermost `_later` for
+    /// the `Paired` case; the `Failed` case is this task's own addition,
+    /// since the mock-only flow never reaches `Failed` on its own.
+    async fn on_terminal_elapsed(&self, expected: PairingStage) {
         tokio::time::sleep(PAIRING_TERMINAL_TO_IDLE).await;
         {
             let mut state = self.state.write().await;
-            if state.pairing_session.stage != PairingStage::Paired {
+            if state.pairing_session.stage != expected {
                 return;
             }
             state.pairing_session = PairingSession::idle();
