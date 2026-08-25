@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use flow_core::ipc::IPC_PORT;
+use flow_daemon::hotkey;
 use flow_daemon::ipc::server::handle_connection;
 use flow_daemon::service::DaemonService;
 use flow_daemon::storage::{history_logger, Storage};
@@ -23,6 +24,7 @@ async fn main() {
         .expect("failed to open flow-daemon database");
     let service = Arc::new(DaemonService::new(storage.clone()).await);
     let _history_logger = history_logger::spawn(&service, storage.clone());
+    let _hotkey_runner = hotkey::runner::spawn(&service);
 
     let listener = TcpListener::bind(("127.0.0.1", IPC_PORT))
         .await
