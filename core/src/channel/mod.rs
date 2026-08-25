@@ -64,6 +64,13 @@ pub enum ChannelMessage {
     Input(InputEvent),
     Pairing(PairingWireMessage),
     Heartbeat,
+    /// Raw bytes carried by `NoiseChannel` (`daemon/todos.json` H3):
+    /// handshake material before its wrapped transport is established,
+    /// or an encrypted, serialized `ChannelMessage` afterward. Never
+    /// constructed or matched outside `daemon::channel::noise` — every
+    /// other module only ever sees the decrypted `ChannelMessage`
+    /// `NoiseChannel`'s own `Channel` implementation yields.
+    Noise(Vec<u8>),
 }
 
 /// What can go wrong on a [`Channel`], independent of which medium is
@@ -78,6 +85,13 @@ pub enum ChannelError {
     Serialization(String),
     #[error("medium not supported on this platform")]
     UnsupportedMedium,
+    /// The Noise handshake failed, or the peer's identity proof over it
+    /// didn't verify (`daemon/todos.json` H3) — covers both "the bytes
+    /// were corrupt/tampered with" and "the signature didn't match,"
+    /// deliberately not distinguished further since Noise itself
+    /// doesn't distinguish a malformed handshake from a tampered one.
+    #[error("peer identity verification failed")]
+    AuthenticationFailed,
 }
 
 /// A connection between two Flow daemons, established over whichever

@@ -7,4 +7,5 @@
 pub mod bluetooth;
 pub mod handshake;
 pub mod negotiate;
+pub mod noise;
 pub mod tcp;
