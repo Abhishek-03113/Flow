@@ -187,35 +187,35 @@
         {
           "id": "D1",
           "title": "Design tokens",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["F6"],
           "description": "flutter/lib/core/theme/tokens.dart: FlowColors (light/dark, from sharedDesignTokens.colorsDark/colorsLight above), spacing scale, radius scale, motion durations/curves, type scale as TextStyle constants.",
           "deliverables": ["flutter/lib/core/theme/tokens.dart"],
           "acceptanceCriteria": ["Every value in sharedDesignTokens.colorsDark/colorsLight/typeScale/radii/motion above has a named constant.", "OKLCH accent colors converted to Flutter Color (sRGB) — document the conversion inline since Color has no native OKLCH constructor."],
-          "designContext": { "ref": "sharedDesignTokens.colorsDark, colorsLight, typeScale, radii, motion (top of this file)" },
-          "commit": null
+          "designContext": { "ref": "sharedDesignTokens.colorsDark, colorsLight, typeScale, radii, motion (top of this file)", "oklchConversion": "accent dark oklch(0.66 0.16 250) -> #3496EF, accent light oklch(0.55 0.18 250) -> #0072D5, accentSoft light oklch(0.94 0.03 250) -> #DDEDFF, computed via Bjorn Ottosson's OKLab->linear-sRGB matrices + sRGB gamma encode (no runtime OKLCH dependency added)." },
+          "commit": "feat(flutter): add design tokens, theme, platform chrome (D1-D3)"
         },
         {
           "id": "D2",
           "title": "FlowTheme ThemeData + ThemeExtension",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D1"],
           "description": "flutter/lib/core/theme/flow_theme.dart: a ThemeExtension<FlowColors> plus light/dark ThemeData builders using the tokens from D1, wired into MaterialApp in a later app-shell task.",
           "deliverables": ["flutter/lib/core/theme/flow_theme.dart"],
           "acceptanceCriteria": ["Theme.of(context).extension<FlowColors>() resolves correctly in both brightness modes."],
           "designContext": { "note": "Structural task on top of D1's tokens." },
-          "commit": null
+          "commit": "feat(flutter): add design tokens, theme, platform chrome (D1-D3)"
         },
         {
           "id": "D3",
           "title": "Platform chrome metadata",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D1"],
           "description": "flutter/lib/core/platform_chrome.dart: HostPlatform enum {macos, windows, linux} plus a metadata lookup (barPos, barHeight, radius, controls style, trayName, permissionName) mirroring platformMeta() in the .dc.html.",
           "deliverables": ["flutter/lib/core/platform_chrome.dart"],
           "acceptanceCriteria": ["Matches sharedDesignTokens.platformChrome exactly for all 3 platforms."],
-          "designContext": { "ref": "sharedDesignTokens.platformChrome" },
-          "commit": null
+          "designContext": { "ref": "sharedDesignTokens.platformChrome", "note": "Keyed by domain.HostOs rather than a new enum, to keep one source of truth for the 3 platform values instead of two enums that could drift." },
+          "commit": "feat(flutter): add design tokens, theme, platform chrome (D1-D3)"
         },
         {
           "id": "D4",
