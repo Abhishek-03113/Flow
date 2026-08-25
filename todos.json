@@ -362,18 +362,18 @@
         {
           "id": "O1",
           "title": "Onboarding shell",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["D5", "D6"],
           "description": "flutter/lib/features/onboarding/onboarding_flow.dart: 520px-wide glass window (WindowChrome titled 'Cross Device' + body), animated step transitions (cd-fade), 4-dot pagination footer.",
           "deliverables": ["flutter/lib/features/onboarding/onboarding_flow.dart"],
           "acceptanceCriteria": ["Window width 520px per sharedDesignTokens.componentSizes.onboardingWindowWidth.", "Dots: 5px circles, active = accent, inactive = mat3, animated color transition."],
           "designContext": { "layout": "onboardBody padding 30px 34px 22px, column gap 18px; each stage centered column, gap 14px, cd-fade 240ms entrance." },
-          "commit": null
+          "commit": "feat(flutter): implement onboarding flow (O1-O3)"
         },
         {
           "id": "O2",
           "title": "Onboarding step widgets",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["O1", "D4"],
           "description": "Four step widgets in flutter/lib/features/onboarding/steps/: welcome_step.dart, permission_step.dart, pair_step.dart, done_step.dart, using the exact copy below.",
           "deliverables": [
@@ -389,18 +389,20 @@
             "pair": { "title": "Find your other computer", "body": "Pairing happens once. After that your computers recognise each other automatically.", "searching": "spinner + 'Searching…'", "found": "idle-ring dot + 'Work Laptop' / 'Nearby' + accent 'Pair' button", "requesting": "spinner + 'Waiting for approval on Work Laptop…'" },
             "done": { "glyph": "46px circle #30d158 with ✓", "title": "Ready", "body": "Cross Device lives in your {trayName} from now on. Press {switchKey} to switch computers.", "cta": "Done" }
           },
-          "commit": null
+          "buildNote": "Pair step's 'found' state shows the real candidate list from the shared PairingSession (e.g. 'Office Mac Mini', 'Studio Linux' from the mock) rather than the source's hardcoded 'Work Laptop' placeholder — expected, since O3 unifies this with the tray's real pairing data instead of keeping the source's second, independent, hardcoded onboarding pairing mock.",
+          "commit": "feat(flutter): implement onboarding flow (O1-O3)"
         },
         {
           "id": "O3",
           "title": "Wire onboarding to Riverpod",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["O2", "F5"],
           "description": "Permission step calls requestPermission() and watches watchPermission(); pair step reuses the same pairing command/stream as the tray (start/cancel/pairWithCandidate + watchPairingSession) so there is exactly one pairing implementation in the app, not two.",
           "deliverables": ["flutter/lib/features/onboarding/onboarding_flow.dart (updated)"],
           "acceptanceCriteria": ["No duplicate pairing state machine — confirm by grep: only T2/O3 reference watchPairingSession/pairWithCandidate, and both read the same provider."],
           "designContext": { "note": "Design intent: pairing is one daemon-side concept surfaced in two places, not two features." },
-          "commit": null
+          "buildNote": "Confirmed by grep: tray_pairing_view.dart and onboarding_flow.dart are the only two lib/ files referencing pairingSessionProvider/pairWithCandidate, both via state/repository_providers.dart. onboarding_flow.dart calls startPairing() on entering step 2 (if idle) and auto-advances to the Done step when the shared session reaches 'paired', without waiting for the tray-specific auto-idle-return timer. 2 widget tests added (full happy path + permission-gate check); found and fixed a real RenderFlex overflow in pair_step.dart's status card (unbounded Text needed an Expanded).",
+          "commit": "feat(flutter): implement onboarding flow (O1-O3)"
         }
       ]
     },
