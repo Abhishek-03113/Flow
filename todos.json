@@ -1,0 +1,575 @@
+{
+  "meta": {
+    "project": "Flow — Flutter control-plane UI",
+    "branch": "feat/flutter-ui",
+    "created": "2026-08-25",
+    "description": "Build the Flutter UI against a mock daemon data source (no Rust daemon yet). Every task that touches data must go through the DaemonRepository contract documented in docs/contracts/, never bypass it, so a real daemon can be dropped in later without UI changes.",
+    "contractDocs": [
+      "docs/contracts/README.md",
+      "docs/contracts/data-model.md",
+      "docs/contracts/daemon-ipc.md",
+      "docs/contracts/CHANGELOG.md"
+    ],
+    "contractVersion": "0.1.0",
+    "designSource": {
+      "origin": "Claude Design canvas, exported as a zip and read locally (design/claude-design-export/, gitignored — not committed)",
+      "canvasUrl": "https://claude.ai/design/p/71732c32-0139-4a8c-9e9a-ea5749389a34?file=Cross-Device+UI+v2.dc.html",
+      "focusFile": "Cross-Device UI v2.dc.html",
+      "importedFiles": ["Cross-Device UI v2.dc.html", "TrayPopover.dc.html", "WindowChrome.dc.html", "support.js"],
+      "note": "The .dc.html files are a JS prototype (DCLogic class components, sc-if/sc-for template directives, inline style objects) — a visual/interaction reference to re-implement natively in Flutter, not code to port line-for-line. support.js is just the canvas runtime that executes them; no app logic lives there."
+    },
+    "howToUseThisFile": "Each task's designContext carries enough of the original design (exact copy strings, token values, state lists, sizes) to implement it without re-opening the export. sharedDesignTokens holds the global values (colors, motion, radii) referenced by id from individual tasks instead of being repeated. Update a task's status and add a commit field (short sha + message) when you finish it — that's the record of what's actually landed vs. still planned.",
+    "statusValues": ["pending", "in_progress", "done", "blocked"]
+  },
+  "sharedDesignTokens": {
+    "font": "-apple-system,BlinkMacSystemFont,\"SF Pro Text\",\"Segoe UI Variable\",\"Segoe UI\",Roboto,\"Helvetica Neue\",sans-serif",
+    "letterSpacing": "-0.005em body, -0.02em large titles",
+    "motion": {
+      "ease": "cubic-bezier(0.32,0.72,0,1) over 180ms for hover/press/toggle transitions",
+      "popoverEnter": "cd-pop: opacity 0->1, scale 0.96->1, translateY -6px->0, 220ms cubic-bezier(0.32,0.72,0,1)",
+      "fadeIn": "cd-fade: opacity 0->1, translateY 4px->0, ~200-240ms ease",
+      "spin": "cd-spin: 360deg rotation, 0.8s linear infinite (loading spinners)",
+      "breathe": "cd-breathe: opacity 1<->0.4, 1.3-1.4s ease-in-out infinite (recording/connecting pulse)"
+    },
+    "colorsDark": {
+      "border": "rgba(255,255,255,0.14)", "chromeBg": "rgba(40,40,44,0.82)", "winGlass": "rgba(26,26,30,0.8)",
+      "mat1": "rgba(255,255,255,0.055)", "mat2": "rgba(255,255,255,0.1)", "mat3": "rgba(255,255,255,0.14)",
+      "text1": "rgba(255,255,255,0.94)", "text2": "rgba(255,255,255,0.56)", "text3": "rgba(255,255,255,0.36)",
+      "accent": "oklch(0.66 0.16 250)", "accentSoft": "rgba(110,140,255,0.16)", "accentText": "#ffffff",
+      "barBg": "rgba(16,16,20,0.6)", "hairline": "rgba(255,255,255,0.09)", "shell": "#0b0c0f",
+      "danger": "#ff453a", "dangerSoft": "rgba(255,69,58,0.14)",
+      "shadow": "0 24px 64px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)",
+      "statusActive": "#30d158", "statusIdle": "#0a84ff", "statusPending": "#ff9f0a", "statusError": "#ff453a",
+      "wallpaperNote": "layered radial gradients: #2b3550 top-left, #3a2f4d top-right, #17222e bottom, base #101319"
+    },
+    "colorsLight": {
+      "border": "rgba(0,0,0,0.09)", "chromeBg": "rgba(246,246,249,0.88)", "winGlass": "rgba(250,250,252,0.86)",
+      "mat1": "rgba(10,12,20,0.045)", "mat2": "rgba(10,12,20,0.075)", "mat3": "rgba(10,12,20,0.1)",
+      "text1": "rgba(0,0,0,0.88)", "text2": "rgba(0,0,0,0.5)", "text3": "rgba(0,0,0,0.34)",
+      "accent": "oklch(0.55 0.18 250)", "accentSoft": "oklch(0.94 0.03 250)", "accentText": "#ffffff",
+      "barBg": "rgba(255,255,255,0.55)", "hairline": "rgba(0,0,0,0.08)", "shell": "#eef0f4",
+      "danger": "#d92d20", "dangerSoft": "rgba(217,45,32,0.1)",
+      "shadow": "0 24px 60px rgba(20,24,40,0.2), 0 2px 6px rgba(20,24,40,0.1)",
+      "statusActive": "#30d158", "statusIdle": "#0a84ff", "statusPending": "#ff9f0a", "statusError": "#d92d20",
+      "wallpaperNote": "layered radial gradients: #cfd9ef top-left, #e6d8ea top-right, #d5e2e6 bottom, base #e9ecf2"
+    },
+    "statusDotShape": "9px circle. Filled+glow (box-shadow color+'66') when solid state (active/error). 1.5px ring, transparent fill, no glow when a 'reachable but not active' state (inactive/idle). Add cd-breathe pulse when connecting/reconnecting/switching.",
+    "typeScale": {
+      "sectionLabel": "10.5-11px, weight 700, uppercase, letter-spacing 0.06-0.07em, color text3",
+      "body": "13px, weight 590, color text1",
+      "meta": "11.5-12px, color text2",
+      "heroTitle": "20-22px, weight 660-680, letter-spacing -0.02em",
+      "buttonLabel": "12-13px, weight 590-620"
+    },
+    "radii": { "macPopoverAndWindow": "16-18px", "windowsPopoverAndWindow": "10-12px", "linuxGnomePopoverAndWindow": "12-14px", "card": "10-15px", "button": "6-12px", "toggleTrack": "11px (pill)" },
+    "platformChrome": {
+      "macos": { "barPos": "top", "barHeight": 26, "controls": "traffic-light dots (red/yellow/green), centered title", "trayName": "menu bar", "permissionName": "Accessibility access" },
+      "windows": { "barPos": "bottom (taskbar)", "barHeight": 44, "controls": "win: minimize/maximize/close glyphs, left-aligned title", "trayName": "system tray", "permissionName": "Input access" },
+      "linux": { "barPos": "top", "barHeight": 30, "controls": "gnome: small round min/max/close buttons, left-aligned title", "trayName": "tray", "permissionName": "Input device access" }
+    },
+    "componentSizes": {
+      "trayPopoverWidth": "312px",
+      "onboardingWindowWidth": "520px",
+      "appWindowSize": "720x470px",
+      "appSidebarWidth": "176px",
+      "toggleTrack": "38x22px, 2px padding, 18px thumb",
+      "windowChromeBarHeight": "40px"
+    }
+  },
+  "tracks": [
+    {
+      "id": "foundation",
+      "name": "Foundation: contracts, domain model, mock data",
+      "description": "Everything downstream depends on this: the documented contract, the Dart types that satisfy it, and the in-memory mock that stands in for the daemon this session.",
+      "tasks": [
+        {
+          "id": "F1",
+          "title": "Document Flutter↔daemon contracts",
+          "status": "done",
+          "dependsOn": [],
+          "description": "Write docs/contracts/{README,data-model,daemon-ipc,CHANGELOG}.md defining the DaemonRepository interface, wire JSON shapes, RPC command table, event list, and the pairing/switching/link-health state machines. Device.state reuses flow_core::device::DeviceState's six variants verbatim so the Rust side can serialize its existing enum with no translation layer.",
+          "deliverables": ["docs/contracts/README.md", "docs/contracts/data-model.md", "docs/contracts/daemon-ipc.md", "docs/contracts/CHANGELOG.md"],
+          "acceptanceCriteria": [
+            "Every entity in data-model.md has both a Dart shape and a JSON example.",
+            "daemon-ipc.md lists every command/event the mock will implement, with preconditions and effects.",
+            "Explicitly notes which mock timings are contractual (state sequence) vs incidental (exact delay ms)."
+          ],
+          "designContext": {
+            "note": "Contract is derived from the state shape both .dc.html components already use: Component.state.devices (id/name/os/status), state.connState (6-value enum), pairing popView/pairStep machine, state.toggles + sensitivity + switchKey. See daemon-ipc.md for the exact mapping."
+          },
+          "commit": "docs: draft Flutter↔daemon contracts (F1)"
+        },
+        {
+          "id": "F2",
+          "title": "Domain entities",
+          "status": "pending",
+          "dependsOn": ["F1"],
+          "description": "Create the Dart types from data-model.md: Device, HostOs, DeviceState, DaemonLinkState, PairingCandidate, PairingSession, PairingStage, SwitchKeyBinding, FlowSettings, PointerSensitivity, PermissionStatus, SettingsPatch. Plain immutable classes (const constructors, copyWith where mutated), no codegen — YAGNI, this project doesn't need freezed/json_serializable for a handful of small types.",
+          "deliverables": [
+            "flutter/lib/domain/device.dart",
+            "flutter/lib/domain/daemon_link_state.dart",
+            "flutter/lib/domain/pairing.dart",
+            "flutter/lib/domain/switch_key_binding.dart",
+            "flutter/lib/domain/settings.dart",
+            "flutter/lib/domain/permission_status.dart"
+          ],
+          "acceptanceCriteria": [
+            "Types match data-model.md field-for-field.",
+            "`flutter analyze` clean, no lint suppressions.",
+            "No dependency on Flutter widgets in domain/ — pure Dart, so it's testable without a widget test harness (separation of concerns)."
+          ],
+          "designContext": {
+            "sourceState": "Component.state in Cross-Device UI v2.dc.html: devices: [{id,name,os,status}], toggles: {launchAtLogin,showTray,autoReconnect,autoConnect,shareKeyboard,shareMouse,debugLogging}, sensitivity: 'normal', switchKey: 'Scroll Lock'.",
+            "presets": "PRESETS = ['Scroll Lock', 'Pause', 'F13', 'Ctrl + Shift + Space'] — use as SwitchKeyBinding.presets static list."
+          },
+          "commit": null
+        },
+        {
+          "id": "F3",
+          "title": "DaemonRepository abstract interface",
+          "status": "pending",
+          "dependsOn": ["F2"],
+          "description": "flutter/lib/domain/daemon_repository.dart: the abstract class from daemon-ipc.md — 5 watch* streams, 9 commands. This is the seam every UI feature and the mock both depend on; nothing else in lib/ may reference MockDaemonRepository directly.",
+          "deliverables": ["flutter/lib/domain/daemon_repository.dart"],
+          "acceptanceCriteria": ["Method signatures match daemon-ipc.md exactly.", "Doc comments on the class point back to docs/contracts/daemon-ipc.md."],
+          "designContext": { "note": "No new design context — this is the interface daemon-ipc.md already specifies." },
+          "commit": null
+        },
+        {
+          "id": "F4",
+          "title": "MockDaemonRepository",
+          "status": "pending",
+          "dependsOn": ["F3"],
+          "description": "In-memory implementation of DaemonRepository using StreamControllers (broadcast, seeded with current state on listen). Reproduce the exact state machines and seed data from the .dc.html prototype so the UI feels alive: 3 seed devices, pairing timing (~1.2s to find, ~1.5s to accept, ~1.6s auto-return to idle), 400ms switch debounce, two pairing candidates (Office Mac Mini, Studio Linux) that disappear once paired.",
+          "deliverables": ["flutter/lib/data/mock_daemon_repository.dart"],
+          "acceptanceCriteria": [
+            "Every DaemonRepository method implemented, no UnimplementedError.",
+            "Pairing/switching sequences match the state machines in daemon-ipc.md.",
+            "Emits an initial value on every stream immediately on listen (contract: 'connecting to the channel and subscribing is the initial fetch')."
+          ],
+          "designContext": {
+            "seedDevices": "[{id:'d1',name:'MacBook',os:'macos',state:'active'}, {id:'d2',name:'Work Laptop',os:'windows',state:'inactive'}, {id:'d3',name:'Desktop',os:'linux',state:'disconnected'}]",
+            "pairingCandidates": "['Office Mac Mini', 'Studio Linux'] — filtered to exclude names already in the device list",
+            "timings": { "pairingSearchToFound": "1200ms", "pairingRequestingToPaired": "1500ms", "pairedAutoReturnToIdle": "1600ms", "switchDebounce": "400ms" },
+            "quote": "TrayPopover.dc.html switchTo(): sets switching:id, then after 400ms flips devices[id].status='active' and demotes the previous active to 'inactive'."
+          },
+          "commit": null
+        },
+        {
+          "id": "F5",
+          "title": "Riverpod state wiring",
+          "status": "pending",
+          "dependsOn": ["F4"],
+          "description": "Add flutter_riverpod. flutter/lib/state/: a repositoryProvider (Provider<DaemonRepository>, default MockDaemonRepository, overridable in tests and later for a real IPC client), StreamProviders for devices/linkState/pairingSession/settings/permission, and any small transient UI-only state (theme mode override, tray-open bool) as separate providers so daemon-derived state and pure-UI state never live in the same notifier.",
+          "deliverables": ["flutter/lib/state/repository_providers.dart", "flutter/lib/state/ui_providers.dart"],
+          "acceptanceCriteria": ["Widgets never construct MockDaemonRepository directly, only via ref.watch(repositoryProvider) or the derived stream providers.", "`flutter analyze` clean."],
+          "designContext": { "note": "Pure wiring task, no new design context beyond F1-F4." },
+          "commit": null
+        },
+        {
+          "id": "F6",
+          "title": "Project dependencies and lint baseline",
+          "status": "pending",
+          "dependsOn": ["F5"],
+          "description": "Finalize pubspec.yaml (flutter_riverpod, flutter_lints), confirm `flutter pub get`, `flutter analyze`, and `flutter test` all run clean on the foundation layer before UI work starts on top of it.",
+          "deliverables": ["flutter/pubspec.yaml"],
+          "acceptanceCriteria": ["flutter analyze: 0 issues.", "flutter test: passes (even if only placeholder/domain tests exist so far)."],
+          "designContext": { "note": "No design context — tooling task." },
+          "commit": null
+        }
+      ]
+    },
+    {
+      "id": "design-system",
+      "name": "Design system: tokens, theme, shared widgets",
+      "description": "The reusable visual vocabulary every screen is built from — translated from the .dc.html style objects into a proper Flutter theme instead of inline style dicts.",
+      "tasks": [
+        {
+          "id": "D1",
+          "title": "Design tokens",
+          "status": "pending",
+          "dependsOn": ["F6"],
+          "description": "flutter/lib/core/theme/tokens.dart: FlowColors (light/dark, from sharedDesignTokens.colorsDark/colorsLight above), spacing scale, radius scale, motion durations/curves, type scale as TextStyle constants.",
+          "deliverables": ["flutter/lib/core/theme/tokens.dart"],
+          "acceptanceCriteria": ["Every value in sharedDesignTokens.colorsDark/colorsLight/typeScale/radii/motion above has a named constant.", "OKLCH accent colors converted to Flutter Color (sRGB) — document the conversion inline since Color has no native OKLCH constructor."],
+          "designContext": { "ref": "sharedDesignTokens.colorsDark, colorsLight, typeScale, radii, motion (top of this file)" },
+          "commit": null
+        },
+        {
+          "id": "D2",
+          "title": "FlowTheme ThemeData + ThemeExtension",
+          "status": "pending",
+          "dependsOn": ["D1"],
+          "description": "flutter/lib/core/theme/flow_theme.dart: a ThemeExtension<FlowColors> plus light/dark ThemeData builders using the tokens from D1, wired into MaterialApp in a later app-shell task.",
+          "deliverables": ["flutter/lib/core/theme/flow_theme.dart"],
+          "acceptanceCriteria": ["Theme.of(context).extension<FlowColors>() resolves correctly in both brightness modes."],
+          "designContext": { "note": "Structural task on top of D1's tokens." },
+          "commit": null
+        },
+        {
+          "id": "D3",
+          "title": "Platform chrome metadata",
+          "status": "pending",
+          "dependsOn": ["D1"],
+          "description": "flutter/lib/core/platform_chrome.dart: HostPlatform enum {macos, windows, linux} plus a metadata lookup (barPos, barHeight, radius, controls style, trayName, permissionName) mirroring platformMeta() in the .dc.html.",
+          "deliverables": ["flutter/lib/core/platform_chrome.dart"],
+          "acceptanceCriteria": ["Matches sharedDesignTokens.platformChrome exactly for all 3 platforms."],
+          "designContext": { "ref": "sharedDesignTokens.platformChrome" },
+          "commit": null
+        },
+        {
+          "id": "D4",
+          "title": "Shared primitive widgets",
+          "status": "pending",
+          "dependsOn": ["D2"],
+          "description": "flutter/lib/core/widgets/primitives.dart: StatusDot (solid+glow vs. ring variants per sharedDesignTokens.statusDotShape, with optional breathe pulse), ToggleSwitch (pill track + circular thumb, animated), SegmentedControl<T> (generic pill-group selector used for View/Connection/Platform/Theme pickers and Appearance/Sensitivity settings), PrimaryButton/GhostButton/DangerButton/ChipButton, Spinner (rotating ring).",
+          "deliverables": ["flutter/lib/core/widgets/primitives.dart"],
+          "acceptanceCriteria": ["Each primitive is a StatelessWidget/StatefulWidget with no daemon/domain dependency — pure presentation, driven entirely by constructor params.", "Toggle animates over the 180ms cubic-bezier(0.32,0.72,0,1) curve from sharedDesignTokens.motion.ease."],
+          "designContext": {
+            "toggleSpec": "track 38x22px radius 11px, 2px padding, thumb 18px circle #fff with 0 1px 3px rgba(0,0,0,0.25) shadow, track color accent when on else mat2, thumb aligns flex-end/flex-start.",
+            "segmentSpec": "pill container padding 2px radius 8px background mat1; each option padding 4px 9px radius 6px fontSize 11.5px weight 590; selected background accent + accentText, unselected transparent + text2.",
+            "buttonSpec": "generic btn: padding 6px 12px, radius 8px, fontSize 12px weight 590, whiteSpace nowrap. Primary (onboarding CTA): padding 9px 20px radius 9px background accent color accentText fontSize 13px weight 620. Danger: background dangerSoft color danger."
+          },
+          "commit": null
+        },
+        {
+          "id": "D5",
+          "title": "GlassSurface backdrop container",
+          "status": "pending",
+          "dependsOn": ["D2"],
+          "description": "flutter/lib/core/widgets/glass_surface.dart: a BackdropFilter blur container (used for the tray popover body, onboarding window, app window, toast pill) reproducing the translucent 'glass' material from the design (blur(40-44px) saturate(180%), border 1px, boxShadow, optional inset highlight).",
+          "deliverables": ["flutter/lib/core/widgets/glass_surface.dart"],
+          "acceptanceCriteria": ["Configurable blur sigma, background color/opacity, border, radius, shadow — one widget reused by tray/onboarding/app-window/toast rather than four bespoke containers."],
+          "designContext": {
+            "trayGlass": "dark: rgba(28,28,32,0.68) + inset 0 1px 0 rgba(255,255,255,0.09); light: rgba(252,252,254,0.74) + inset 0 1px 0 rgba(255,255,255,0.7). blur(44px) saturate(180%).",
+            "windowGlass": "dark winGlass rgba(26,26,30,0.8); light rgba(250,250,252,0.86). blur(40px) saturate(180%)."
+          },
+          "commit": null
+        },
+        {
+          "id": "D6",
+          "title": "WindowChrome widget",
+          "status": "pending",
+          "dependsOn": ["D3", "D4"],
+          "description": "flutter/lib/core/widgets/window_chrome.dart: 40px title bar, three variants keyed off HostPlatform — mac (traffic-light dots left, centered title), win (title left-aligned, minimize/maximize/close glyph buttons right), gnome/linux (title left-aligned, small round icon buttons right). Direct port of WindowChrome.dc.html's three sc-if branches.",
+          "deliverables": ["flutter/lib/core/widgets/window_chrome.dart"],
+          "acceptanceCriteria": ["Takes platform, title, and the surrounding surface's colors as params (no hardcoded color — caller supplies bg/border/text from the active FlowColors so it works in both themes)."],
+          "designContext": {
+            "macDots": "3x 11px circles, gap 7px: #ff5f57 red, #febc2e yellow, #28c840 green, left-aligned, order 0.",
+            "winControls": "3 buttons 32x40px each, glyphs: — (minimize), □ (maximize), ✕ (close), fontSize 13px color textSecondary, right-aligned order 2, title order 1 flex:1 textAlign left.",
+            "gnomeControls": "3 round 20px buttons, gap 8px, background rgba(128,128,128,0.18), glyphs: –, □, ✕, fontSize 11px.",
+            "bar": "height 40px, padding 0 14px, gap 10px, borderBottom 1px solid border, top corners radius-matched to the window (10px)."
+          },
+          "commit": null
+        },
+        {
+          "id": "D7",
+          "title": "Toast overlay",
+          "status": "pending",
+          "dependsOn": ["D5"],
+          "description": "flutter/lib/core/widgets/toast.dart: a top-center transient pill notification (glass surface) with a small controller/provider to show a message for ~1.7s and fade out, used after switch/pair/remove/reset actions.",
+          "deliverables": ["flutter/lib/core/widgets/toast.dart"],
+          "acceptanceCriteria": ["Auto-dismisses after ~1.7s.", "Only one toast visible at a time (new message replaces the current one, matching the .dc.html's single `toast` state slot)."],
+          "designContext": { "spec": "position top:18px centered, padding 9px 16px, radius 20px, glass surface (winGlass + blur 30px), fontSize 12.5px weight 590, cd-fade entrance ~200ms.", "copyExamples": ["Switched", "Device removed", "Pairing lives in the menu bar", "Reconnected", "Switch key updated", "Settings reset"] },
+          "commit": null
+        }
+      ]
+    },
+    {
+      "id": "tray",
+      "name": "Tray / menu bar popover",
+      "description": "The primary surface — what the design brief calls 'invisible by default, powerful when needed'. Direct implementation of TrayPopover.dc.html.",
+      "tasks": [
+        {
+          "id": "T1",
+          "title": "TrayPopover main view",
+          "status": "pending",
+          "dependsOn": ["D6", "D7", "F5"],
+          "description": "flutter/lib/features/tray/tray_popover.dart: header (app glyph, 'Cross Device' title, status text from DaemonLinkState, status dot), conditional banner row for non-connected link states, 'Using' section (active device card with switch-key chip), 'Devices' section (other devices, tap to switch), 'Pair New Device' row, divider, 'Dashboard' / 'Settings' rows (external-link chevron), muted 'Quit Cross Device' row.",
+          "deliverables": ["flutter/lib/features/tray/tray_popover.dart"],
+          "acceptanceCriteria": [
+            "Width 312px per sharedDesignTokens.componentSizes.trayPopoverWidth.",
+            "Status text + dot + banner text/action match the STATE_META table in designContext below exactly per DaemonLinkState value.",
+            "Renders correctly with 0, 1, and many other (non-active) devices."
+          ],
+          "designContext": {
+            "header": "26x26 app glyph radius 8px accent bg, appName 13.5px weight 640, statusText 11.5px text2, statusDot per STATE_META, all in a 13px/14px 11px padded row.",
+            "STATE_META": {
+              "connected": { "label": "Connected", "dot": "#30d158", "banner": null },
+              "connecting": { "label": "Connecting…", "dot": "#ff9f0a (pulsing)", "banner": null },
+              "reconnecting": { "label": "Reconnecting…", "dot": "#ff9f0a (pulsing)", "banner": "Work Laptop dropped out. Trying again.", "action": "Cancel" },
+              "disconnected": { "label": "Disconnected", "dot": "#8e8e93", "banner": "Work Laptop is unavailable.", "action": "Retry" },
+              "error": { "label": "Connection lost", "dot": "#ff453a", "banner": "Input sharing paused until Work Laptop is back.", "action": "Retry" },
+              "permissionRequired": { "label": "Needs permission", "dot": "#ff453a", "banner": "Allow input access to share your keyboard.", "action": "Allow" }
+            },
+            "activeCard": "row style but cursor default, background accentSoft, border 1px, padding 11px 12px, name 14px weight 640, meta 'Active · {os}' 11.5px text2, trailing keyHint chip (switch key label) fontSize 10.5px weight 640 padding 3px 7px radius 6px bg mat2.",
+            "deviceRow": "clickable row: dot (idle blue ring if inactive/reachable, plain ring text3 if disconnected, amber solid+breathe if mid-switch), name 13px weight 590 (dimmed to text2 if disconnected), state text ('Connected'/'Disconnected'/'Switching…'/'Connecting…'), trailing '→' arrow (omitted if disconnected).",
+            "menuRows": "Pair New Device: '+' glyph (accent, 14px) + label. Dashboard/Settings: label + '↗' chevron (opens the app window). Quit: muted text2 label only, no action wired (out of scope for a UI prototype).",
+            "sectionLabels": "'Using' and 'Devices', 10.5px weight 700 uppercase letter-spacing 0.07em text3, padding 4px 20px 6px."
+          },
+          "commit": null
+        },
+        {
+          "id": "T2",
+          "title": "Tray pairing sub-flow",
+          "status": "pending",
+          "dependsOn": ["T1"],
+          "description": "Pairing view within the same popover (back button + title replaces the main header): searching (spinner + hint), found (candidate rows + Pair button + footer hint), requesting (spinner + 'waiting for approval on {target}'), paired (success checkmark + '{target} connected' + press-switch-key hint).",
+          "deliverables": ["flutter/lib/features/tray/tray_pairing_view.dart"],
+          "acceptanceCriteria": ["Stage transitions driven entirely by watchPairingSession(), no local fake timers in the widget — timing lives in MockDaemonRepository (F4) only.", "Back button calls cancelPairing()."],
+          "designContext": {
+            "header": "22x22 back button '‹' radius 7px bg mat1 + 'Pair New Device' title, replaces the glyph/status header.",
+            "searching": "centered: spinner, 'Searching for devices…' 13.5px weight 590, 'Keep Cross Device open on your other computer.' 11.5px text2.",
+            "found": "candidate rows: idle ring dot + name + 'Nearby' meta + accent 'Pair' button. Footer: 'Only devices signed in as you appear here.' 11px text3.",
+            "requesting": "centered: spinner, 'Waiting for approval…', 'Approve the request on {pairTarget}.'",
+            "paired": "centered: 34px green (#30d158) circle with ✓, '{pairTarget} connected', 'Press {switchKey} to switch to it.'",
+            "sampleCandidates": "Office Mac Mini, Studio Linux (from F4's mock)"
+          },
+          "commit": null
+        },
+        {
+          "id": "T3",
+          "title": "Wire TrayPopover to Riverpod",
+          "status": "pending",
+          "dependsOn": ["T2", "F5"],
+          "description": "Replace any placeholder data in T1/T2 with live ref.watch of the F5 stream providers; switch/remove/pair actions call the corresponding DaemonRepository command and surface a toast (D7) on completion, matching the copy in D7's copyExamples.",
+          "deliverables": ["flutter/lib/features/tray/tray_popover.dart (updated)"],
+          "acceptanceCriteria": ["No mock or repository types imported directly in the widget files — only provider watches.", "Every action shows the exact toast copy from the design (e.g. 'Switched', 'Device removed')."],
+          "designContext": { "note": "Toast copy is D7.copyExamples; reuse, don't invent new strings." },
+          "commit": null
+        },
+        {
+          "id": "T4",
+          "title": "Tray popover widget tests",
+          "status": "pending",
+          "dependsOn": ["T3"],
+          "description": "Widget tests overriding repositoryProvider with a MockDaemonRepository (or a test double) to verify: active device renders in the 'Using' card, tapping another device calls switchActiveDevice, banner appears/disappears per link state, pairing flow renders all four stages.",
+          "deliverables": ["flutter/test/features/tray/tray_popover_test.dart"],
+          "acceptanceCriteria": ["flutter test passes.", "Covers at least one test per DaemonLinkState banner variant."],
+          "designContext": { "note": "Test cases enumerate STATE_META from T1." },
+          "commit": null
+        }
+      ]
+    },
+    {
+      "id": "onboarding",
+      "name": "First-launch onboarding",
+      "description": "4-step window flow: welcome, permission, pairing, done. Reused pairing sub-states are logically the same as the tray's but presented as a single centered card per step, not a list.",
+      "tasks": [
+        {
+          "id": "O1",
+          "title": "Onboarding shell",
+          "status": "pending",
+          "dependsOn": ["D5", "D6"],
+          "description": "flutter/lib/features/onboarding/onboarding_flow.dart: 520px-wide glass window (WindowChrome titled 'Cross Device' + body), animated step transitions (cd-fade), 4-dot pagination footer.",
+          "deliverables": ["flutter/lib/features/onboarding/onboarding_flow.dart"],
+          "acceptanceCriteria": ["Window width 520px per sharedDesignTokens.componentSizes.onboardingWindowWidth.", "Dots: 5px circles, active = accent, inactive = mat3, animated color transition."],
+          "designContext": { "layout": "onboardBody padding 30px 34px 22px, column gap 18px; each stage centered column, gap 14px, cd-fade 240ms entrance." },
+          "commit": null
+        },
+        {
+          "id": "O2",
+          "title": "Onboarding step widgets",
+          "status": "pending",
+          "dependsOn": ["O1", "D4"],
+          "description": "Four step widgets in flutter/lib/features/onboarding/steps/: welcome_step.dart, permission_step.dart, pair_step.dart, done_step.dart, using the exact copy below.",
+          "deliverables": [
+            "flutter/lib/features/onboarding/steps/welcome_step.dart",
+            "flutter/lib/features/onboarding/steps/permission_step.dart",
+            "flutter/lib/features/onboarding/steps/pair_step.dart",
+            "flutter/lib/features/onboarding/steps/done_step.dart"
+          ],
+          "acceptanceCriteria": ["Copy matches designContext verbatim.", "Permission step's Continue button is disabled/muted until PermissionStatus.granted; pair step's three sub-states (searching/found/requesting) mirror T2's tray pairing states but rendered as a single centered permCard, not a list."],
+          "designContext": {
+            "welcome": { "glyph": "58x58 rounded-rect accent, shadow 0 8px 24px rgba(60,90,220,0.35)", "title": "One keyboard. Every computer.", "body": "Keep using the keyboard and mouse you already have. Press one key to move to the computer beside it.", "cta": "Continue" },
+            "permission": { "title": "Allow input access", "body": "{permissionName} needs your permission before Cross Device can pass keystrokes between computers.", "card": "row: name + status ('Granted' / 'Not granted yet') + button ('Granted' muted / 'Allow' accent)", "cta": "Continue (muted+disabled until granted, then accent+enabled)" },
+            "pair": { "title": "Find your other computer", "body": "Pairing happens once. After that your computers recognise each other automatically.", "searching": "spinner + 'Searching…'", "found": "idle-ring dot + 'Work Laptop' / 'Nearby' + accent 'Pair' button", "requesting": "spinner + 'Waiting for approval on Work Laptop…'" },
+            "done": { "glyph": "46px circle #30d158 with ✓", "title": "Ready", "body": "Cross Device lives in your {trayName} from now on. Press {switchKey} to switch computers.", "cta": "Done" }
+          },
+          "commit": null
+        },
+        {
+          "id": "O3",
+          "title": "Wire onboarding to Riverpod",
+          "status": "pending",
+          "dependsOn": ["O2", "F5"],
+          "description": "Permission step calls requestPermission() and watches watchPermission(); pair step reuses the same pairing command/stream as the tray (start/cancel/pairWithCandidate + watchPairingSession) so there is exactly one pairing implementation in the app, not two.",
+          "deliverables": ["flutter/lib/features/onboarding/onboarding_flow.dart (updated)"],
+          "acceptanceCriteria": ["No duplicate pairing state machine — confirm by grep: only T2/O3 reference watchPairingSession/pairWithCandidate, and both read the same provider."],
+          "designContext": { "note": "Design intent: pairing is one daemon-side concept surfaced in two places, not two features." },
+          "commit": null
+        }
+      ]
+    },
+    {
+      "id": "app-window",
+      "name": "App window: dashboard + settings",
+      "description": "The 720x470 window opened from the tray's Dashboard/Settings rows: sidebar nav + 5 content sections.",
+      "tasks": [
+        {
+          "id": "A1",
+          "title": "AppWindow shell",
+          "status": "pending",
+          "dependsOn": ["D5", "D6"],
+          "description": "flutter/lib/features/app_window/app_window_shell.dart: WindowChrome + sidebar (Overview/Dashboard nav item, Settings/General|Devices|Input|Advanced nav items) + content area that swaps sections.",
+          "deliverables": ["flutter/lib/features/app_window/app_window_shell.dart"],
+          "acceptanceCriteria": ["Window 720x470px, sidebar 176px wide per componentSizes.", "Nav item selected state: bg mat2 + text1; unselected: transparent + text2."],
+          "designContext": { "nav": "sidebarLabel 10px weight 700 uppercase text3. Primary group: ['Dashboard']. Settings group: ['General','Devices','Input','Advanced']. Item padding 8px 11px radius 9px fontSize 12.5px weight 590.", "windowTitle": "'Cross Device' on Dashboard, 'Settings' on any settings section." },
+          "commit": null
+        },
+        {
+          "id": "A2",
+          "title": "Dashboard section",
+          "status": "pending",
+          "dependsOn": ["A1", "F5"],
+          "description": "flutter/lib/features/app_window/sections/dashboard_section.dart: hero card (Controlling: active device name + big status dot + switch-key chip + status label), 'Paired devices' header with 'Pair new device' ghost button (routes to tray pairing per design — see quote below), device rows with per-row Switch (if inactive) / Remove (if not the local device) actions.",
+          "deliverables": ["flutter/lib/features/app_window/sections/dashboard_section.dart"],
+          "acceptanceCriteria": ["'Pair new device' button does not open its own pairing UI — it surfaces a toast pointing at the tray, matching the design's explicit choice that pairing lives in exactly one place."],
+          "designContext": {
+            "heroCard": "padding 18px 20px radius 15px bg accentSoft border 1px; heroLabel 'Controlling' 10.5px uppercase text3; heroRow: 11px active-green dot + name 22px weight 680 + keyHint chip; heroMeta = link-state label below.",
+            "quote": "openTrayPairing: () => { switch to menubar view, open tray; toast('Pairing lives in the menu bar'); }"
+          },
+          "commit": null
+        },
+        {
+          "id": "A3",
+          "title": "General settings section",
+          "status": "pending",
+          "dependsOn": ["A1", "F5"],
+          "description": "flutter/lib/features/app_window/sections/general_section.dart: 'Launch at login' and platform-adaptive 'Show in system tray'/'Show in menu bar' toggles, plus an Appearance segmented control (Dark/Light) bound to the app theme.",
+          "deliverables": ["flutter/lib/features/app_window/sections/general_section.dart"],
+          "acceptanceCriteria": ["Toggle label swaps between 'Show in system tray' (Windows/Linux) and 'Show in menu bar' (macOS) based on HostPlatform, matching platformMeta().controls === 'win' check in the source."],
+          "designContext": {
+            "toggles": [
+              { "label": "Launch at login", "desc": "Start quietly when this computer boots." },
+              { "label": "Show in system tray / Show in menu bar", "desc": "Keep the icon visible." }
+            ]
+          },
+          "commit": null
+        },
+        {
+          "id": "A4",
+          "title": "Devices settings section",
+          "status": "pending",
+          "dependsOn": ["A1", "F5"],
+          "description": "flutter/lib/features/app_window/sections/devices_section.dart: full device list with 'last seen' meta instead of the dashboard's 'active/connected' meta, remove action, plus 'Reconnect automatically' and 'Connect paired devices' toggles.",
+          "deliverables": ["flutter/lib/features/app_window/sections/devices_section.dart"],
+          "acceptanceCriteria": ["Meta text format: '{os} · last seen {lastSeen}' exactly."],
+          "designContext": {
+            "toggles": [
+              { "label": "Reconnect automatically", "desc": "Recover on its own after a drop." },
+              { "label": "Connect paired devices", "desc": "Reconnect trusted computers on launch." }
+            ]
+          },
+          "commit": null
+        },
+        {
+          "id": "A5",
+          "title": "Input settings section",
+          "status": "pending",
+          "dependsOn": ["A1", "F5"],
+          "description": "flutter/lib/features/app_window/sections/input_section.dart: switch-key display card with a 'Record shortcut' toggle button (label flips to 'Cancel' while recording; while recording the key display pulses via cd-breathe and shows 'Press any key…'), the 4 preset chips, Share keyboard/mouse toggles, Pointer sensitivity segmented control (Low/Normal/High).",
+          "deliverables": ["flutter/lib/features/app_window/sections/input_section.dart"],
+          "acceptanceCriteria": ["Recording mode captures a raw key event (via a Focus/RawKeyboardListener or HardwareKeyboard callback), formats it the same way as the source (modifiers first — Ctrl/Alt/Shift/Meta — in that order, then the key; space becomes 'Space'; Meta renders as '⌘' on macOS else 'Win'), and calls setSwitchKey.", "Preset chips call setSwitchKey directly with no recording step."],
+          "designContext": {
+            "presets": "['Scroll Lock', 'Pause', 'F13', 'Ctrl + Shift + Space']",
+            "recordingFormat": "parts=[]; if ctrl parts.push('Ctrl'); if alt parts.push('Alt'); if shift parts.push('Shift'); if meta parts.push(platform==='macos' ? '⌘' : 'Win'); parts.push(key===' ' ? 'Space' : (key.length===1 ? key.toUpperCase() : key)); label = parts.join(' + ')",
+            "toggles": [
+              { "label": "Share keyboard", "desc": "Send typing to the active computer." },
+              { "label": "Share mouse", "desc": "Send pointer and scroll to the active computer." }
+            ],
+            "keyDisplay": "20px weight 660, color accent + cd-breathe animation while recording else text1 static."
+          },
+          "commit": null
+        },
+        {
+          "id": "A6",
+          "title": "Advanced settings section",
+          "status": "pending",
+          "dependsOn": ["A1", "F5"],
+          "description": "flutter/lib/features/app_window/sections/advanced_section.dart: static Diagnostics row (copy only, not daemon-sourced — see contracts README 'out of scope for 0.1.0'), Detailed logging toggle, permission row (reuse the same PermissionStatus watch/requestPermission as onboarding), red 'Reset all settings' button calling resetSettings().",
+          "deliverables": ["flutter/lib/features/app_window/sections/advanced_section.dart"],
+          "acceptanceCriteria": ["Diagnostics text matches the design's placeholder copy exactly and is clearly a static string in code (comment noting it's not wired to real data yet, per docs/contracts/README.md's diagnostics note)."],
+          "designContext": {
+            "diagnosticsCopy": "Average switch time 8 ms · no dropped input today",
+            "debugToggle": { "label": "Detailed logging", "desc": "Keep a log for support requests." },
+            "dangerButton": "'Reset all settings', bg dangerSoft, color danger, alignSelf flex-start."
+          },
+          "commit": null
+        }
+      ]
+    },
+    {
+      "id": "app-shell",
+      "name": "App shell & manual QA harness",
+      "description": "Wires the surfaces together into one runnable app, plus a dev-only harness screen to eyeball every state/platform/theme combination without a real daemon or OS tray integration.",
+      "tasks": [
+        {
+          "id": "S1",
+          "title": "Top-level FlowApp navigation",
+          "status": "pending",
+          "dependsOn": ["T3", "O3", "A2", "A3", "A4", "A5", "A6"],
+          "description": "flutter/lib/app.dart: ProviderScope + MaterialApp wiring FlowTheme (D2), routing between the tray popover, onboarding flow, and app window. Real OS tray-icon integration (a system_tray-style plugin, actually docking into the platform menu bar/tray) is explicitly out of scope here — YAGNI until there's a daemon to dock against; this task only makes the three surfaces reachable inside one Flutter app for development and demo purposes.",
+          "deliverables": ["flutter/lib/app.dart", "flutter/lib/main.dart (updated)"],
+          "acceptanceCriteria": ["App launches to the dev harness (S2) by default in debug builds.", "No plugin dependency added for real tray docking (tracked as a future task once a daemon exists to connect to)."],
+          "designContext": { "note": "Mirrors the .dc.html's own view switch (menubar/app/onboarding/platforms) but as real navigation, not a template sc-if." },
+          "commit": null
+        },
+        {
+          "id": "S2",
+          "title": "Dev harness screen",
+          "status": "pending",
+          "dependsOn": ["S1"],
+          "description": "flutter/lib/features/harness/dev_harness.dart: the top control strip from the .dc.html canvas — View (Menu Bar / App Window / First Launch / All Platforms), Connection state, Platform, Theme selectors — driving the same providers every real screen reads, so every combination is reachable for visual QA without touching the mock's internal timers by hand.",
+          "deliverables": ["flutter/lib/features/harness/dev_harness.dart"],
+          "acceptanceCriteria": ["Connection-state selector can force any DaemonLinkState value on the mock for visual QA of every banner variant.", "'All Platforms' view renders macOS/Windows/Linux tray popovers side by side, matching the compareStrip layout in the source (3 framed mini-desktops, each with its own bar + popover anchored bottom/top-right per platform)."],
+          "designContext": {
+            "viewOptions": "['Menu Bar','App Window','First Launch','All Platforms']",
+            "compareFrame": "360x470px rounded 14px frame per platform, wallpaper bg, platform bar at correct edge, popover anchored inset from that edge scaled to 0.9x."
+          },
+          "commit": null
+        }
+      ]
+    },
+    {
+      "id": "qa",
+      "name": "QA & polish",
+      "description": "Close the loop: tests, static analysis, and keeping the contract docs honest against what actually shipped.",
+      "tasks": [
+        {
+          "id": "Q1",
+          "title": "Test sweep",
+          "status": "pending",
+          "dependsOn": ["S2"],
+          "description": "Unit tests for MockDaemonRepository's state machines (pairing, switching, link state) and widget tests for onboarding + app window sections not already covered by T4.",
+          "deliverables": ["flutter/test/data/mock_daemon_repository_test.dart", "flutter/test/features/onboarding/onboarding_flow_test.dart", "flutter/test/features/app_window/app_window_shell_test.dart"],
+          "acceptanceCriteria": ["flutter test: all green."],
+          "designContext": { "note": "No new design context; tests assert against F1-A6 behavior already documented." },
+          "commit": null
+        },
+        {
+          "id": "Q2",
+          "title": "Static analysis + format pass",
+          "status": "pending",
+          "dependsOn": ["Q1"],
+          "description": "flutter analyze and dart format --set-exit-if-changed across flutter/, zero warnings, zero diffs.",
+          "deliverables": [],
+          "acceptanceCriteria": ["Both commands exit 0 in CI-equivalent invocation."],
+          "designContext": { "note": "Tooling task." },
+          "commit": null
+        },
+        {
+          "id": "Q3",
+          "title": "Docs and contract reconciliation",
+          "status": "pending",
+          "dependsOn": ["Q1"],
+          "description": "Re-read docs/contracts/*.md against the final DaemonRepository/MockDaemonRepository code; fix any drift (bump contract version + CHANGELOG entry if anything actually changed shape along the way). Update flutter/README.md with real `flutter pub get && flutter test` instructions now that the SDK is vendored for this session's tooling (note in README that a fresh environment still needs its own Flutter install).",
+          "deliverables": ["docs/contracts/*.md (if drifted)", "flutter/README.md"],
+          "acceptanceCriteria": ["Contract docs and code agree with no manual translation needed to read one from the other."],
+          "designContext": { "note": "Reconciliation task, no new design context." },
+          "commit": null
+        }
+      ]
+    }
+  ]
+}
