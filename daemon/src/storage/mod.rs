@@ -9,6 +9,7 @@
 //! `Arc<tokio::sync::Mutex<_>>`, per `daemon/todos.json`'s
 //! `persistenceModel.concurrencyModel`.
 
+pub mod device_repo;
 mod schema;
 pub mod settings_repo;
 
