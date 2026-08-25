@@ -127,6 +127,25 @@ Real hardware is only needed for the Bluetooth-only path's *success* case (an ac
 
 Every third-party dependency that does real I/O (SQLite, WebSockets, Bluetooth, Noise encryption, OS input APIs) is wrapped behind a project-owned trait or type before anything else in the daemon depends on it — see `todos.json`'s `architecturalPrinciples.wrapThirdPartyDependencies` for the explicit rule and the module-by-module list of what wraps what.
 
+## End-to-end input streaming pipeline (track G8)
+
+`daemon/src/pipeline/mod.rs` is `vision.md`'s North Star made concrete — the first place capture, a `Channel`, and injection are wired into one continuous loop:
+
+- **`send_while_active(capture_events, devices, channel)`** — the sending side. Forwards every captured event onto `channel` as `ChannelMessage::Input`, but only while the local device (`LOCAL_DEVICE_ID`) is `Active` per the `devices` watch stream; an event captured while `Inactive` is silently dropped, not queued. The gate itself (`is_local_device_active`) is a pure function over `&[Device]`, unit-tested directly without any async machinery.
+- **`receive_and_inject(channel, injector)`** — the receiving side. Injects every `ChannelMessage::Input` that arrives, ignoring anything else on the same connection (`Pairing`/`Heartbeat` traffic may share it).
+
+Both are written entirely against `flow_core::channel::Channel` and `flow_core::input::InputInjector` — never a concrete medium or platform type. `platform::new_default_input_injector()` was added alongside this task: unlike `DefaultInputCapture`'s `new(sender)` (uniform across all three platforms), the injector's own constructors aren't — Linux/macOS are fallible (`new() -> Result<Self, _>`), Windows has no setup that can fail (`Default`) — so this one function absorbs that difference in `flow-platform` itself, keeping it "the only crate that needs to know which operating system it's running on."
+
+Automated tests (`cargo test -p flow-daemon --lib pipeline`) exercise both functions against real, loopback-connected `TcpChannel`s and synthetic `InputEvent`s — deliberately not the in-memory `ChannelPair` test double `core::channel`'s own tests use (that type is private to `core`'s test module); a real loopback socket needs no more hardware or network access than an in-memory double would, so this was a reasonable, documented substitution rather than exporting a second test-only type across a crate boundary. The gating tests are worth reading for their synchronization discipline: rather than sleep-and-hope, the "streamed while Active" case reads the message straight off the peer's `Channel`, and the "dropped while Inactive" case proves the drop by closing the capture channel and observing the peer's `Channel` report `ConnectionLost` with nothing having arrived first — both deterministic, no arbitrary timing.
+
+`daemon/examples/two_instance_streaming.rs` is this task's manual, real-hardware verification harness (the acceptance criterion's "manual two-instance-on-one-host test," `E1`-style): real capture -> the gate (always reporting `Active`, since one process stands in for two) -> a genuine loopback `TcpChannel` -> real injection. Same environment gap as `E1`/`E2`: this container has neither `/dev/input` nor `/dev/uinput`, so it's unverified beyond `cargo build -p flow-daemon --example two_instance_streaming`. Run manually on Linux with the right device permissions:
+
+```sh
+cargo run -p flow-daemon --example two_instance_streaming
+```
+
+Not wired into `main.rs`: nothing in the actual daemon binary spawns `send_while_active`/`receive_and_inject` against a real negotiated peer `Channel` yet (that needs G7's still-unwired incoming-connection accept loop to have somewhere to hand the accepted `Channel` to) — this task's own scope was the pipeline functions and their gating logic, not full production wiring. `cargo check --target x86_64-apple-darwin`/`x86_64-pc-windows-msvc` for the whole `flow-daemon` crate (as opposed to just `flow-platform`, which E4-E7 already cross-compile-check) was not attempted: `rusqlite`'s bundled SQLite needs a real macOS/Windows C toolchain this container doesn't have, a pre-existing gap unrelated to this task's own changes — `flow-platform`'s own three-target check (which does cover `new_default_input_injector`) still passes.
+
 ## Security posture during this phase
 
 The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only and assumes it's reachable solely by the local user, per `docs/contracts/README.md`'s scope note — it does not carry its own authentication in v0.1. The daemon-to-daemon Channel (once track G/H land) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.

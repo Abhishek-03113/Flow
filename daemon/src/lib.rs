@@ -9,5 +9,6 @@ pub mod channel;
 pub mod discovery;
 pub mod hotkey;
 pub mod ipc;
+pub mod pipeline;
 pub mod service;
 pub mod storage;
