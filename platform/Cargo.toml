@@ -1,0 +1,7 @@
+[package]
+name = "flow-platform"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+flow-core = { path = "../core" }

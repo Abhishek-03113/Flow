@@ -61,6 +61,20 @@ Flow is split into two layers: a Flutter UI (control plane) and a Rust daemon (d
 
 See [`docs/product/vision.md`](docs/product/vision.md) for the full product vision, architecture rationale, event protocol, security model, and POC roadmap.
 
+## Project layout
+
+```
+core/       flow-core — protocol, device, pairing, transport, state, and
+            input-capture/injection traits (no OS or transport code)
+daemon/     flow-daemon — the daemon binary; wires core + platform together
+platform/   flow-platform — per-OS input adapters (macos/, windows/, linux/),
+            each implementing the traits from core
+flutter/    Flutter control-plane app (devices, onboarding, settings, tray,
+            services); see flutter/README.md
+```
+
+Build the daemon workspace with `cargo build --workspace`; see `flutter/README.md` for the UI.
+
 ## POC roadmap
 
 The proof of concept validates the core interaction before investing in full platform complexity:
