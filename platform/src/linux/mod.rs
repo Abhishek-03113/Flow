@@ -1,23 +1,15 @@
-//! Linux input adapter. Implementation pending: capture and injection will
-//! bind to evdev/uinput (or the desktop environment's equivalent).
+//! Linux input adapter, bound to evdev for capture (`daemon/todos.json`
+//! E1). Injection (E2) still binds to `unimplemented!()` pending uinput
+//! support.
 
-use flow_core::input::{InputCapture, InputInjector};
+mod capture;
+mod discovery;
+mod translate;
+
+pub use capture::LinuxInputCapture;
+
+use flow_core::input::InputInjector;
 use flow_core::protocol::InputEvent;
-
-#[derive(Debug, Default)]
-pub struct LinuxInputCapture;
-
-impl InputCapture for LinuxInputCapture {
-    type Error = std::io::Error;
-
-    fn start(&mut self) -> Result<(), Self::Error> {
-        unimplemented!("Linux input capture is not yet implemented")
-    }
-
-    fn stop(&mut self) -> Result<(), Self::Error> {
-        unimplemented!("Linux input capture is not yet implemented")
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct LinuxInputInjector;

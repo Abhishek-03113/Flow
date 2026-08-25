@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// A keyboard modifier held down during a key event.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Modifier {
     Shift,
     Ctrl,

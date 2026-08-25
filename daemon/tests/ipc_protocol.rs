@@ -28,16 +28,11 @@ async fn spawn_daemon() -> SocketAddr {
     let addr = listener.local_addr().expect("local addr");
 
     tokio::spawn(async move {
-        loop {
-            match listener.accept().await {
-                Ok((stream, _)) => {
-                    let service = Arc::clone(&service);
-                    tokio::spawn(async move {
-                        handle_connection(stream, service).await;
-                    });
-                }
-                Err(_) => break,
-            }
+        while let Ok((stream, _)) = listener.accept().await {
+            let service = Arc::clone(&service);
+            tokio::spawn(async move {
+                handle_connection(stream, service).await;
+            });
         }
     });
     addr

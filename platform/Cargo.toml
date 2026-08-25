@@ -5,3 +5,6 @@ edition.workspace = true
 
 [dependencies]
 flow-core = { path = "../core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"

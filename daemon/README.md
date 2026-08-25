@@ -51,7 +51,7 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 
 | Platform | Capture | Injection | Verified how |
 |---|---|---|---|
-| Linux | pending (`todos.json` E1) | pending (E2) | buildable and testable in a standard Linux dev container; needs `/dev/input` + `uinput` access, documented per-task once implemented |
+| Linux | real (`todos.json` E1, evdev) | pending (E2) | unit-tested (evdev-event → `InputEvent` translation, pure function); this session's container has no `/dev/input` at all, so device discovery, the read loop, and actual keypress capture are unverified beyond compiling — see "Manual verification notes" below |
 | macOS | pending (E4) | pending (E5) | written against `core-graphics`, verified with `cargo check --target <apple-target>` only — no Mac hardware in this development environment |
 | Windows | pending (E6) | pending (E7) | written against the `windows` crate, verified with `cargo check --target <windows-target>` only — no Windows hardware in this development environment |
 
@@ -78,3 +78,18 @@ The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only and
 ## Manual verification notes
 
 Several tasks in `todos.json` (E1-E3, E4-E7, G4, I4) can only be fully verified with real input devices, a second machine, or platform hardware this development environment doesn't have. Each such task's acceptance criteria says explicitly what was verified automatically (unit tests on pure translation logic, `cargo check` for cross-compiled platforms, integration tests against synthetic events) versus what still needs a human with the actual hardware to confirm. This section will grow with concrete "how to manually verify" steps as those tasks land.
+
+### E1: Linux capture via evdev
+
+`platform/src/linux/capture.rs` (`LinuxInputCapture`) discovers keyboard/mouse-capable nodes via `evdev::enumerate()` (`discovery.rs`), reads them non-blocking on a dedicated thread, and translates each event through the pure `EventTranslator` (`translate.rs`) before sending it down an `mpsc::Sender<InputEvent>` supplied at construction. This session's container has no `/dev/input` or `/dev/uinput` at all (confirmed via `ls /dev/input`, `ls /dev/uinput` — both "No such file or directory", running as root), so nothing beyond `cargo build -p flow-platform` and the translation unit tests could be exercised here. On a machine with real input devices and the `input` group (or root):
+
+```sh
+# confirm device nodes and permissions
+ls -la /dev/input/event*
+
+# a minimal manual check: construct a LinuxInputCapture with an mpsc channel,
+# call start(), type/click, and print what arrives on the receiver — e.g. via
+# the E3 CLI harness once it lands, or a throwaway `cargo run --example`
+```
+
+What to look for: `start()` returns `Ok(())` (not `NotFound`, which means no qualifying device was found — check the account is in the `input` group), and keypresses/clicks/scrolls on the physical device show up as the expected `InputEvent` variants on the channel, including the correct `modifiers` list for chorded keys (e.g. Shift+A). `stop()` should return once the read thread's next idle-poll notices the stop flag (≤5ms).
