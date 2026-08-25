@@ -570,7 +570,8 @@
         {
           "id": "C5",
           "title": "docs/contracts addendum: transport is now concrete",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "Implemented after C6 (out of listing order) since C6 doesn't actually depend on C5 in the dependency graph (both dependOn only C4) and this task's own doc text needed to reference daemon/tests/ipc_protocol.rs as something real, not promised. Also dropped the now-stale '(target shape, not yet implemented)' qualifier from daemon-ipc.md's 'Wire envelope' heading, and fixed a cross-reference: the transport paragraph cites README.md's ground rule 3 by document name (daemon-ipc.md itself has no numbered ground-rule list of its own, so 'ground rule 3 below' would have been wrong).",
           "dependsOn": ["C4"],
           "description": "daemon-ipc.md currently says the transport is 'still undecided'. Update it (not a contract version bump — the Dart interface and JSON shapes are unchanged, only the previously-open transport question is answered) to document the WebSocket-over-loopback-TCP choice, the port, and add a short 'Status: implemented by flow-daemon, not just the mock' line once C4 lands.",
           "deliverables": [
