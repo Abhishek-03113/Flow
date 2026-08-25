@@ -1,24 +1,14 @@
-//! macOS input adapter. Implementation pending: capture will use a
-//! CGEventTap and injection will post events via CGEventPost (or
-//! equivalent).
+//! macOS input adapter, bound to a `CGEventTap` for capture
+//! (`daemon/todos.json` E4). Injection (E5) still binds to
+//! `unimplemented!()` pending `CGEventPost` support.
 
-use flow_core::input::{InputCapture, InputInjector};
+mod capture;
+mod translate;
+
+pub use capture::{MacosCaptureError, MacosInputCapture};
+
+use flow_core::input::InputInjector;
 use flow_core::protocol::InputEvent;
-
-#[derive(Debug, Default)]
-pub struct MacosInputCapture;
-
-impl InputCapture for MacosInputCapture {
-    type Error = std::io::Error;
-
-    fn start(&mut self) -> Result<(), Self::Error> {
-        unimplemented!("macOS input capture is not yet implemented")
-    }
-
-    fn stop(&mut self) -> Result<(), Self::Error> {
-        unimplemented!("macOS input capture is not yet implemented")
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct MacosInputInjector;
