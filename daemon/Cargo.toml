@@ -25,6 +25,7 @@ chrono = { version = "0.4", features = ["serde"] }
 rand = "0.10"
 async-trait = "0.1"
 ed25519-dalek = "3.0.0"
+snow = "0.10.0"
 
 # bluer (BlueZ D-Bus bindings) is Linux-only and needs bluetoothd/a real
 # adapter to do anything at runtime; gated behind the "bluetooth" feature
