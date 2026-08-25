@@ -51,7 +51,7 @@ cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repo
 
 | Platform | Capture | Injection | Verified how |
 |---|---|---|---|
-| Linux | real (`todos.json` E1, evdev) | pending (E2) | unit-tested (evdev-event → `InputEvent` translation, pure function); this session's container has no `/dev/input` at all, so device discovery, the read loop, and actual keypress capture are unverified beyond compiling — see "Manual verification notes" below |
+| Linux | real (`todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
 | macOS | pending (E4) | pending (E5) | written against `core-graphics`, verified with `cargo check --target <apple-target>` only — no Mac hardware in this development environment |
 | Windows | pending (E6) | pending (E7) | written against the `windows` crate, verified with `cargo check --target <windows-target>` only — no Windows hardware in this development environment |
 
@@ -93,3 +93,20 @@ ls -la /dev/input/event*
 ```
 
 What to look for: `start()` returns `Ok(())` (not `NotFound`, which means no qualifying device was found — check the account is in the `input` group), and keypresses/clicks/scrolls on the physical device show up as the expected `InputEvent` variants on the channel, including the correct `modifiers` list for chorded keys (e.g. Shift+A). `stop()` should return once the read thread's next idle-poll notices the stop flag (≤5ms).
+
+### E2: Linux injection via uinput
+
+`platform/src/linux/injector.rs` (`LinuxInputInjector`) creates a virtual device via `evdev::uinput::VirtualDeviceBuilder`, declaring the full `EV_KEY` range (`input-event-codes.h`'s `0..=KEY_MAX`, so any key name `translate::key_name` can produce is injectable, not just letters) plus `REL_X`/`REL_Y`/`REL_WHEEL`/`REL_HWHEEL`, and replays `InputEvent`s onto it through the pure `inject_translate::to_uinput_events` function (the reverse of E1's `EventTranslator`). `LinuxInputInjector::new()` opens `/dev/uinput`, which this container doesn't have (confirmed via `ls /dev/uinput` — "No such file or directory"), so beyond `cargo build`/`test`/`clippy`/`fmt`, nothing about the virtual device or real injected input was exercised here. On a machine with `/dev/uinput` and the `uinput` kernel module loaded (`modprobe uinput`), and write access to it (the `uinput` udev group, or root):
+
+```sh
+# confirm the module and device node
+lsmod | grep uinput
+ls -la /dev/uinput
+
+# a minimal manual check: construct a LinuxInputInjector, call inject() with
+# a few InputEvents, and confirm the virtual device shows up and the events
+# land — e.g. via `evtest` on the new /dev/input/eventN it creates, or the
+# E3 CLI harness once it lands
+```
+
+What to look for: `LinuxInputInjector::new()` returns `Ok(_)` (a `PermissionDenied` means the account isn't in the right group), a new `/dev/input/eventN` node named "Flow Virtual Input" appears while the injector is alive, and `evtest` (or the E3 harness) shows the expected `EV_KEY`/`EV_REL` events with correct codes and values for each `inject()` call, including that a `MouseEvent::Move`/`Scroll`'s two axes land as one atomic `SYN_REPORT`-terminated batch rather than two separate reports.
