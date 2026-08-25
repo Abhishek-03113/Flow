@@ -55,9 +55,15 @@ Settings, paired devices (which double as the trust store), this daemon's own id
 
 The daemon is meant to run independent of any UI, ideally started at login/boot and restarted automatically if it crashes (`docs/product/vision.md` principle 7). This phase scaffolds but does not install service unit files (`todos.json` J4: a `launchd` plist, a `systemd` unit, notes for a Windows service wrapper) — actually registering the daemon to auto-start is future work beyond this plan.
 
+## Channels (daemon-to-daemon connectivity)
+
+Daemon-to-daemon connections — the one that actually carries keyboard/mouse input between two machines — go through a single custom abstraction named **Channels**: a `Channel` trait implemented by `TcpChannel` (Wi-Fi/local network, via a wrapped WebSocket) and `BluetoothChannel` (RFCOMM), with a negotiation step that prefers TCP and falls back to Bluetooth when no shared network exists. Full design, wire shape, and explicit scope boundaries: [`docs/architecture/channels.md`](../docs/architecture/channels.md). This is a separate document from `docs/contracts/` on purpose — Channels is daemon<->daemon, the contracts directory is Flutter<->daemon — kept in the same documentation style so the two are easy to reconcile if Channel state ever needs to surface into the UI later. `daemon/todos.json` track **G** builds this.
+
+Every third-party dependency that does real I/O (SQLite, WebSockets, Bluetooth, Noise encryption, OS input APIs) is wrapped behind a project-owned trait or type before anything else in the daemon depends on it — see `todos.json`'s `architecturalPrinciples.wrapThirdPartyDependencies` for the explicit rule and the module-by-module list of what wraps what.
+
 ## Security posture during this phase
 
-The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only and assumes it's reachable solely by the local user, per `docs/contracts/README.md`'s scope note — it does not carry its own authentication in v0.1. The daemon-to-daemon network channel (once track G/H land) is the one that actually carries sensitive keyboard/mouse data across the LAN, and is where real device identity, trust, and encryption (`docs/product/vision.md` §17) apply.
+The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only and assumes it's reachable solely by the local user, per `docs/contracts/README.md`'s scope note — it does not carry its own authentication in v0.1. The daemon-to-daemon Channel (once track G/H land) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.
 
 ## Manual verification notes
 

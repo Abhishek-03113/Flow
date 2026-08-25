@@ -71,6 +71,25 @@
     },
     "origin": "User requirement: 'We'll need to maintain the user settings somewhere and maintain the connection history and things like that somewhere instead of deriving every run or keeping in memory.' Track P (persistence-storage) implements this and sits right after core-contract-parity — settings/device persistence is foundational to the very first working DaemonService (B1), not a late reliability-track afterthought as originally drafted."
   },
+  "architecturalPrinciples": {
+    "wrapThirdPartyDependencies": {
+      "rule": "Every third-party crate that does real I/O or platform work sits behind a project-owned trait or type; application code (service logic, command handlers, the pipeline) depends only on the internal abstraction, never on the crate directly. This is the open/closed principle applied at the crate-boundary level: swapping rusqlite for another SQLite binding, or adding a second Bluetooth backend, should touch exactly one module.",
+      "origin": "User requirement (verbatim): 'Make sure we always wrap third party dependencies into such abstract wrappers for better control over the application and open closed principles.'",
+      "examples": [
+        { "dependency": "rusqlite", "wrapper": "daemon::storage::Storage + its *Repo types (track P)", "callersSeeOnly": "Storage, SettingsRepo, DeviceRepo, ConnectionHistoryRepo, IdentityRepo" },
+        { "dependency": "tokio-tungstenite (local IPC)", "wrapper": "daemon::ipc connection handler (track C)", "callersSeeOnly": "IpcRequest/IpcResponse (flow-core)" },
+        { "dependency": "tokio-tungstenite (daemon-to-daemon)", "wrapper": "TcpChannel (track G2), confined to daemon/src/channel/tcp.rs", "callersSeeOnly": "the Channel trait (flow-core, track G1)" },
+        { "dependency": "a Bluetooth crate (e.g. bluer)", "wrapper": "BluetoothChannel (track G4), confined to daemon/src/channel/bluetooth.rs", "callersSeeOnly": "the Channel trait" },
+        { "dependency": "snow (Noise protocol)", "wrapper": "NoiseChannel (track H3)", "callersSeeOnly": "the Channel trait — NoiseChannel itself wraps another Channel, it doesn't replace the abstraction" },
+        { "dependency": "evdev / core-graphics / windows crate", "wrapper": "LinuxInputCapture/Injector, MacosInputCapture/Injector, WindowsInputCapture/Injector (track E)", "callersSeeOnly": "InputCapture/InputInjector traits (flow-core, pre-existing)" }
+      ],
+      "enforcement": "Each task above that introduces a new third-party crate says explicitly, in its own acceptanceCriteria, that the crate's usage is confined to one module (checkable with a grep for the crate's import path outside that module). This is spot-checked per task, not left as an aspirational rule — see G2/G4/H3 for the pattern."
+    },
+    "channels": {
+      "summary": "The daemon-to-daemon communication abstraction, named 'Channels' per explicit product naming. A Channel is established between two devices over TCP (Wi-Fi/local network) or Bluetooth, whichever is available — see track G and docs/architecture/channels.md for the full design.",
+      "documentedIn": "docs/architecture/channels.md — maintained separately from docs/contracts/ (that directory is exclusively the Flutter<->daemon local IPC contract; Channels is daemon<->daemon, a different boundary, per docs/contracts/README.md ground rule 3), but written in the same style/discipline (versioned, wire examples, explicit out-of-scope section) so the two stay easy to reconcile if Channel state ever needs to surface into the Flutter-facing contract (e.g. a future 'connection medium' field on Device)."
+    }
+  },
   "tracks": [
     {
       "id": "A",
@@ -837,79 +856,152 @@
     },
     {
       "id": "G",
-      "title": "transport-networking",
-      "goal": "Real daemon-to-daemon connectivity: discover another Flow daemon on the LAN, exchange InputEvents over it, and make the local-only mock-parity pairing (track B) actually pair with a second real machine.",
+      "title": "channels",
+      "goal": "Real daemon-to-daemon connectivity through a single custom abstraction — a Channel — that can be backed by TCP (Wi-Fi/local network) or Bluetooth depending on what's available between two devices, so the rest of the daemon (pairing, input streaming, security) never talks to a concrete transport crate directly. Documented separately in docs/architecture/channels.md, kept consistent in vocabulary with docs/contracts but explicitly not part of that contract (it's daemon-to-daemon, not Flutter-to-daemon).",
       "tasks": [
         {
           "id": "G1",
-          "title": "LAN discovery",
+          "title": "Channel abstraction (core trait + types)",
           "status": "pending",
-          "dependsOn": ["E1"],
-          "description": "daemon/src/discovery/mod.rs broadcasting/listening for a lightweight UDP announce (name, os, a discovery port) so start_pairing's candidate list (currently the mock's 2 hardcoded candidates) can eventually be populated by real peers found on the network. mDNS (via a crate like mdns-sd) is the preferred approach; a hand-rolled UDP broadcast is an acceptable fallback if it keeps the task scoped — decide and note in buildNote.",
+          "dependsOn": ["A7"],
+          "description": "New core/src/channel/mod.rs defining the Channel trait and its vocabulary, replacing the placeholder core::transport::Transport (fold it in here rather than keeping two overlapping abstractions). This is medium-agnostic on purpose — nothing in it mentions TCP, WebSocket, or Bluetooth — so G2 (TCP) and G4 (Bluetooth) are equally valid implementors and the rest of the daemon (G7 pairing, G8 streaming, H3 encryption) depends only on this trait. Independent of every other G task and of E/F, so it can be built as soon as A7 lands rather than waiting on platform input work.",
           "deliverables": [
-            "a DiscoveredPeer { name, address, os } type and an async stream/channel of discoveries"
+            "pub enum ChannelKind { Tcp, Bluetooth }",
+            "pub enum ChannelAddress { Tcp(SocketAddr), Bluetooth(BluetoothAddr) } (BluetoothAddr a thin newtype, defined here even though only G4 implements it, so the type is shared vocabulary from day one)",
+            "pub enum ChannelMessage { Input(InputEvent), Pairing(PairingWireMessage), Heartbeat } — a pairing wire message type added here since the pairing handshake (G7) needs to travel over the same channel as input events, not a separate connection",
+            "#[async_trait] pub trait Channel: Send { fn kind(&self) -> ChannelKind; async fn send(&mut self, msg: ChannelMessage) -> Result<(), ChannelError>; async fn recv(&mut self) -> Result<ChannelMessage, ChannelError>; async fn close(&mut self) -> Result<(), ChannelError>; }",
+            "pub enum ChannelError { ... } (connection lost, serialization failure, unsupported medium, etc.)",
+            "core::transport module removed/absorbed; any existing references updated"
+          ],
+          "acceptanceCriteria": [
+            "cargo build -p flow-core succeeds with zero references to a concrete transport crate anywhere in flow-core",
+            "a trivial in-memory ChannelPair test double (two ends connected by a tokio::sync::mpsc pair) implementing Channel exists in core's test code, proving the trait is exercisable without any real network or Bluetooth stack"
+          ],
+          "specContext": "User requirement (this task's origin): 'We'll name this custom abstract protocol as channels, a channel can be established between two devices on tcp or bluetooth based on the available method... always wrap third party dependencies into such abstract wrappers for better control over the application and open closed principles.' Full design in docs/architecture/channels.md.",
+          "commit": "feat(core): add the Channel abstraction (trait, ChannelKind, ChannelAddress, ChannelMessage)"
+        },
+        {
+          "id": "G2",
+          "title": "TCP Channel implementation",
+          "status": "pending",
+          "dependsOn": ["G1"],
+          "description": "TcpChannel implementing Channel, wrapping tokio-tungstenite for the daemon-to-daemon link over Wi-Fi/local network — distinct from track C's local IPC WebSocket server (different port, different peer, different message type: ChannelMessage, not IpcRequest/Response). tokio-tungstenite is used ONLY inside this module — nothing outside daemon/src/channel/tcp.rs (or equivalent) may import it directly, per the wrap-third-party-deps rule G1 exists to enforce.",
+          "deliverables": [
+            "daemon/src/channel/tcp.rs: struct TcpChannel wrapping a tokio-tungstenite WebSocketStream, implementing Channel",
+            "TcpChannel::connect(addr: SocketAddr) and ::accept(stream) constructors"
+          ],
+          "acceptanceCriteria": [
+            "two local daemon instances exchange a hand-crafted ChannelMessage::Input(InputEvent::Keyboard(KeyDown)) over a TcpChannel in an integration test and receive it verbatim",
+            "grep for tokio_tungstenite outside daemon/src/channel/tcp.rs (and its tests) comes back empty"
+          ],
+          "specContext": "vision.md §10: 'The initial implementation should use: WebSocket over the local network.' docs/architecture/channels.md 'TcpChannel'.",
+          "commit": "feat(daemon): implement TcpChannel (WebSocket over Wi-Fi/local network)"
+        },
+        {
+          "id": "G3",
+          "title": "TCP/Wi-Fi peer discovery",
+          "status": "pending",
+          "dependsOn": ["G1"],
+          "description": "daemon/src/discovery/tcp.rs broadcasting/listening for a lightweight mDNS or UDP announce (name, os, a discovery port) so start_pairing's candidate list (currently the mock's 2 hardcoded candidates) can eventually be populated by real TCP-reachable peers. mDNS (via a crate like mdns-sd) is the preferred approach; a hand-rolled UDP broadcast is an acceptable fallback if it keeps the task scoped — decide and note in buildNote. Third-party discovery crate usage stays confined to this module, same rule as G2.",
+          "deliverables": [
+            "a DiscoveredPeer { name, os, address: ChannelAddress::Tcp(..) } type and an async stream/channel of discoveries"
           ],
           "acceptanceCriteria": [
             "two daemon instances on the same host (bound to different ports for the test) discover each other via loopback broadcast in an integration test"
           ],
           "specContext": "vision.md §22 Phase 1 (Connectivity): 'Establish communication between two machines... Validate: Device discovery, Connection, Disconnect, Reconnect, Basic messages.'",
-          "commit": "feat(daemon): add LAN peer discovery"
-        },
-        {
-          "id": "G2",
-          "title": "WebSocket Transport implementation",
-          "status": "pending",
-          "dependsOn": ["G1"],
-          "description": "A WsTransport implementing core::transport::Transport (currently just a trait with send/recv) using tokio-tungstenite for the daemon-to-daemon link, distinct from track C's local IPC WebSocket server (different port, different peer, different message type — InputEvent, not IpcRequest/Response).",
-          "deliverables": [
-            "platform/independent daemon/src/transport/ws.rs or a new small crate — decide during implementation whether this belongs in daemon or warrants promoting core::transport's trait usage into its own crate; note the choice in buildNote",
-            "WsTransport::send/recv implemented over an established peer connection"
-          ],
-          "acceptanceCriteria": [
-            "two local daemon instances exchange a hand-crafted InputEvent::Keyboard(KeyDown) over the transport in an integration test and receive it verbatim"
-          ],
-          "specContext": "vision.md §10: 'The initial implementation should use: WebSocket over the local network.'",
-          "commit": "feat(daemon): implement WebSocket Transport for daemon-to-daemon links"
-        },
-        {
-          "id": "G3",
-          "title": "Real pairing over the network",
-          "status": "pending",
-          "dependsOn": ["G1", "B4", "P4"],
-          "description": "Extend track B's PairingSession machine so start_pairing's candidate list is populated from G1's live discoveries (replacing the 2 hardcoded mock candidates once a real peer is on the network — keep the hardcoded fallback behind a feature flag or dev-mode switch so the mock-parity tests from B7 keep working standalone), and pair_with_candidate performs the real PairingRequest/PairingDecision handshake (core::pairing, currently unused scaffolding) over a transient connection to the candidate's address. On success, the paired device (id/name/os/public_key) is upserted via P4's DeviceRepo, not just added to in-memory ServiceState — this is what makes H2's trust gate recognize it on a future connection.",
-          "deliverables": [
-            "DaemonService gains a real-vs-seeded candidate source, gated so B7's tests are unaffected",
-            "the accept/reject handshake using core::pairing::{PairingRequest, PairingDecision} sent/received over G2's transport",
-            "a successful handshake calls DeviceRepo::upsert (P4) so the pairing survives a restart"
-          ],
-          "acceptanceCriteria": [
-            "two local daemon instances complete a real pair_with_candidate handshake end-to-end in an integration test, ending with both sides' devices list containing the other"
-          ],
-          "specContext": "vision.md §16 Pairing: 'On Device A: Available Devices... [Pair]. On Device B: Pairing Request \"MacBook\" wants to connect. [Reject] [Accept]. Once accepted, the devices become trusted.'",
-          "commit": "feat(daemon): implement real network pairing handshake over discovered peers"
+          "commit": "feat(daemon): add TCP/Wi-Fi peer discovery"
         },
         {
           "id": "G4",
+          "title": "Bluetooth Channel implementation",
+          "status": "pending",
+          "dependsOn": ["G1"],
+          "description": "BluetoothChannel implementing Channel over RFCOMM (Bluetooth Classic — an ordered byte stream, the same shape TCP gives us, unlike GATT/BLE's small-MTU characteristic model). Linux-first via the bluer crate (BlueZ D-Bus bindings), the only platform with both a mature crate and a runnable environment here. macOS (IOBluetooth) and Windows (WinRT Bluetooth APIs) have no equally mature high-level Rust crate as of this plan — written as a best-effort implementation and cross-compile-checked only, same honesty rule as E4-E7's platform caveats; flag the actual crate/API gap in buildNote rather than glossing over it.",
+          "deliverables": [
+            "daemon/src/channel/bluetooth.rs: struct BluetoothChannel wrapping bluer (or the chosen crate), implementing Channel, confined to this module per the wrap-third-party-deps rule",
+            "BluetoothChannel::connect(addr: BluetoothAddr) and ::accept(...) constructors"
+          ],
+          "acceptanceCriteria": [
+            "cargo build -p flow-daemon --features bluetooth (or equivalent target gate) succeeds on Linux",
+            "cargo check --target <apple-target>/<windows-target> succeeds or the gap is explicitly documented if no viable crate exists for that target at implementation time",
+            "a loopback-style test (two local RFCOMM endpoints if the test environment's Bluetooth stack allows it, otherwise a documented manual verification note) exercises send/recv"
+          ],
+          "specContext": "vision.md §10: 'Bluetooth — useful when devices are nearby and the user does not want to depend on the local network.' docs/architecture/channels.md 'BluetoothChannel'.",
+          "commit": "feat(daemon): implement BluetoothChannel over RFCOMM (Linux/bluer)"
+        },
+        {
+          "id": "G5",
+          "title": "Bluetooth discovery/advertisement",
+          "status": "pending",
+          "dependsOn": ["G4"],
+          "description": "daemon/src/discovery/bluetooth.rs: scan for nearby Flow-daemon-advertising devices and advertise this daemon's own presence, producing DiscoveredPeer entries with address: ChannelAddress::Bluetooth(..), matching G3's shape so G6 can treat both discovery sources uniformly.",
+          "deliverables": [
+            "scan + advertise functions producing the same DiscoveredPeer type G3 uses"
+          ],
+          "acceptanceCriteria": [
+            "unit tests cover the advertisement payload encode/decode without requiring real Bluetooth hardware; hardware-dependent scan/advertise behavior documented as manual verification, same pattern as G4"
+          ],
+          "specContext": "docs/architecture/channels.md 'Discovery per medium'.",
+          "commit": "feat(daemon): add Bluetooth peer discovery/advertisement"
+        },
+        {
+          "id": "G6",
+          "title": "Channel negotiation (medium selection + fallback)",
+          "status": "pending",
+          "dependsOn": ["G2", "G3", "G4", "G5"],
+          "description": "Given a peer discovered over one or both mediums, pick which Channel implementation to actually connect with: prefer Tcp when the peer is reachable over the local network (higher throughput and lower latency, which matters for continuous mouse-move events), fall back to Bluetooth otherwise. This is the one place that knows both concrete Channel types exist — everything upstream (G7 pairing, G8 streaming, H3 encryption) only ever holds a Box<dyn Channel> after this point.",
+          "deliverables": [
+            "daemon/src/channel/negotiate.rs: async fn connect_best_available(peer: &DiscoveredPeer) -> Result<Box<dyn Channel>, ChannelError>",
+            "the exact preference order (Tcp over Bluetooth, with a documented reason) written down in docs/architecture/channels.md, not just implied by code"
+          ],
+          "acceptanceCriteria": [
+            "unit test: a peer reachable via both mediums resolves to a TcpChannel; a peer reachable via Bluetooth only resolves to a BluetoothChannel",
+            "a peer reachable via neither returns a clear ChannelError rather than hanging"
+          ],
+          "specContext": "docs/architecture/channels.md 'Negotiation and fallback'.",
+          "commit": "feat(daemon): add Channel negotiation with TCP-preferred, Bluetooth-fallback selection"
+        },
+        {
+          "id": "G7",
+          "title": "Real pairing over Channels",
+          "status": "pending",
+          "dependsOn": ["G6", "B4", "P4"],
+          "description": "Extend track B's PairingSession machine so start_pairing's candidate list is populated from G3/G5's live discoveries (replacing the 2 hardcoded mock candidates once a real peer is found — keep the hardcoded fallback behind a feature flag or dev-mode switch so the mock-parity tests from B7 keep working standalone), and pair_with_candidate performs the real PairingRequest/PairingDecision handshake (core::pairing) as a ChannelMessage::Pairing exchange over whichever Channel G6 negotiated. On success, the paired device (id/name/os/public_key) is upserted via P4's DeviceRepo, not just added to in-memory ServiceState — this is what makes H2's trust gate recognize it on a future connection, regardless of which medium that future connection uses.",
+          "deliverables": [
+            "DaemonService gains a real-vs-seeded candidate source, gated so B7's tests are unaffected",
+            "the accept/reject handshake using core::pairing::{PairingRequest, PairingDecision} sent/received as ChannelMessage::Pairing frames",
+            "a successful handshake calls DeviceRepo::upsert (P4) so the pairing survives a restart, independent of which Channel medium was used"
+          ],
+          "acceptanceCriteria": [
+            "two local daemon instances complete a real pair_with_candidate handshake end-to-end over a TcpChannel in an integration test, ending with both sides' devices list containing the other",
+            "the handshake logic itself does not branch on ChannelKind anywhere — proof that G1's abstraction actually held"
+          ],
+          "specContext": "vision.md §16 Pairing: 'On Device A: Available Devices... [Pair]. On Device B: Pairing Request \"MacBook\" wants to connect. [Reject] [Accept]. Once accepted, the devices become trusted.'",
+          "commit": "feat(daemon): implement real pairing handshake over the Channel abstraction"
+        },
+        {
+          "id": "G8",
           "title": "End-to-end input streaming loop",
           "status": "pending",
-          "dependsOn": ["G2", "F2", "E2"],
-          "description": "Wire capture (E1) -> switch-aware gate (only stream when this device is Active, per F2/F3's local switch state) -> WsTransport::send (G2) on the sending side, and WsTransport::recv -> injector (E2) on the receiving side. This is the task where the product's actual core loop (vision.md's north star) first exists end to end, even if only on Linux (the only platform with both E1/E2 implemented and testable here).",
+          "dependsOn": ["G7", "F2", "E2"],
+          "description": "Wire capture (E1) -> switch-aware gate (only stream when this device is Active, per F2/F3's local switch state) -> Channel::send (whichever medium G6/G7 established) on the sending side, and Channel::recv -> injector (E2) on the receiving side. This is the task where the product's actual core loop (vision.md's north star) first exists end to end, even if only on Linux over a TcpChannel (the only combination fully buildable and testable here).",
           "deliverables": [
-            "daemon/src/pipeline/mod.rs (or similar) tying capture/transport/injection together behind the Active/Inactive device state"
+            "daemon/src/pipeline/mod.rs (or similar) tying capture/Channel/injection together behind the Active/Inactive device state, coded against the Channel trait only"
           ],
           "acceptanceCriteria": [
             "a manual two-instance-on-one-host test (documented in daemon/README.md, not automated — needs real input devices) demonstrates a keypress captured on the 'active' instance being injected on the 'inactive' instance's virtual device",
-            "an automated integration test covers the gating logic (events only flow while Active) using synthetic InputEvents, without real hardware"
+            "an automated integration test covers the gating logic (events only flow while Active) using synthetic InputEvents and the in-memory ChannelPair test double from G1, without real hardware or a real network"
           ],
           "specContext": "vision.md §12 diagram: 'Pressing Scroll Lock switches the destination of keyboard and mouse input' and the North Star: 'Just press a key and continue working.'",
-          "commit": "feat(daemon): wire capture -> transport -> injection into the end-to-end input pipeline"
+          "commit": "feat(daemon): wire capture -> Channel -> injection into the end-to-end input pipeline"
         }
       ]
     },
     {
       "id": "H",
       "title": "security-pairing-trust",
-      "goal": "Treat keyboard/mouse events as the sensitive data they are (vision.md §17) once real network pairing (track G) exists — identity, trust, and an encrypted channel, replacing the POC's trusted-local-network assumption.",
+      "goal": "Treat keyboard/mouse events as the sensitive data they are (vision.md §17) once real Channel-based pairing (track G) exists — identity, trust, and encryption that work uniformly whether the underlying Channel is TCP or Bluetooth, replacing the POC's trusted-local-network assumption.",
       "tasks": [
         {
           "id": "H1",
@@ -933,9 +1025,9 @@
           "title": "Pairing trust gate",
           "status": "pending",
           "dependsOn": ["H1", "P4"],
-          "description": "Consult P4's device repository (is_trusted(public_key)) before accepting an incoming pairing/connection from an already-known device — no separate trust store, since a paired device's row and its public key column already are the trust record. G3's pairing handshake calls DeviceRepo::upsert on success, which is what makes a device trusted going forward.",
+          "description": "Consult P4's device repository (is_trusted(public_key)) before accepting an incoming pairing/connection from an already-known device, regardless of which Channel medium (TCP or Bluetooth) it arrives over — no separate trust store, since a paired device's row and its public key column already are the trust record. G7's pairing handshake calls DeviceRepo::upsert on success, which is what makes a device trusted going forward.",
           "deliverables": [
-            "a connection-accept gate function/module wired into G's networking layer, calling P4's is_trusted()"
+            "a connection-accept gate function/module wired into G's Channel-accept path, calling P4's is_trusted() — placed where it runs before any concrete medium-specific code, so it's medium-agnostic by construction"
           ],
           "acceptanceCriteria": [
             "a device whose public key was upserted via P4 is reported trusted; an unknown key is not",
@@ -946,29 +1038,30 @@
         },
         {
           "id": "H3",
-          "title": "Encrypted channel over WsTransport",
+          "title": "Encrypted Channel decorator",
           "status": "pending",
-          "dependsOn": ["H1", "G2"],
-          "description": "Layer an authenticated encrypted handshake onto G2's WebSocket transport using the Noise protocol (snow crate) keyed by each side's H1 identity, so InputEvents never travel in plaintext between daemons.",
+          "dependsOn": ["H1", "G1", "G2"],
+          "description": "NoiseChannel: a struct implementing Channel that wraps any other Box<dyn Channel> (Noise operates over any ordered byte stream, so this works identically over TcpChannel or, once G4 lands, BluetoothChannel — the whole reason G1's abstraction exists is so this task doesn't care which one it's wrapping) and layers an authenticated Noise protocol (snow crate) handshake keyed by each side's H1 identity, so ChannelMessages never travel in plaintext between daemons.",
           "deliverables": [
-            "snow added as a dependency",
-            "a NoiseTransport wrapper around WsTransport performing the handshake on connect and encrypting/decrypting every send/recv"
+            "snow added as a dependency, confined to this module per the wrap-third-party-deps rule",
+            "daemon/src/channel/noise.rs: struct NoiseChannel<C: Channel> implementing Channel, performing the handshake on construction and encrypting/decrypting every send/recv"
           ],
           "acceptanceCriteria": [
-            "integration test: two instances complete a Noise handshake and exchange an InputEvent that a byte-level packet sniff (asserting on the raw socket bytes, not the decoded event) does not reveal in plaintext"
+            "integration test: two instances complete a Noise handshake over a TcpChannel and exchange a ChannelMessage::Input that a byte-level packet sniff (asserting on the raw socket bytes, not the decoded message) does not reveal in plaintext",
+            "NoiseChannel's own code contains no reference to TcpChannel or BluetoothChannel specifically — only the Channel trait"
           ],
           "specContext": "vision.md §17: 'Encrypted communication... Conceptually: Device A -> Secure Pairing -> Device Identity -> Encrypted Channel -> Input Events.'",
-          "commit": "feat(daemon): encrypt the daemon-to-daemon transport with Noise (identity-keyed)"
+          "commit": "feat(daemon): add NoiseChannel, an encrypted decorator over any Channel implementation"
         },
         {
           "id": "H4",
           "title": "Replay protection and unknown-device rejection",
           "status": "pending",
           "dependsOn": ["H2", "H3"],
-          "description": "Reject any incoming connection whose identity isn't in the trust store (H2) before the Noise handshake completes, and add a monotonic sequence number / timestamp check on InputEvents to reject replayed frames.",
+          "description": "Reject any incoming connection whose identity isn't recognized by H2's trust gate before the Noise handshake completes, and add a monotonic sequence number / timestamp check on ChannelMessages to reject replayed frames — both checks live at the Channel level, so they apply the same way regardless of medium.",
           "deliverables": [
-            "connection-accept gate consulting TrustStore",
-            "sequence/timestamp check on the receiving side of the input pipeline (G4)"
+            "connection-accept gate consulting H2's trust gate (backed by P4)",
+            "sequence/timestamp check on the receiving side of the input pipeline (G8)"
           ],
           "acceptanceCriteria": [
             "integration test: a connection attempt from an identity not in the trust store is rejected before any InputEvent can flow",
@@ -988,10 +1081,10 @@
           "id": "I1",
           "title": "Auto-reconnect",
           "status": "pending",
-          "dependsOn": ["G2", "P3"],
-          "description": "When settings.auto_reconnect is true and an active peer connection drops, retry with backoff, transitioning DaemonLinkState through Reconnecting per the state machine, matching the exact transition table in daemon-ipc.md.",
+          "dependsOn": ["G6", "P3"],
+          "description": "When settings.auto_reconnect is true and an active Channel drops, retry with backoff — re-running G6's negotiation each attempt, since the medium that was previously available (e.g. Wi-Fi) may no longer be, and falling back to whatever is (e.g. Bluetooth) is exactly what the negotiation step is for — transitioning DaemonLinkState through Reconnecting per the state machine, matching the exact transition table in daemon-ipc.md.",
           "deliverables": [
-            "reconnect loop with capped exponential backoff",
+            "reconnect loop with capped exponential backoff, re-invoking G6's connect_best_available on each attempt",
             "DaemonLinkState transitions driven by real connection events instead of only being settable via the harness's debug method (which stays, for local dev/testing)"
           ],
           "acceptanceCriteria": [
@@ -1061,7 +1154,7 @@
           "id": "J2",
           "title": "Full workspace integration test sweep",
           "status": "pending",
-          "dependsOn": ["P5", "B7", "C6", "F3", "G4", "H4", "I3"],
+          "dependsOn": ["P5", "B7", "C6", "F3", "G8", "H4", "I3"],
           "description": "cargo test --workspace green across flow-core, flow-daemon, flow-platform (platform tests scoped to what's runnable on Linux CI; macOS/Windows-only code is check-only per E4-E7's acceptance criteria, not test-only).",
           "deliverables": [
             "a single documented command (or script) that runs the full suite the way a fresh contributor would"
