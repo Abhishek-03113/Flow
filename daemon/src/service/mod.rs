@@ -14,7 +14,8 @@ use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{PairingCandidate, PairingSession, PairingStage};
 use flow_core::permission::PermissionStatus;
-use flow_core::settings::FlowSettings;
+use flow_core::settings::{FlowSettings, SettingsPatch};
+use flow_core::switch_key::SwitchKeyBinding;
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -412,6 +413,52 @@ impl DaemonService {
             handle.abort();
         }
     }
+
+    /// Sets the switch-key binding. Requires at least one key token.
+    pub async fn set_switch_key(&self, binding: SwitchKeyBinding) -> Result<(), FlowError> {
+        if binding.keys.is_empty() {
+            return Err(FlowError::InvalidSwitchKey);
+        }
+        self.apply_settings_patch(SettingsPatch {
+            switch_key: Some(binding),
+            ..Default::default()
+        })
+        .await;
+        Ok(())
+    }
+
+    /// Merges `patch` into the current settings (only the `Some` fields
+    /// change), matching `FlowSettings::apply_patch`.
+    pub async fn update_settings(&self, patch: SettingsPatch) -> Result<(), FlowError> {
+        self.apply_settings_patch(patch).await;
+        Ok(())
+    }
+
+    /// Restores [`FlowSettings::defaults`] exactly.
+    pub async fn reset_settings(&self) -> Result<(), FlowError> {
+        let defaults = FlowSettings::defaults();
+        {
+            let mut state = self.state.write().await;
+            state.settings = defaults.clone();
+        }
+        SettingsRepo::new(self.storage.clone())
+            .save(defaults.clone())
+            .await;
+        self.settings_tx.send_replace(defaults);
+        Ok(())
+    }
+
+    async fn apply_settings_patch(&self, patch: SettingsPatch) {
+        let settings = {
+            let mut state = self.state.write().await;
+            state.settings.apply_patch(patch);
+            state.settings.clone()
+        };
+        SettingsRepo::new(self.storage.clone())
+            .save(settings.clone())
+            .await;
+        self.settings_tx.send_replace(settings);
+    }
 }
 
 fn seed_device_records() -> Vec<DeviceRecord> {
@@ -765,5 +812,94 @@ mod tests {
         tokio::time::advance(PAIRING_SEARCH_TO_FOUND + PAIRING_REQUEST_TO_PAIRED).await;
         tokio::task::yield_now().await;
         assert_eq!(*sessions.borrow(), PairingSession::idle());
+    }
+
+    #[tokio::test]
+    async fn set_switch_key_with_empty_keys_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        let empty = SwitchKeyBinding {
+            label: "Nothing".to_string(),
+            keys: Vec::new(),
+        };
+        assert_eq!(
+            service.set_switch_key(empty).await,
+            Err(FlowError::InvalidSwitchKey)
+        );
+    }
+
+    #[tokio::test]
+    async fn set_switch_key_updates_only_the_switch_key_field() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        let binding = SwitchKeyBinding {
+            label: "Pause".to_string(),
+            keys: vec!["Pause".to_string()],
+        };
+        service
+            .set_switch_key(binding.clone())
+            .await
+            .expect("set switch key");
+
+        let settings = service.watch_settings().borrow().clone();
+        assert_eq!(settings.switch_key, binding);
+        assert!(settings.share_mouse); // untouched fields stay default
+    }
+
+    #[tokio::test]
+    async fn update_settings_merges_only_the_given_field() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        service
+            .update_settings(SettingsPatch {
+                share_mouse: Some(false),
+                ..Default::default()
+            })
+            .await
+            .expect("update settings");
+
+        let settings = service.watch_settings().borrow().clone();
+        assert!(!settings.share_mouse);
+        assert!(settings.share_keyboard);
+        assert!(settings.launch_at_login);
+    }
+
+    #[tokio::test]
+    async fn update_settings_persists_across_a_reload() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage.clone()).await;
+
+        service
+            .update_settings(SettingsPatch {
+                debug_logging: Some(true),
+                ..Default::default()
+            })
+            .await
+            .expect("update settings");
+
+        let reloaded = SettingsRepo::new(storage).load().await;
+        assert!(reloaded.debug_logging);
+    }
+
+    #[tokio::test]
+    async fn reset_settings_restores_defaults_exactly() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        service
+            .update_settings(SettingsPatch {
+                share_mouse: Some(false),
+                debug_logging: Some(true),
+                ..Default::default()
+            })
+            .await
+            .expect("update settings");
+        service.reset_settings().await.expect("reset settings");
+
+        let settings = service.watch_settings().borrow().clone();
+        assert_eq!(settings, FlowSettings::defaults());
     }
 }

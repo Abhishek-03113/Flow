@@ -433,7 +433,8 @@
         {
           "id": "B5",
           "title": "Settings commands",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "All three commands persist via SettingsRepo::save on every change (not just at some later track) since settings durability was already the point of track P — deferring it here would mean a restart losing every settings change until some future task remembered to wire persistence in.",
           "dependsOn": ["B2"],
           "description": "set_switch_key/update_settings/reset_settings on DaemonService, using FlowSettings::apply_patch (A5) for the merge logic.",
           "deliverables": [
