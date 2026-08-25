@@ -453,7 +453,7 @@
         {
           "id": "B6",
           "title": "Permission command",
-          "status": "pending",
+          "status": "done",
           "dependsOn": ["B2"],
           "description": "request_permission on DaemonService. Matches the mock's always-succeeds behavior (real OS prompt/rejection handling is explicit future work per daemon-ipc.md, tracked separately once track E's platform adapters exist and can report a real OS-level denial).",
           "deliverables": [
