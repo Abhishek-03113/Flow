@@ -1,24 +1,14 @@
-//! Windows input adapter. Implementation pending: capture will use a
-//! low-level keyboard/mouse hook (`SetWindowsHookEx`) and injection will
-//! use `SendInput`.
+//! Windows input adapter, bound to `WH_KEYBOARD_LL`/`WH_MOUSE_LL` hooks
+//! for capture (`daemon/todos.json` E6). Injection (E7) still binds to
+//! `unimplemented!()` pending `SendInput` support.
 
-use flow_core::input::{InputCapture, InputInjector};
+mod capture;
+mod translate;
+
+pub use capture::{WindowsCaptureError, WindowsInputCapture};
+
+use flow_core::input::InputInjector;
 use flow_core::protocol::InputEvent;
-
-#[derive(Debug, Default)]
-pub struct WindowsInputCapture;
-
-impl InputCapture for WindowsInputCapture {
-    type Error = std::io::Error;
-
-    fn start(&mut self) -> Result<(), Self::Error> {
-        unimplemented!("Windows input capture is not yet implemented")
-    }
-
-    fn stop(&mut self) -> Result<(), Self::Error> {
-        unimplemented!("Windows input capture is not yet implemented")
-    }
-}
 
 #[derive(Debug, Default)]
 pub struct WindowsInputInjector;
