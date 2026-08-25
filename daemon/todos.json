@@ -351,7 +351,8 @@
         {
           "id": "B1",
           "title": "ServiceState scaffold",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "core::state::AppState left untouched (not absorbed) — ServiceState is its own type in daemon/src/service/mod.rs and nothing currently references AppState, so there was no call site to migrate; AppState can be deleted in a later cleanup task (J-track) if it stays unused. 'Local device flagged not-removable' is verified at the storage layer (DeviceRepo row for d1 has removable=false after seeding) rather than as a ServiceState field, since removability isn't part of ServiceState's devices: HashMap<DeviceId, Device> per the plan's own struct shape — B3 will hardcode the LOCAL_DEVICE_ID check for its precondition, matching the mock, same as this module's own doc comment says.",
           "dependsOn": ["A7", "P3", "P4"],
           "description": "New daemon/src/service/mod.rs. ServiceState holds all 5 watched slices (devices, link_state, pairing_session, settings, permission). Devices and settings are load-or-seed: on a fresh (empty) database this looks identical to sharedContractConstants.mockParitySeedData via P3/P4's first-run bootstrap; on a subsequent run it loads whatever was actually persisted. Replaces/extends core::state::AppState (which today only has a bare devices map + active_device) with the full contract shape.",
           "deliverables": [
