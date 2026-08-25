@@ -9,4 +9,5 @@ pub mod gate;
 pub mod handshake;
 pub mod negotiate;
 pub mod noise;
+pub mod reconnect;
 pub mod tcp;
