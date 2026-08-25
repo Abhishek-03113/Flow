@@ -154,6 +154,12 @@ Not wired into `main.rs`: nothing in the actual daemon binary spawns `send_while
 
 The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only and assumes it's reachable solely by the local user, per `docs/contracts/README.md`'s scope note — it does not carry its own authentication in v0.1. The daemon-to-daemon Channel (once track G/H land) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.
 
+### Pairing trust gate (track H2)
+
+`daemon/src/trust/mod.rs`'s `TrustGate::is_trusted(public_key)` consults `P4`'s `DeviceRepo::is_trusted` to decide whether a peer claiming `public_key` is already a paired device — medium-agnostic by construction, since it never names a concrete `Channel` type, only a public key.
+
+**Not yet wired into a live incoming-connection-accept path.** An unauthenticated TCP/Bluetooth connection can claim any public key it likes, so checking `is_trusted` alone at accept time wouldn't actually authenticate anything — that needs cryptographic proof the peer holds the matching private key, which is `H3`'s Noise handshake. `H4` ("Replay protection and unknown-device rejection") is where this gate actually gets consulted on a live connection, once `H3` provides that proof — its own `dependsOn` names both this task and `H3`, not this one alone. This task's own scope was the gate function itself, which `daemon/src/trust/mod.rs`'s own tests exercise directly against a real (in-memory) `DeviceRepo`: a public key upserted via `P4` is reported trusted, an unknown one isn't, and a never-paired database trusts nothing.
+
 ## Manual verification notes
 
 Several tasks in `todos.json` (E1-E3, E4-E7, G4, I4) can only be fully verified with real input devices, a second machine, or platform hardware this development environment doesn't have. Each such task's acceptance criteria says explicitly what was verified automatically (unit tests on pure translation logic, `cargo check` for cross-compiled platforms, integration tests against synthetic events) versus what still needs a human with the actual hardware to confirm. This section will grow with concrete "how to manually verify" steps as those tasks land.
