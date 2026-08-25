@@ -6,6 +6,7 @@
 //! same way `main.rs` does.
 
 pub mod channel;
+pub mod discovery;
 pub mod hotkey;
 pub mod ipc;
 pub mod service;
