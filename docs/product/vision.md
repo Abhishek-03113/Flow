@@ -959,6 +959,8 @@ Test:
 
 ### Phase 7 — Native Daemon
 
+**Status: `daemon/todos.json`'s full build-out plan (tracks A-J) is done** — the production Rust daemon this phase describes exists, including several items §20's POC Strategy explicitly deferred (Bluetooth, production-grade pairing, a real security architecture, and service-supervision scaffolding). See `daemon/README.md`'s top status line for the honest, current account of what's verified how on each OS, and what real end-to-end wiring (an incoming-connection accept loop in `main.rs`, splicing the Noise/trust/reconnect building blocks into it) is still deliberately outstanding.
+
 Once the POC validates the interaction:
 
 ```

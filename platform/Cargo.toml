@@ -5,3 +5,20 @@ edition.workspace = true
 
 [dependencies]
 flow-core = { path = "../core" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# "highsierra" gates CGEvent::new_scroll_event, used by translate.rs's tests
+# to build a synthetic scroll CGEvent without needing a live event tap.
+core-graphics = { version = "0.24", features = ["highsierra"] }
+core-foundation = "0.10"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Input_KeyboardAndMouse",
+] }

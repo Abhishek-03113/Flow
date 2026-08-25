@@ -1,0 +1,33 @@
+# Scaffolding only (daemon/todos.json J4) — not installed or enabled
+# by anything in this repository. Registering this as an actual
+# auto-starting unit is future work; see daemon/README.md's "Process
+# supervision" section for the intended model this file implements.
+#
+# A systemd *user* unit, not a system unit: flow-daemon needs the
+# logged-in user's own session (input device access, a real X11/
+# Wayland session for capture/injection) which a system-level unit
+# running as root would not have. Install by copying to
+# ~/.config/systemd/user/flow-daemon.service and running
+# `systemctl --user enable --now flow-daemon.service`.
+
+[Unit]
+Description=Flow daemon (keyboard/mouse sharing between paired devices)
+# Waits for a graphical session to exist, since input capture/injection
+# needs one — see daemon/README.md's "Platform adapters" table for
+# exactly what each OS's capture/injection needs at runtime.
+After=graphical-session.target
+
+[Service]
+Type=simple
+# Placeholder: the actual installed binary path (a `cargo build
+# --release` output, or a future packaged install location) —
+# /usr/local/bin/flow-daemon is a plausible default, not a guarantee.
+ExecStart=/usr/local/bin/flow-daemon
+
+# Restart only on failure, matching daemon/README.md's stated model —
+# a deliberate shutdown (SIGINT/SIGTERM) exits 0 and is not restarted.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

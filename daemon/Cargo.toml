@@ -10,3 +10,32 @@ path = "src/main.rs"
 [dependencies]
 flow-core = { path = "../core" }
 flow-platform = { path = "../platform" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite_migration = "1"
+directories = "5"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+rand = "0.10"
+async-trait = "0.1"
+ed25519-dalek = "3.0.0"
+snow = "0.10.0"
+
+# bluer (BlueZ D-Bus bindings) is Linux-only and needs bluetoothd/a real
+# adapter to do anything at runtime; gated behind the "bluetooth" feature
+# per this crate's own convention (`cargo build --features bluetooth`),
+# not enabled by default.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17.4", features = ["rfcomm", "bluetoothd"], optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+
+[features]
+bluetooth = ["dep:bluer"]

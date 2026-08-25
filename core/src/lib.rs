@@ -7,9 +7,15 @@
 //! currently in use. See `docs/product/vision.md` for the architecture
 //! this maps to.
 
+pub mod channel;
 pub mod device;
+pub mod error;
 pub mod input;
+pub mod ipc;
+pub mod link;
 pub mod pairing;
+pub mod permission;
 pub mod protocol;
+pub mod settings;
 pub mod state;
-pub mod transport;
+pub mod switch_key;
