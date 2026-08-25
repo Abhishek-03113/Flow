@@ -2,15 +2,13 @@
 /target/
 **/target/
 
-# Flutter / Dart
-flutter/.dart_tool/
-flutter/.flutter-plugins
-flutter/.flutter-plugins-dependencies
-flutter/.packages
-flutter/build/
+# Flutter / Dart (flutter/.gitignore, from `flutter create`, covers the rest)
 flutter/**/generated_plugin_registrant.dart
 
 # Editors / OS
 .DS_Store
 .vscode/
 .idea/
+
+# Claude Design export (reference only, not project source)
+/design/claude-design-export/
