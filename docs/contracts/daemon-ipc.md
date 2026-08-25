@@ -1,8 +1,10 @@
 # Daemon IPC Contract
 
-Contract version: **0.1.0**. This is the shape of the local control channel between the Flutter UI and the daemon (`docs/product/vision.md` §9) — commands the UI sends, state the daemon pushes back. The actual transport (Unix domain socket, named pipe, local TCP) is still undecided per the vision doc; everything here is transport-agnostic and just assumes a bidirectional message stream carrying JSON.
+Contract version: **0.1.0** (transport decided in **0.1.1**, see `CHANGELOG.md` — a non-breaking addendum, not a shape change). This is the shape of the local control channel between the Flutter UI and the daemon (`docs/product/vision.md` §9) — commands the UI sends, state the daemon pushes back.
 
-Today this contract is realized entirely by `flutter/lib/data/mock_daemon_repository.dart`. There is no wire format in use yet — the JSON here is the target shape for when one exists, kept alongside the Dart interface so the two can't silently drift.
+**Transport: WebSocket over loopback TCP, `127.0.0.1:47823`** (`flow_core::ipc::IPC_PORT`), not a Unix domain socket or named pipe. One implementation covers macOS/Windows/Linux for v0.1 instead of `#[cfg(target_os)]` branching in the IPC layer itself; reachability is restricted to `127.0.0.1` as the security boundary for now (`README.md` ground rule 3 still holds — this assumes the channel is reachable only by the local user), with socket-based hardening explicitly deferred to a later reliability track rather than forgotten.
+
+**Status: implemented by `flow-daemon`, not just the mock.** `daemon/src/ipc/{dispatch,server}.rs` realizes this envelope for real — `daemon/tests/ipc_protocol.rs` is the end-to-end proof, the Rust-side equivalent of what `flutter/test/data/mock_daemon_repository_test.dart` proves for the mock. `flutter/lib/data/mock_daemon_repository.dart` remains the *other* implementation this contract governs — both must agree with the JSON shapes below, not just one of them.
 
 ## The interface
 
@@ -35,7 +37,7 @@ abstract class DaemonRepository {
 
 Why streams-out / commands-in rather than request/response for everything: device state, link health, and settings can all change because of what's happening on the *other* computer (vision.md §13, "active state should be synchronized between connected devices"), not just because of a local command. A stream is the only shape that's still correct when the daemon on the other machine is the one that caused the change. Commands stay `Future<void>` (fire-and-confirm) because their effect is always observable on a stream — a second return channel for the same data would be a second source of truth.
 
-## Wire envelope (target shape, not yet implemented)
+## Wire envelope
 
 ```json
 // UI -> daemon
