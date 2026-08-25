@@ -647,7 +647,8 @@
         {
           "id": "D3",
           "title": "Implement the 9 commands + DaemonCommandException mapping",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "No-payload commands (start_pairing, cancel_pairing, reset_settings, request_permission) send payload: null rather than {} — matches the envelope's stated 'payload: object|null' shape and Rust dispatch.rs's own no-payload branches, which never touch payload at all. Debugged and fixed a second real hang while writing this task's tests: using package:async's StreamQueue to both drain foreign.stream (for dispose() to resolve) and let tests pull sent requests worked for any single test in isolation but hung when 2+ tests in the same file ran together — root cause not fully isolated (some StreamQueue/isolate interaction across tests), but reproducible and fixed by switching to a plain StreamController<dynamic>.broadcast() fed by a normal .listen(), with each test's nextRequest() doing its own `.first` on that broadcast stream — same technique already used elsewhere in this file, no new dependency needed (removed the async dev-dependency this had briefly added). Verified the fix by running the full 10-test file together, not just each test individually, since the individual-only runs are exactly what missed this bug the first time. Full workspace flutter test suite (59 tests, 6 new) passes together; flutter analyze and dart format clean.",
           "dependsOn": ["D1"],
           "description": "Each command sends an IpcRequest with a fresh id, awaits the matching Ack/Err by id (a Map<String, Completer<void>> keyed by request id), and throws DaemonCommandException(code, message) on an Err response — reusing the existing domain type, not inventing a parallel one.",
           "deliverables": [
