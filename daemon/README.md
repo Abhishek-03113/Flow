@@ -44,6 +44,19 @@ cargo clippy -p flow-daemon --features bluetooth --all-targets -- -D warnings
 
 There is currently no `#[allow(...)]` anywhere in `core`/`daemon`/`platform` — every lint the workspace clippy configuration flags is either fixed outright or the code is restructured to avoid it, not suppressed. If a future change genuinely needs one, justify it with a comment at the point of use (a workspace-wide `clippy.toml` blanket-allowance isn't warranted today since nothing needs one yet — adding one speculatively would be lint config for a problem that doesn't exist).
 
+**Cross-compilation checks** (`daemon/todos.json` J2/J3) — `flow-core` and `flow-platform` (the two crates E1-E7's platform adapters live in) are checked, not built, against the macOS and Windows targets, proving the code at least type-checks/compiles for platforms this container can't run:
+
+```sh
+rustup target add x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc
+cargo check -p flow-core -p flow-platform --target x86_64-apple-darwin
+cargo check -p flow-core -p flow-platform --target aarch64-apple-darwin
+cargo check -p flow-core -p flow-platform --target x86_64-pc-windows-msvc
+cargo clippy -p flow-core -p flow-platform --target x86_64-apple-darwin --all-targets -- -D warnings
+cargo clippy -p flow-core -p flow-platform --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+```
+
+**Deliberately scoped to `flow-core`/`flow-platform`, not `--workspace`.** `cargo check --workspace --target <macos-or-windows>` (including `flow-daemon`) genuinely fails in this development environment — verified directly, not assumed: `rusqlite`'s `bundled` feature compiles SQLite's C source as part of its build script, which needs a real per-target C toolchain (a macOS cross-`cc` with the right `-arch`/`-mmacosx-version-min` support, or `lib.exe` from an MSVC toolchain for the Windows target) that this container doesn't have and installing isn't reasonably in scope here. This is a pre-existing gap in the *development environment*, not evidence `flow-daemon` itself can't compile on macOS/Windows — a machine with Xcode or a Windows MSVC toolchain installed wouldn't hit it. `flow-core`/`flow-platform` have no such dependency (no bundled C code), which is exactly why E1-E7 scoped their own cross-compile verification to those two crates in the first place, not the whole workspace — this note makes that scoping decision explicit rather than leaving it implicit.
+
 **Cross-language contract test** (`daemon/todos.json` task D5): `flutter/test/data/ipc_daemon_repository_manual_test.dart` runs the same 13 scenarios `mock_daemon_repository_test.dart` proves against the Dart mock, against a real `flow-daemon` process instead — confirming the Rust and Dart sides agree, not just that each independently passes its own tests. Manual and not part of either `cargo test` or a plain `flutter test`:
 
 ```sh

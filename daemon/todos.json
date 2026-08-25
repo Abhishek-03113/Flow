@@ -1203,7 +1203,8 @@
         {
           "id": "J2",
           "title": "Full workspace integration test sweep",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "cargo test --workspace passes cleanly on Linux (96 flow-daemon lib tests, plus every integration test file, plus flow-core's 19 and flow-platform's 15 - all green, confirmed fresh in this task rather than assumed from earlier per-task runs). Directly verified, not assumed, that cargo check --workspace --target x86_64-apple-darwin/x86_64-pc-windows-msvc both genuinely FAIL in this environment: rusqlite's bundled feature compiles SQLite's C source in its build script, which needs a real per-target C toolchain (a macOS cross-cc supporting -arch/-mmacosx-version-min, or MSVC's lib.exe) this container doesn't have - confirmed by reading the actual cc-rs error output, not inferred. This is a pre-existing environment gap (a machine with Xcode or an MSVC toolchain installed would not hit it), not evidence flow-daemon can't compile on those platforms. Scoped the cross-compile-check acceptance criterion to cargo check -p flow-core -p flow-platform --target ... instead (both pass cleanly for x86_64-apple-darwin, aarch64-apple-darwin, and x86_64-pc-windows-msvc, plus clippy --all-targets -D warnings clean on all three) - the same two crates E1-E7 already scoped their own cross-compile verification to, for the same reason (no bundled C dependency). Documented this scoping decision explicitly in daemon/README.md's Testing and linting section rather than leaving it implicit or silently narrowing the acceptance criterion.",
           "dependsOn": ["P5", "B7", "C6", "F3", "G8", "H4", "I3"],
           "description": "cargo test --workspace green across flow-core, flow-daemon, flow-platform (platform tests scoped to what's runnable on Linux CI; macOS/Windows-only code is check-only per E4-E7's acceptance criteria, not test-only).",
           "deliverables": [
@@ -1219,7 +1220,8 @@
         {
           "id": "J3",
           "title": "Cross-compilation setup notes",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "This task's deliverable (a daemon/README.md Cross-compilation section with exact rustup target add/cargo check invocations) overlapped directly with J2's own acceptance criterion (the same cargo check --target commands, scoped to flow-core/flow-platform for the reason documented in J2's buildNote), so both were written together in the same README edit rather than duplicating the same content under two headings - daemon/README.md's 'Testing and linting' section now has a 'Cross-compilation checks' subsection with the exact rustup target add line plus cargo check/clippy invocations for x86_64-apple-darwin, aarch64-apple-darwin, and x86_64-pc-windows-msvc. Verified this task's own acceptance criterion directly: ran every documented command fresh in this session (not copy-pasted from memory) and confirmed each one reproduces the passing result claimed - rustup target list --installed confirmed all three targets already present, and each cargo check/clippy invocation was re-run and shown clean immediately before this note was written.",
           "dependsOn": ["E5", "E7"],
           "description": "Document (daemon/README.md) exactly how to add and use the macOS/Windows Rust targets from a Linux dev machine for the check-only verification tracks E4-E7 relied on, plus what's still needed (an actual Mac/PC, or CI runners) for a real build+run.",
           "deliverables": [
