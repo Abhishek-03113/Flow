@@ -1,0 +1,12 @@
+[package]
+name = "flow-daemon"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "flow-daemon"
+path = "src/main.rs"
+
+[dependencies]
+flow-core = { path = "../core" }
+flow-platform = { path = "../platform" }

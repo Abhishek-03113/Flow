@@ -1,0 +1,15 @@
+//! Platform-, transport-, and UI-independent domain model for Flow.
+//!
+//! This crate is the shared vocabulary the daemon, platform adapters, and
+//! any future transport implementations build on: the input event
+//! protocol, device/pairing state, and the traits that decouple the
+//! daemon's core loop from OS-specific input handling and the transport
+//! currently in use. See `docs/product/vision.md` for the architecture
+//! this maps to.
+
+pub mod device;
+pub mod input;
+pub mod pairing;
+pub mod protocol;
+pub mod state;
+pub mod transport;

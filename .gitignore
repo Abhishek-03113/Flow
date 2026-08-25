@@ -1,0 +1,16 @@
+# Rust
+/target/
+**/target/
+
+# Flutter / Dart
+flutter/.dart_tool/
+flutter/.flutter-plugins
+flutter/.flutter-plugins-dependencies
+flutter/.packages
+flutter/build/
+flutter/**/generated_plugin_registrant.dart
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/
