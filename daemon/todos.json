@@ -154,7 +154,8 @@
         {
           "id": "A4",
           "title": "Add SwitchKeyBinding and its presets",
-          "status": "pending",
+          "status": "done",
+          "buildNote": "presets() is a fn returning [SwitchKeyBinding; 4], not a `pub const` array as originally sketched — SwitchKeyBinding.keys is a Vec<String>, which can't be built in a const initializer (no heap allocation in stable const evaluation). Token values and order match the spec exactly.",
           "dependsOn": [],
           "description": "New core/src/switch_key/mod.rs holding the switch-key type shared by settings (track A5) and the future hotkey detector (track F) — kept as its own module since both depend on it independently.",
           "deliverables": [
