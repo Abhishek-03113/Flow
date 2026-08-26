@@ -123,6 +123,30 @@ pub trait Channel: Send {
     async fn close(&mut self) -> Result<(), ChannelError>;
 }
 
+/// Lets a `Box<dyn Channel>` (what `negotiate::connect_best_available`
+/// returns, since the caller doesn't know or care which concrete medium
+/// it got) be wrapped by a decorator generic over `C: Channel` — e.g.
+/// `NoiseChannel<Box<dyn Channel>>` — without that decorator needing its
+/// own special case for "a boxed trait object" versus a concrete type.
+#[async_trait]
+impl Channel for Box<dyn Channel> {
+    fn kind(&self) -> ChannelKind {
+        (**self).kind()
+    }
+
+    async fn send(&mut self, msg: ChannelMessage) -> Result<(), ChannelError> {
+        (**self).send(msg).await
+    }
+
+    async fn recv(&mut self) -> Result<ChannelMessage, ChannelError> {
+        (**self).recv().await
+    }
+
+    async fn close(&mut self) -> Result<(), ChannelError> {
+        (**self).close().await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
