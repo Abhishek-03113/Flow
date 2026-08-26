@@ -78,6 +78,14 @@ cargo run -p flow-daemon
 cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repository_manual_test.dart
 ```
 
+**Full daemon-to-UI end-to-end test:** `flutter/test/e2e/daemon_ui_flow_e2e_test.dart` goes further than the contract test above — it drives the actual production Flutter screens (tray popover, settings, onboarding) through real taps against a real `flow-daemon`, and unlike the contract test it starts and stops that daemon itself (no manually-started process, no shared-`HOME` two-terminal dance). Tagged `e2e`, automated, single command:
+
+```sh
+cd flutter && flutter test --tags e2e --run-skipped test/e2e/daemon_ui_flow_e2e_test.dart
+```
+
+See `docs/testing/manual-testing-strategy.md`'s Tier 0 for what this automates.
+
 ## The contract this daemon implements
 
 [`docs/contracts/`](../docs/contracts) defines the exact interface — commands, state streams, error codes, state machines — that `flutter/lib/data/mock_daemon_repository.dart` implements on the Flutter side. `flow-daemon` is the second, real implementation of that same contract, reachable over local IPC: `flutter/lib/state/repository_providers.dart`'s `daemonRepositoryProvider` can point at it instead of the mock via `--dart-define=FLOW_DAEMON_MODE=ipc`, with **no UI code changing** (`docs/contracts/README.md` ground rule 2; see `flutter/README.md` "Running against a real daemon"). `daemon/todos.json` tracks A-D built exactly this, in order.

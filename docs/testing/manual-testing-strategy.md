@@ -16,6 +16,8 @@ Tracks **E** (platform input capture/injection), **F** (switch-hotkey), **G** (C
 
 Nothing here needs a second device; it never did. This is the local IPC contract (`docs/contracts/`), which was always scoped to "this machine's UI talking to this machine's daemon."
 
+**Most of this tier is now automated**, not just manual: `flutter/test/e2e/daemon_ui_flow_e2e_test.dart` starts and stops a real `flow-daemon` itself and drives the actual production screens (tray popover, app window settings, onboarding) through real taps over the real IPC contract — device switching, settings/switch-key changes, device removal, a full pairing handshake, restart persistence, and a mid-session daemon kill, all in one `flutter test --tags e2e --run-skipped test/e2e/daemon_ui_flow_e2e_test.dart` run. The manual checklist below is still worth a human pass now and then (it's the only way to judge how something *feels*), but a regression in any of it would be caught by that automated run first, on every change, without a human at the keyboard.
+
 ```sh
 # terminal 1, repo root
 cargo run -p flow-daemon
@@ -27,10 +29,10 @@ cd flutter && flutter run -d linux --dart-define=FLOW_DAEMON_MODE=ipc
 This swaps `daemonRepositoryProvider` from `MockDaemonRepository` to `IpcDaemonRepository`, connecting to the real daemon on `ws://127.0.0.1:47823`. Manual checklist:
 
 - [ ] Tray popover shows the daemon's real seed data (3 devices) instead of the mock's — confirms you're actually on the IPC path, not silently still on the mock.
-- [ ] Switch active device from the UI; kill and restart `flow-daemon`; confirm the previously-active device is still active (SQLite persistence, not memory).
+- [ ] Switch active device from the UI; kill and restart `flow-daemon`; confirm the device is still there and still paired (SQLite persistence, not memory) — its connection state legitimately resets to disconnected on restart, by design (`daemon/src/storage/device_repo.rs`: `DeviceState` is deliberately never persisted, "never resurrected as Active from a stale row"), so don't expect it to still show active.
 - [ ] Change a setting (switch key, pointer sensitivity, a toggle); restart the daemon; confirm it stuck.
 - [ ] Start pairing from the UI, accept the mock candidate, confirm the daemon's seeded pairing timings (`sharedContractConstants.mockParityTimings` in `daemon/todos.json`) show up as real delays, not instant.
-- [ ] Kill `flow-daemon` mid-session; confirm the UI shows the daemon as unreachable rather than hanging or crashing.
+- [ ] Kill `flow-daemon` mid-session; confirm the UI doesn't crash. **Known gap** (found while writing `daemon_ui_flow_e2e_test.dart`): once a process has opened more than one `IpcDaemonRepository`/`WebSocketChannel` connection in its lifetime, a *later* connection's detection of a killed daemon can take far longer than reasonable for a UI to just sit there (observed well past 40s, vs. ~20ms for a single, never-reconnected connection) — reproduced with plain `dart:io` sockets, no Flutter involved, so this isn't a test artifact. Worth its own investigation before relying on prompt "daemon unreachable" UI feedback after any reconnect.
 - [ ] Run the existing automated cross-language contract test (`daemon/README.md` "Cross-language contract test") — this already exercises the 13 mock-parity scenarios against the real daemon; run it once per work session as a fast regression check before doing anything manual.
 
 This tier stays valid and worth re-running after every track E-J change, since a regression here (the IPC contract breaking) would be caught immediately and cheaply, before chasing it through capture/networking code.

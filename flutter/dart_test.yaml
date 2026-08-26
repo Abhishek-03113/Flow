@@ -5,6 +5,16 @@
 # and this project's README ("Running against a real daemon"). Run
 # explicitly with `flutter test --tags manual <file>`; never picked up by
 # a bare `flutter test`, so CI and daemonless local runs are unaffected.
+#
+# `e2e`: full daemon-to-UI end-to-end coverage — see
+# test/e2e/daemon_ui_flow_e2e_test.dart. Unlike `manual`, it starts and
+# stops its own `flow-daemon` process (needs `cargo` on PATH and
+# 127.0.0.1:47823 free), so it's a single command rather than a two-
+# terminal manual recipe, but it's still slow enough (Rust build + real
+# IPC round trips, ~15-20s) to keep out of the default run. Run
+# explicitly with `flutter test --tags e2e <file>`.
 tags:
   manual:
     skip: "requires a running flow-daemon; run explicitly with --tags manual"
+  e2e:
+    skip: "starts a real flow-daemon; run explicitly with --tags e2e"
