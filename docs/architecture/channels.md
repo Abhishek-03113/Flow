@@ -4,9 +4,9 @@
 
 ## What this is, and what it isn't
 
-A **Channel** is a connection between two Flow daemons, established over whichever medium is actually available: **TCP** (Wi-Fi / local network) or **Bluetooth**. It carries the traffic `docs/product/vision.md` §9-§11 calls "Remote Transport" — pairing handshakes and input events between two machines.
+A **Channel** is a connection between two Flow daemons, established over whichever medium is actually available: **TCP** (Wi-Fi / local network) or **Bluetooth**. It carries the traffic `docs/product/vision.md` §9-§11 calls the "Channel" — pairing handshakes and input events between two machines.
 
-This is **not** the [`docs/contracts/`](../contracts) directory's concern. That directory documents the local IPC boundary between the Flutter UI and *this machine's own* daemon — a different boundary, with a different lifetime and a different trust model (`docs/contracts/README.md` ground rule 3 already draws this line for `core::protocol`; Channels is the same distinction applied to the abstraction that carries that protocol). Nothing in this document changes `docs/contracts/`.
+This is **not** the [`docs/contracts/`](../contracts) directory's concern. That directory documents the local Control Link boundary between the Flutter UI and *this machine's own* daemon — a different boundary, with a different lifetime and a different trust model (`docs/contracts/README.md` ground rule 3 already draws this line for `core::protocol`; Channels is the same distinction applied to the abstraction that carries that protocol). Nothing in this document changes `docs/contracts/`.
 
 **Why documented separately, but not independently:** Channels is Rust-only today — Flutter never sees a `Channel`. But `DaemonLinkState` (a Flutter-visible contract type) already represents *this machine's* link health, and it's a reasonable future step for the UI to want to know *how* it's connected (e.g. a tray tooltip reading "Connected via Bluetooth"). If that happens, it's a `docs/contracts/data-model.md` change coordinated with this document, not a silent one — this doc uses the same wire-example, versioned, explicit-scope style as `docs/contracts/` specifically so that reconciliation is easy whenever it happens, not because the two are the same contract today.
 
@@ -87,7 +87,7 @@ Trust (`daemon/todos.json` H2, backed by `P4`) and replay protection (H4, both l
 
 ## Wire shape (target, not yet implemented)
 
-`ChannelMessage` is serialized with the same discipline as the local IPC contract — `snake_case`, `serde`-derived, no hand-written framing:
+`ChannelMessage` is serialized with the same discipline as the local Control Link contract — `snake_case`, `serde`-derived, no hand-written framing:
 
 ```json
 // Input

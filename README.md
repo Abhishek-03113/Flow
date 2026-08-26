@@ -17,7 +17,7 @@ Each computer runs a lightweight background daemon that captures keyboard and mo
 ```
         ┌─────────────┐               ┌─────────────┐
         │   Device A  │◄─────────────►│   Device B  │
-        │    Active   │   Transport   │   Inactive  │
+        │    Active   │    Channel    │   Inactive  │
         └─────────────┘               └─────────────┘
 ```
 
@@ -41,14 +41,14 @@ Flow is split into two layers: a Flutter UI (control plane) and a Rust daemon (d
 │  Menu Bar / System Tray, Device Management │
 │  Pairing, Settings, Connection Status      │
 └─────────────────────┬─────────────────────┘
-                      │ Local IPC / API
+                      │ Control Link
 ┌─────────────────────▼─────────────────────┐
 │             Native Daemon (Rust)          │
 │  Input Capture, Input Injection            │
 │  Device Switching, Networking, Pairing     │
 │  Security, Configuration, Device State     │
 └─────────────────────┬─────────────────────┘
-                      │ Transport Layer
+                      │ Channel Layer
           ┌───────────┼───────────┐
           ▼           ▼           ▼
       WebSocket    Bluetooth     Future
@@ -56,16 +56,16 @@ Flow is split into two layers: a Flutter UI (control plane) and a Rust daemon (d
 
 - **Flutter** owns everything the user sees: menu bar/tray UI, pairing, settings, onboarding, and status.
 - **Rust** owns everything the computer actually does: global input capture/injection, hotkeys, networking, pairing, encryption, and OS-specific integrations, isolated behind per-platform adapters (macOS/Windows/Linux).
-- The daemon runs standalone and keeps working even if the UI is closed — the Flutter UI only configures, pairs, and observes it over local IPC.
-- The transport layer is abstracted from day one, starting with WebSocket over the local network and leaving room for Bluetooth, QUIC, and other transports later.
+- The daemon runs standalone and keeps working even if the UI is closed — the Flutter UI only configures, pairs, and observes it over the local Control Link.
+- The Channel abstraction is in place from day one, starting with WebSocket over the local network and leaving room for Bluetooth, QUIC, and other Channel mediums later.
 
 See [`docs/product/vision.md`](docs/product/vision.md) for the full product vision, architecture rationale, event protocol, security model, and POC roadmap.
 
 ## Project layout
 
 ```
-core/       flow-core — protocol, device, pairing, transport, state, and
-            input-capture/injection traits (no OS or transport code)
+core/       flow-core — protocol, device, pairing, channel, state, and
+            input-capture/injection traits (no OS or Channel-medium code)
 daemon/     flow-daemon — the daemon binary; wires core + platform together
 platform/   flow-platform — per-OS input adapters (macos/, windows/, linux/),
             each implementing the traits from core

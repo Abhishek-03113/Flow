@@ -1,6 +1,6 @@
 # Flow UI
 
-Flutter control-plane app for Flow: menu bar / system tray popover, first-launch onboarding, and the dashboard/settings window. See [`docs/product/vision.md`](../docs/product/vision.md) for the product architecture and [`docs/contracts/`](../docs/contracts/) for the Flutter↔daemon contract, satisfied by both `lib/data/mock_daemon_repository.dart` (the default, for UI-only development) and `lib/data/ipc_daemon_repository.dart` (a real `flow-daemon` process over local IPC — see "Running against a real daemon" below).
+Flutter control-plane app for Flow: menu bar / system tray popover, first-launch onboarding, and the dashboard/settings window. See [`docs/product/vision.md`](../docs/product/vision.md) for the product architecture and [`docs/contracts/`](../docs/contracts/) for the Flutter↔daemon contract, satisfied by both `lib/data/mock_daemon_repository.dart` (the default, for UI-only development) and `lib/data/ipc_daemon_repository.dart` (a real `flow-daemon` process over the local Control Link — see "Running against a real daemon" below).
 
 ## Running it
 

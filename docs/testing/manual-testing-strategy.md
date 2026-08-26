@@ -2,21 +2,21 @@
 
 **Constraint this document is written for:** one physical machine, no second computer available yet. Flow's entire premise is controlling a second computer, so this is the constraint that matters most for manual (human-driven) verification — automated tests don't care how many machines exist, but a human confirming "did it actually feel right" eventually does.
 
-**Approach:** don't wait for a second machine to start manual testing. Most of the stack is checkable today, on one machine, because of how the architecture is layered — the local IPC contract (`docs/contracts/`) never needed two machines to begin with, and even the daemon-to-daemon protocol (`docs/architecture/channels.md`) can be exercised correctly with two processes on one host before it's ever exercised across two real desktops. What genuinely needs something beyond one bare-metal OS is the *felt* experience — watching a keystroke happen on a different screen — and that's solved with a VM, not a purchase.
+**Approach:** don't wait for a second machine to start manual testing. Most of the stack is checkable today, on one machine, because of how the architecture is layered — the local Control Link contract (`docs/contracts/`) never needed two machines to begin with, and even the daemon-to-daemon protocol (`docs/architecture/channels.md`) can be exercised correctly with two processes on one host before it's ever exercised across two real desktops. What genuinely needs something beyond one bare-metal OS is the *felt* experience — watching a keystroke happen on a different screen — and that's solved with a VM, not a purchase.
 
 This document is organized as tiers, ordered by what's actually testable **today** given `daemon/todos.json`'s real progress, through what becomes testable as tracks E/F/G/H land, through what still needs something beyond this one machine.
 
 ## Where the daemon actually stands right now
 
-Tracks **A, P, B, C, D** are done: `flow-core`'s contract types, SQLite persistence, `DaemonService`, the local IPC WebSocket server, and Flutter's `IpcDaemonRepository` all exist and pass their test suites (`daemon/todos.json`). Concretely, **a real `flow-daemon` process and the real Flutter UI can already talk to each other today**, on this one machine — this isn't cross-device yet (the daemon's device list is still mock-parity seed data, not real network discovery), but the entire IPC contract, the SQLite-backed persistence, and every screen's provider wiring are real, not mocked. That's Tier 0 below, and it's available *right now*, not after tracks E-J land.
+Tracks **A, P, B, C, D** are done: `flow-core`'s contract types, SQLite persistence, `DaemonService`, the local Control Link's WebSocket server, and Flutter's `IpcDaemonRepository` all exist and pass their test suites (`daemon/todos.json`). Concretely, **a real `flow-daemon` process and the real Flutter UI can already talk to each other today**, on this one machine — this isn't cross-device yet (the daemon's device list is still mock-parity seed data, not real network discovery), but the entire Control Link contract, the SQLite-backed persistence, and every screen's provider wiring are real, not mocked. That's Tier 0 below, and it's available *right now*, not after tracks E-J land.
 
 Tracks **E** (platform input capture/injection), **F** (switch-hotkey), **G** (Channels — TCP/Bluetooth networking), and **H** (security) are not started. Those are what turn this into an actual keyboard/mouse-sharing product, and they're also where the one-device constraint starts to bite — captured in Tiers 2-4 below.
 
 ## Tier 0 — Flutter ↔ real daemon, one machine (testable today)
 
-Nothing here needs a second device; it never did. This is the local IPC contract (`docs/contracts/`), which was always scoped to "this machine's UI talking to this machine's daemon."
+Nothing here needs a second device; it never did. This is the local Control Link contract (`docs/contracts/`), which was always scoped to "this machine's UI talking to this machine's daemon."
 
-**Most of this tier is now automated**, not just manual: `flutter/test/e2e/daemon_ui_flow_e2e_test.dart` starts and stops a real `flow-daemon` itself and drives the actual production screens (tray popover, app window settings, onboarding) through real taps over the real IPC contract — device switching, settings/switch-key changes, device removal, a full pairing handshake, restart persistence, and a mid-session daemon kill, all in one `flutter test --tags e2e --run-skipped test/e2e/daemon_ui_flow_e2e_test.dart` run. The manual checklist below is still worth a human pass now and then (it's the only way to judge how something *feels*), but a regression in any of it would be caught by that automated run first, on every change, without a human at the keyboard.
+**Most of this tier is now automated**, not just manual: `flutter/test/e2e/daemon_ui_flow_e2e_test.dart` starts and stops a real `flow-daemon` itself and drives the actual production screens (tray popover, app window settings, onboarding) through real taps over the real Control Link contract — device switching, settings/switch-key changes, device removal, a full pairing handshake, restart persistence, and a mid-session daemon kill, all in one `flutter test --tags e2e --run-skipped test/e2e/daemon_ui_flow_e2e_test.dart` run. The manual checklist below is still worth a human pass now and then (it's the only way to judge how something *feels*), but a regression in any of it would be caught by that automated run first, on every change, without a human at the keyboard.
 
 ```sh
 # terminal 1, repo root
@@ -28,14 +28,14 @@ cd flutter && flutter run -d linux --dart-define=FLOW_DAEMON_MODE=ipc
 
 This swaps `daemonRepositoryProvider` from `MockDaemonRepository` to `IpcDaemonRepository`, connecting to the real daemon on `ws://127.0.0.1:47823`. Manual checklist:
 
-- [ ] Tray popover shows the daemon's real seed data (3 devices) instead of the mock's — confirms you're actually on the IPC path, not silently still on the mock.
+- [ ] Tray popover shows the daemon's real seed data (3 devices) instead of the mock's — confirms you're actually on the Control Link path, not silently still on the mock.
 - [ ] Switch active device from the UI; kill and restart `flow-daemon`; confirm the device is still there and still paired (SQLite persistence, not memory) — its connection state legitimately resets to disconnected on restart, by design (`daemon/src/storage/device_repo.rs`: `DeviceState` is deliberately never persisted, "never resurrected as Active from a stale row"), so don't expect it to still show active.
 - [ ] Change a setting (switch key, pointer sensitivity, a toggle); restart the daemon; confirm it stuck.
 - [ ] Start pairing from the UI, accept the mock candidate, confirm the daemon's seeded pairing timings (`sharedContractConstants.mockParityTimings` in `daemon/todos.json`) show up as real delays, not instant.
 - [ ] Kill `flow-daemon` mid-session; confirm the UI doesn't crash. **Known gap** (found while writing `daemon_ui_flow_e2e_test.dart`): once a process has opened more than one `IpcDaemonRepository`/`WebSocketChannel` connection in its lifetime, a *later* connection's detection of a killed daemon can take far longer than reasonable for a UI to just sit there (observed well past 40s, vs. ~20ms for a single, never-reconnected connection) — reproduced with plain `dart:io` sockets, no Flutter involved, so this isn't a test artifact. Worth its own investigation before relying on prompt "daemon unreachable" UI feedback after any reconnect.
 - [ ] Run the existing automated cross-language contract test (`daemon/README.md` "Cross-language contract test") — this already exercises the 13 mock-parity scenarios against the real daemon; run it once per work session as a fast regression check before doing anything manual.
 
-This tier stays valid and worth re-running after every track E-J change, since a regression here (the IPC contract breaking) would be caught immediately and cheaply, before chasing it through capture/networking code.
+This tier stays valid and worth re-running after every track E-J change, since a regression here (the Control Link contract breaking) would be caught immediately and cheaply, before chasing it through capture/networking code.
 
 ## Tier 1 — Real input capture/injection, one machine, loopback (needs track E)
 
@@ -59,7 +59,7 @@ This is fully testable on one machine, no second device needed at all: press you
 
 This is the tier most people assume needs two computers. It doesn't — for *protocol correctness* — because TCP loopback and TCP-over-LAN are the same code path, and `daemon/todos.json`'s own G-track acceptance criteria are already written this way ("two daemon instances on the same host... discover each other via loopback broadcast," "two local daemon instances complete a real pair_with_candidate handshake"). Two `flow-daemon` processes on one machine, each with its own data directory and ports, validate discovery, negotiation, pairing, encryption, and message exchange for real.
 
-**Prerequisite to check when G lands:** confirm the discovery/Channel ports are overridable per-instance (env var or CLI flag) so two processes don't collide — `daemon/todos.json`'s own G3 task already assumes "bound to different ports for the test," so this should already be part of the implementation, not something to bolt on. The fixed IPC port (`47823`, Flutter-facing) is a separate concern: you don't need two of those for this tier, since only one side needs a visible UI (see below).
+**Prerequisite to check when G lands:** confirm the discovery/Channel ports are overridable per-instance (env var or CLI flag) so two processes don't collide — `daemon/todos.json`'s own G3 task already assumes "bound to different ports for the test," so this should already be part of the implementation, not something to bolt on. The fixed Control Link port (`47823`, Flutter-facing) is a separate concern: you don't need two of those for this tier, since only one side needs a visible UI (see below).
 
 Practical setup for a *manual* (not just automated) run:
 
@@ -71,7 +71,7 @@ FLOW_DATA_DIR=/tmp/flow-a cargo run -p flow-daemon  # exact flag/env name: confi
 FLOW_DATA_DIR=/tmp/flow-b FLOW_CHANNEL_PORT=<other-port> cargo run -p flow-daemon
 ```
 
-Drive device B's pairing acceptance either via a second `flutter run --dart-define=FLOW_DAEMON_MODE=ipc` pointed at its own IPC port (if that becomes configurable) or, more simply, with a raw WebSocket client (`websocat ws://127.0.0.1:<B's IPC port>`, or a short Python/Node script) sending the same JSON envelope `docs/contracts/daemon-ipc.md` documents — no second UI build needed just to click "Accept" on the other side.
+Drive device B's pairing acceptance either via a second `flutter run --dart-define=FLOW_DAEMON_MODE=ipc` pointed at its own Control Link port (if that becomes configurable) or, more simply, with a raw WebSocket client (`websocat ws://127.0.0.1:<B's Control Link port>`, or a short Python/Node script) sending the same JSON envelope `docs/contracts/daemon-ipc.md` documents — no second UI build needed just to click "Accept" on the other side.
 
 - [ ] Device A discovers device B (and vice versa) over loopback.
 - [ ] Pairing handshake completes; both sides persist the other (restart both, confirm the pairing survived).
