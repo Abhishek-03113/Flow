@@ -89,11 +89,14 @@ fn contains_marker(haystack: &[u8]) -> bool {
 }
 
 fn a_marker_event() -> ChannelMessage {
-    ChannelMessage::Input(InputEvent::Keyboard(KeyboardEvent::KeyDown {
-        key: MARKER.to_string(),
-        modifiers: vec![],
-        timestamp_ms: 0,
-    }))
+    ChannelMessage::Input {
+        sequence: 1,
+        event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: MARKER.to_string(),
+            modifiers: vec![],
+            timestamp_ms: 0,
+        }),
+    }
 }
 
 #[tokio::test]

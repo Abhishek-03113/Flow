@@ -103,11 +103,14 @@ mod tests {
     async fn a_hand_crafted_keydown_is_received_verbatim() {
         let (mut client, mut server) = connected_pair().await;
 
-        let sent = ChannelMessage::Input(InputEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: "A".to_string(),
-            modifiers: vec![],
-            timestamp_ms: 123,
-        }));
+        let sent = ChannelMessage::Input {
+            sequence: 1,
+            event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: "A".to_string(),
+                modifiers: vec![],
+                timestamp_ms: 123,
+            }),
+        };
         client.send(sent.clone()).await.expect("send");
 
         let received = server.recv().await.expect("recv");

@@ -61,7 +61,21 @@ pub enum PairingWireMessage {
 /// Everything that can travel over a [`Channel`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChannelMessage {
-    Input(InputEvent),
+    /// `sequence` is assigned by the sender (`daemon::pipeline::send_while_active`),
+    /// starting at 1 and incrementing by exactly 1 per event on that
+    /// connection — never derived from `event`'s own `timestamp_ms`. The
+    /// receiving side (`daemon::pipeline::receive_and_inject`) rejects
+    /// anything arriving with a `sequence` at or below the last one it
+    /// accepted, which a wall-clock timestamp can't reliably do: two
+    /// legitimate high-frequency events (e.g. consecutive mouse-move
+    /// deltas) can share the same millisecond on a coarse OS clock, which
+    /// a timestamp-based check would then have to either wrongly accept
+    /// (defeating replay protection) or wrongly drop (losing real input)
+    /// — a per-connection counter has no such collision by construction.
+    Input {
+        sequence: u64,
+        event: InputEvent,
+    },
     Pairing(PairingWireMessage),
     Heartbeat,
     /// Raw bytes carried by `NoiseChannel` (`daemon/todos.json` H3):
@@ -167,11 +181,10 @@ mod tests {
             modifiers: vec![],
             timestamp_ms: 0,
         });
-        a.send(ChannelMessage::Input(event.clone()))
-            .await
-            .expect("send");
+        let message = ChannelMessage::Input { sequence: 1, event };
+        a.send(message.clone()).await.expect("send");
         let received = b.recv().await.expect("recv");
-        assert_eq!(received, ChannelMessage::Input(event));
+        assert_eq!(received, message);
     }
 
     #[tokio::test]
