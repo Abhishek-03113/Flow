@@ -95,12 +95,16 @@ void main() {
     expect(gesture.onTap, isNull);
   });
 
+  // The banner copy is deliberately device-agnostic: DaemonLinkState is
+  // a single top-level value with no device dimension, so naming one
+  // ("Work Laptop", as this copy used to) is only ever right by accident
+  // against the mock's seed data. See `_linkMeta`'s own doc comment.
   for (final entry in {
     DaemonLinkState.connected: null,
     DaemonLinkState.connecting: null,
-    DaemonLinkState.reconnecting: 'Work Laptop dropped out. Trying again.',
-    DaemonLinkState.disconnected: 'Work Laptop is unavailable.',
-    DaemonLinkState.error: 'Input sharing paused until Work Laptop is back.',
+    DaemonLinkState.reconnecting: 'The link dropped out. Trying again.',
+    DaemonLinkState.disconnected: 'No device is reachable right now.',
+    DaemonLinkState.error: 'Input sharing is paused until the link is back.',
     DaemonLinkState.permissionRequired:
         'Allow input access to share your keyboard.',
   }.entries) {
@@ -113,7 +117,7 @@ void main() {
 
       if (entry.value == null) {
         expect(find.textContaining('dropped out'), findsNothing);
-        expect(find.textContaining('unavailable'), findsNothing);
+        expect(find.textContaining('reachable'), findsNothing);
         expect(find.textContaining('paused'), findsNothing);
         expect(find.textContaining('Allow input access'), findsNothing);
       } else {
@@ -121,6 +125,23 @@ void main() {
       }
     });
   }
+
+  testWidgets('no banner names a device the daemon never reported', (
+    tester,
+  ) async {
+    for (final state in DaemonLinkState.values) {
+      repo.debugSetLinkState(state);
+      await tester.pumpWidget(host());
+      await tester.pump();
+      // "Work Laptop" is a real device row in the mock's seed data, so
+      // this asserts the *banner* never adds a second mention of it.
+      expect(
+        find.text('Work Laptop').evaluate().length,
+        lessThanOrEqualTo(1),
+        reason: 'banner copy for $state must not name a device',
+      );
+    }
+  });
 
   testWidgets('pairing flow renders all four stages', (tester) async {
     await tester.pumpWidget(host());

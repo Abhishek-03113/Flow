@@ -58,7 +58,7 @@ void main() {
     await tester.tap(find.text('Disconnected').first);
     await tester.pump();
 
-    expect(find.text('Work Laptop is unavailable.'), findsOneWidget);
+    expect(find.text('No device is reachable right now.'), findsOneWidget);
   });
 
   testWidgets(

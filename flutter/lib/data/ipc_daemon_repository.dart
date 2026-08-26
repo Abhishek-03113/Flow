@@ -73,11 +73,38 @@ class IpcDaemonRepository implements DaemonRepository {
 
   int _nextRequestId = 0;
 
+  /// Parses one inbound frame, ignoring anything that isn't a
+  /// well-formed envelope.
+  ///
+  /// Guarded because this runs inside a [StreamSubscription] callback:
+  /// an uncaught throw here doesn't just drop the bad frame, it escapes
+  /// as an unhandled async error and tears down the subscription — one
+  /// malformed or binary frame would silently kill every `watch*` stream
+  /// for the rest of the process's life. The daemon's own server does
+  /// the mirror-image thing with a request it can't parse
+  /// (`daemon/src/ipc/server.rs`: "drop it rather than crash the
+  /// connection"); a frame with no `id` has no `Future` to reject
+  /// anyway.
   void _handleMessage(dynamic data) {
-    final json = jsonDecode(data as String) as Map<String, dynamic>;
+    if (data is! String) return;
+    final Map<String, dynamic> json;
+    try {
+      final decoded = jsonDecode(data);
+      if (decoded is! Map<String, dynamic>) return;
+      json = decoded;
+    } on FormatException {
+      return;
+    }
+
     final event = json['event'];
     if (event is String) {
-      _handleEvent(event, json['payload']);
+      try {
+        _handleEvent(event, json['payload']);
+      } on Object {
+        // A payload whose shape this build doesn't understand (a newer
+        // daemon's added enum variant, say) leaves the previous value
+        // on that channel rather than killing every stream.
+      }
       return;
     }
     final id = json['id'];
