@@ -81,7 +81,7 @@ impl ServiceState {
         let settings = settings_repo.load().await;
 
         let existing = device_repo.list().await;
-        let devices = if existing.is_empty() {
+        let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
             let seed = seed_device_records();
             for record in &seed {
                 device_repo.upsert(record.clone()).await;
@@ -95,6 +95,7 @@ impl ServiceState {
                 .map(|record| (record.device.id.clone(), record.device))
                 .collect()
         };
+        restore_local_device_active(&mut devices);
 
         Self {
             devices,
@@ -102,12 +103,61 @@ impl ServiceState {
             pairing_session: PairingSession::idle(),
             settings,
             permission: PermissionStatus {
-                name: "Accessibility access".to_string(),
+                name: local_permission_name().to_string(),
                 granted: false,
             },
             candidates_pool: candidate_seeds(),
             discovered_candidates: HashMap::new(),
         }
+    }
+}
+
+/// Puts this machine back in [`DeviceState::Active`] after a reload.
+///
+/// `DeviceRepo` deliberately never persists [`DeviceState`] — a device
+/// loaded from disk always comes back `Disconnected` until a live
+/// connection re-establishes it, so a stale row can't resurrect a peer
+/// as `Active`. That rule is right for *peers* and wrong for this
+/// machine: nothing ever re-establishes a connection to the computer the
+/// daemon is already running on, so without this every boot after the
+/// first left `d1` `Disconnected` too — and with no device in any
+/// switchable state, `switch_active_device` rejected every target with
+/// `device_not_switchable` and the switch key became a permanent no-op.
+///
+/// `data-model.md`'s `active` row is the contract this restores: "this
+/// machine, 'This device', is `active` by default when nothing else is."
+fn restore_local_device_active(devices: &mut HashMap<DeviceId, Device>) {
+    if devices.values().any(|d| d.state == DeviceState::Active) {
+        return;
+    }
+    if let Some(local) = devices.get_mut(&DeviceId(LOCAL_DEVICE_ID.to_string())) {
+        local.state = DeviceState::Active;
+    }
+}
+
+/// The OS input-capture permission this daemon actually needs, named for
+/// the platform it's running on.
+///
+/// `flow_core::permission`'s own doc comment is the reason this isn't a
+/// single hardcoded string: `name` is daemon-supplied "rather than
+/// derived client-side, so the UI never hardcodes per-OS permission
+/// copy" — which only holds if the daemon reports the right one. It
+/// previously always said "Accessibility access" (the macOS wording) no
+/// matter which OS it ran on. The three strings match
+/// `PlatformChrome.permissionName`'s per-OS fallbacks
+/// (`flutter/lib/core/platform_chrome.dart`).
+fn local_permission_name() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Accessibility access"
+    }
+    #[cfg(target_os = "windows")]
+    {
+        "Input access"
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        "Input device access"
     }
 }
 
@@ -118,6 +168,25 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
     let mut list: Vec<Device> = state.devices.values().cloned().collect();
     list.sort_by(|a, b| a.id.0.cmp(&b.id.0));
     list
+}
+
+/// Makes `target_id` the one active device, demoting whichever device
+/// held that state before. Shared by the two switch paths
+/// (`switch_active_device`, the IPC command, and
+/// `switch_active_device_local`, the hotkey) so "exactly one device is
+/// `Active`" is enforced in one place rather than duplicated per caller.
+/// Callers must have already established that `target_id` is present and
+/// eligible; this only performs the transition.
+fn activate(state: &mut ServiceState, target_id: &DeviceId) {
+    let now = Utc::now();
+    for (id, device) in state.devices.iter_mut() {
+        if id == target_id {
+            device.state = DeviceState::Active;
+            device.last_seen = now;
+        } else if device.state == DeviceState::Active {
+            device.state = DeviceState::Inactive;
+        }
+    }
 }
 
 /// The device a local hotkey trigger should switch to: the first
@@ -246,16 +315,17 @@ impl DaemonService {
 
         tokio::time::sleep(SWITCH_DEBOUNCE).await;
 
+        // Re-checked under the write lock rather than trusting the read
+        // above: `SWITCH_DEBOUNCE` is a real await point, and a
+        // `remove_device` landing inside it used to leave `activate`
+        // matching nothing — demoting the previously-active device and
+        // acking `ok: true` with no active device left at all.
         let devices = {
             let mut state = self.state.write().await;
-            for (id, device) in state.devices.iter_mut() {
-                if *id == target_id {
-                    device.state = DeviceState::Active;
-                    device.last_seen = Utc::now();
-                } else if device.state == DeviceState::Active {
-                    device.state = DeviceState::Inactive;
-                }
+            if !state.devices.contains_key(&target_id) {
+                return Err(FlowError::DeviceNotFound(target_id));
             }
+            activate(&mut state, &target_id);
             devices_list(&state)
         };
 
@@ -284,14 +354,7 @@ impl DaemonService {
 
         let devices = {
             let mut state = self.state.write().await;
-            for (id, device) in state.devices.iter_mut() {
-                if *id == target_id {
-                    device.state = DeviceState::Active;
-                    device.last_seen = Utc::now();
-                } else if device.state == DeviceState::Active {
-                    device.state = DeviceState::Inactive;
-                }
-            }
+            activate(&mut state, &target_id);
             devices_list(&state)
         };
 
@@ -838,11 +901,7 @@ impl DaemonService {
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.
 fn device_id_from_public_key(public_key: &[u8]) -> DeviceId {
-    DeviceId(format!("pk:{}", hex_encode(public_key)))
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    DeviceId(format!("pk:{}", crate::hex_encode(public_key)))
 }
 
 fn seed_device_records() -> Vec<DeviceRecord> {
@@ -1070,6 +1129,69 @@ mod tests {
         service.switch_active_device_local().await;
         let after = service.watch_devices().borrow().clone();
         assert_eq!(before, after);
+    }
+
+    /// Regression: `DeviceRepo` never persists `DeviceState`, so every
+    /// device — including this machine — used to come back
+    /// `Disconnected` on the second boot against the same database.
+    /// With nothing in a switchable state, `switch_active_device`
+    /// rejected every target and the hotkey became a permanent no-op.
+    #[tokio::test]
+    async fn a_second_boot_still_has_a_switchable_device() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+
+        // First boot seeds and persists the device list.
+        let _ = DaemonService::new(storage.clone()).await;
+
+        // Second boot against the same database.
+        let service = DaemonService::new(storage).await;
+        let devices = service.watch_devices().borrow().clone();
+        let local = devices
+            .iter()
+            .find(|d| d.id.0 == LOCAL_DEVICE_ID)
+            .expect("the local device survives a reload");
+        assert_eq!(local.state, DeviceState::Active);
+
+        service.switch_active_device_local().await;
+        let after = service.watch_devices().borrow().clone();
+        assert!(
+            after.iter().any(|d| d.state == DeviceState::Active),
+            "the switch key must still be able to move the active device"
+        );
+    }
+
+    /// Regression: `SWITCH_DEBOUNCE` is a real await point, so the
+    /// target could be removed between the eligibility check and the
+    /// mutation — which used to demote the previously-active device,
+    /// activate nothing, and still ack `ok: true`.
+    #[tokio::test]
+    async fn removing_the_target_mid_debounce_is_rejected_and_leaves_the_active_device_alone() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = Arc::new(DaemonService::new(storage).await);
+
+        let switcher = {
+            let service = Arc::clone(&service);
+            tokio::spawn(async move { service.switch_active_device("d2").await })
+        };
+
+        // Land inside the debounce sleep, then pull the target out.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        service.remove_device("d2").await.expect("remove d2");
+
+        assert_eq!(
+            switcher.await.expect("switch task"),
+            Err(FlowError::DeviceNotFound(DeviceId("d2".to_string())))
+        );
+
+        let devices = service.watch_devices().borrow().clone();
+        assert_eq!(
+            devices
+                .iter()
+                .filter(|d| d.state == DeviceState::Active)
+                .count(),
+            1,
+            "exactly one device must still be active: {devices:?}"
+        );
     }
 
     #[tokio::test]

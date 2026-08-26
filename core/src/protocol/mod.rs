@@ -68,8 +68,13 @@ pub enum InputEvent {
 
 impl InputEvent {
     /// This event's own capture-time timestamp, common to every variant.
-    /// `daemon/todos.json` H4's replay guard reuses this existing field
-    /// as its sequence check rather than adding a separate one.
+    ///
+    /// Capture-time metadata only — deliberately *not* what replay
+    /// protection is keyed on. That's `ChannelMessage::Input`'s separate
+    /// per-connection `sequence` (see its doc comment for why a
+    /// wall-clock timestamp can't do the job: two legitimate
+    /// high-frequency events can share a millisecond on a coarse OS
+    /// clock).
     pub fn timestamp_ms(&self) -> u64 {
         match self {
             InputEvent::Keyboard(KeyboardEvent::KeyDown { timestamp_ms, .. })

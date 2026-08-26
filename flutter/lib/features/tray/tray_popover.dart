@@ -128,6 +128,13 @@ class _LinkMeta {
   final String? action;
 }
 
+/// Banner copy is deliberately device-agnostic. [DaemonLinkState] is a
+/// single top-level value, not per-device (`data-model.md`), so there is
+/// no device name in scope to name here — the previous copy hardcoded
+/// "Work Laptop", a name that only ever existed in
+/// [MockDaemonRepository]'s seed data and was simply wrong against a
+/// real daemon. Naming the affected device for real needs the daemon to
+/// say which one it is, which the contract doesn't carry yet.
 _LinkMeta _linkMeta(DaemonLinkState state, FlowPalette c) {
   return switch (state) {
     DaemonLinkState.connected => _LinkMeta(
@@ -148,21 +155,21 @@ _LinkMeta _linkMeta(DaemonLinkState state, FlowPalette c) {
       'Reconnecting…',
       c.statusPending,
       true,
-      'Work Laptop dropped out. Trying again.',
+      'The link dropped out. Trying again.',
       'Cancel',
     ),
     DaemonLinkState.disconnected => _LinkMeta(
       'Disconnected',
       c.statusOffline,
       false,
-      'Work Laptop is unavailable.',
+      'No device is reachable right now.',
       'Retry',
     ),
     DaemonLinkState.error => _LinkMeta(
       'Connection lost',
       c.statusError,
       false,
-      'Input sharing paused until Work Laptop is back.',
+      'Input sharing is paused until the link is back.',
       'Retry',
     ),
     DaemonLinkState.permissionRequired => _LinkMeta(

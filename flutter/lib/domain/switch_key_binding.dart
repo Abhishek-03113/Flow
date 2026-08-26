@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart' show listEquals;
+
 /// The shortcut that switches the active device
 /// (`docs/product/vision.md` §12).
 ///
@@ -27,15 +29,9 @@ class SwitchKeyBinding {
 
   @override
   bool operator ==(Object other) {
-    if (other is! SwitchKeyBinding ||
-        other.label != label ||
-        other.keys.length != keys.length) {
-      return false;
-    }
-    for (var i = 0; i < keys.length; i++) {
-      if (other.keys[i] != keys[i]) return false;
-    }
-    return true;
+    return other is SwitchKeyBinding &&
+        other.label == label &&
+        listEquals(other.keys, keys);
   }
 
   @override

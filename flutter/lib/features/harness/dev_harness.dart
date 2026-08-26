@@ -45,6 +45,24 @@ class _DevHarnessState extends ConsumerState<DevHarness> {
   HarnessView _view = HarnessView.menuBar;
   HostOs _platform = HostOs.macos;
 
+  /// Forces a link state for visual QA. Only [MockDaemonRepository] can
+  /// be told what to report — a real daemon reports its own link state —
+  /// so this is a checked `is`, not a cast: under
+  /// `--dart-define=FLOW_DAEMON_MODE=ipc` the provider hands back an
+  /// [IpcDaemonRepository] and the unchecked `as` this replaced threw a
+  /// `TypeError` on the first tap of the Connection control, in exactly
+  /// the mode used for daemon-integration testing.
+  void _setLinkState(DaemonLinkState state) {
+    final repository = ref.read(daemonRepositoryProvider);
+    if (repository is MockDaemonRepository) {
+      repository.debugSetLinkState(state);
+      return;
+    }
+    ref
+        .read(toastProvider.notifier)
+        .show('Link state is daemon-reported in this mode');
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = FlowColors.of(context);
@@ -134,9 +152,7 @@ class _DevHarnessState extends ConsumerState<DevHarness> {
                               FlowSegment(value: entry.key, label: entry.value),
                           ],
                           selected: linkState,
-                          onChanged: (s) => (ref.read(
-                            daemonRepositoryProvider,
-                          ) as MockDaemonRepository).debugSetLinkState(s),
+                          onChanged: _setLinkState,
                           background: c.mat1,
                           selectedBackground: c.accent,
                           selectedForeground: c.accentText,

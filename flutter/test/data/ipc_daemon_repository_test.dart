@@ -191,6 +191,39 @@ void main() {
     },
   );
 
+  /// Regression: [IpcDaemonRepository]'s frame handler runs inside a
+  /// [StreamSubscription] callback, so a throw there escapes as an
+  /// unhandled async error and tears the subscription down — one bad
+  /// frame used to silently kill every `watch*` stream for the rest of
+  /// the process's life, not just drop that frame.
+  group('a malformed frame is dropped, not fatal to the connection', () {
+    Future<void> expectStillLive() async {
+      final future = repo.watchDevices().first;
+      sendEvent('devices_changed', [deviceJson]);
+      expect((await future).single.id, 'd2');
+    }
+
+    test('non-JSON text', () async {
+      controller.foreign.sink.add('not json at all');
+      await expectStillLive();
+    });
+
+    test('valid JSON that is not an envelope object', () async {
+      controller.foreign.sink.add(jsonEncode([1, 2, 3]));
+      await expectStillLive();
+    });
+
+    test('a known event carrying an unparseable payload', () async {
+      sendEvent('devices_changed', 'not a device list');
+      await expectStillLive();
+    });
+
+    test('an enum variant this build does not know', () async {
+      sendEvent('link_state_changed', 'a_state_from_a_newer_daemon');
+      await expectStillLive();
+    });
+  });
+
   test('each request gets a fresh id, correlated independently', () async {
     final firstFuture = repo.startPairing();
     final firstRequest = await nextRequest();

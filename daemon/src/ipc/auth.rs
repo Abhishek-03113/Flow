@@ -66,11 +66,7 @@ pub fn load_or_generate_token() -> String {
 fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     rand::rng().fill_bytes(&mut bytes);
-    hex_encode(&bytes)
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    crate::hex_encode(&bytes)
 }
 
 /// Writes the token file readable/writable only by its owner on Unix
