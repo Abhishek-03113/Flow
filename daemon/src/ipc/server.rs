@@ -14,8 +14,22 @@ use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request, Response as HandshakeResponse,
 };
 use tokio_tungstenite::tungstenite::http::StatusCode;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
+
+/// Every real `IpcRequest`/`IpcResponse` is small JSON (a command name,
+/// a device id, a settings patch, one state snapshot) — nowhere near
+/// tokio-tungstenite's generous library defaults (64MB message / 16MB
+/// frame). An explicit, much tighter cap means a malformed or hostile
+/// local client can't make this connection buffer tens of megabytes for
+/// one frame before `dispatch` ever sees it (daemon review gap #32).
+fn ipc_websocket_config() -> WebSocketConfig {
+    const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES))
+}
 
 use super::dispatch::dispatch;
 use crate::service::DaemonService;
@@ -81,7 +95,13 @@ pub async fn handle_connection(
                 }
             }
         };
-        match tokio_tungstenite::accept_hdr_async(stream, callback).await {
+        match tokio_tungstenite::accept_hdr_async_with_config(
+            stream,
+            callback,
+            Some(ipc_websocket_config()),
+        )
+        .await
+        {
             Ok(ws) => ws,
             Err(err) => {
                 tracing::debug!("websocket handshake failed: {err}");
@@ -433,5 +453,32 @@ mod tests {
         let mut ws = connect(addr).await;
         let msg = ws.next().await.expect("frame").expect("ok frame");
         assert!(msg.into_text().is_ok());
+    }
+
+    /// Gap #32: an oversized frame must not be silently buffered and
+    /// handed to `dispatch` — the connection ends instead. The client
+    /// side here has no size limit of its own (it's happy to send
+    /// whatever it's told to); it's `ipc_websocket_config`'s cap on the
+    /// *server's* accept side doing the actual rejecting.
+    #[tokio::test]
+    async fn an_oversized_frame_ends_the_connection_instead_of_being_processed() {
+        let addr = spawn_test_server().await;
+        let mut ws = connect(addr).await;
+        for _ in 0..5 {
+            ws.next().await.expect("frame").expect("initial event");
+        }
+
+        let oversized = "x".repeat(1024 * 1024); // 1 MiB, well past the 256 KiB cap
+                                                 // Sending may itself fail once the server drops the connection
+                                                 // mid-write, or may succeed and only be rejected on the next
+                                                 // read — either is consistent with "not processed as a valid
+                                                 // request," so only the follow-up read is asserted on.
+        let _ = ws.send(Message::Text(oversized.into())).await;
+
+        let outcome = ws.next().await;
+        assert!(
+            matches!(outcome, None | Some(Err(_))),
+            "an oversized frame should end the connection, not be dispatched: {outcome:?}"
+        );
     }
 }
