@@ -21,17 +21,21 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 type Client = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+const TEST_TOKEN: &str = "ipc-protocol-test-token";
+
 async fn spawn_daemon() -> SocketAddr {
     let storage = Storage::open_in_memory().await.expect("open in-memory db");
     let service = Arc::new(DaemonService::new(storage).await);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
+    let token: Arc<str> = Arc::from(TEST_TOKEN);
 
     tokio::spawn(async move {
         while let Ok((stream, _)) = listener.accept().await {
             let service = Arc::clone(&service);
+            let token = Arc::clone(&token);
             tokio::spawn(async move {
-                handle_connection(stream, service).await;
+                handle_connection(stream, service, token).await;
             });
         }
     });
@@ -39,7 +43,15 @@ async fn spawn_daemon() -> SocketAddr {
 }
 
 async fn connect(addr: SocketAddr) -> Client {
-    let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let mut request = format!("ws://{addr}")
+        .into_client_request()
+        .expect("valid client request");
+    request.headers_mut().insert(
+        "sec-websocket-protocol",
+        TEST_TOKEN.parse().expect("token is a valid header value"),
+    );
+    let (ws, _) = tokio_tungstenite::connect_async(request)
         .await
         .expect("connect");
     ws

@@ -10,6 +10,10 @@ use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::handshake::server::{
+    ErrorResponse, Request, Response as HandshakeResponse,
+};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
@@ -18,19 +22,71 @@ use crate::service::DaemonService;
 
 type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 
-/// Handles one client connection end to end: WebSocket handshake, the
-/// five initial state-push events, then forwarding further watch-channel
-/// updates as events while dispatching incoming commands — until the
-/// client disconnects. Never panics on a client error; a bad frame or a
-/// dropped socket just ends this task, leaving every other connection
-/// and `ServiceState` itself untouched.
+const TOKEN_HEADER: &str = "sec-websocket-protocol";
+
+/// Handles one client connection end to end: an authenticated WebSocket
+/// handshake, the five initial state-push events, then forwarding
+/// further watch-channel updates as events while dispatching incoming
+/// commands — until the client disconnects. Never panics on a client
+/// error; a bad frame or a dropped socket just ends this task, leaving
+/// every other connection and `ServiceState` itself untouched.
+///
+/// `expected_token` gates the handshake itself (`auth::load_or_generate_token`,
+/// loaded once at daemon startup): `127.0.0.1` is reachable by *any*
+/// local process, not just the intended Flutter UI, and this connection
+/// previously had no way to tell the two apart. The token travels as the
+/// WebSocket subprotocol (`Sec-WebSocket-Protocol`) specifically because
+/// a browser page's own `WebSocket` can set that (unlike an arbitrary
+/// header) but can never *read* the local token file in the first place
+/// — the mechanism being technically settable by a browser doesn't
+/// matter when the secret itself is unreachable to one.
 #[tracing::instrument(skip_all)]
-pub async fn handle_connection(stream: TcpStream, service: Arc<DaemonService>) {
-    let ws_stream = match tokio_tungstenite::accept_async(stream).await {
-        Ok(ws) => ws,
-        Err(err) => {
-            tracing::debug!("websocket handshake failed: {err}");
-            return;
+pub async fn handle_connection(
+    stream: TcpStream,
+    service: Arc<DaemonService>,
+    expected_token: Arc<str>,
+) {
+    let ws_stream = {
+        // tokio-tungstenite's `Callback` trait fixes this closure's exact
+        // `Result<Response<()>, Response<Option<String>>>` shape — there's
+        // no smaller type to return instead, and boxing would just move
+        // the same bytes onto the heap for a value that lives only for
+        // the duration of one handshake.
+        #[allow(clippy::result_large_err)]
+        let callback = |req: &Request, mut response: HandshakeResponse| {
+            let presented = req
+                .headers()
+                .get(TOKEN_HEADER)
+                .and_then(|value| value.to_str().ok());
+            match presented {
+                Some(token) if token == expected_token.as_ref() => {
+                    // Echo the offered subprotocol back — required for
+                    // the handshake to be a spec-valid accept of it, and
+                    // for a real (e.g. browser) WebSocket client to treat
+                    // the connection as actually established.
+                    response.headers_mut().insert(
+                        tokio_tungstenite::tungstenite::http::header::SEC_WEBSOCKET_PROTOCOL,
+                        req.headers()
+                            .get(TOKEN_HEADER)
+                            .expect("presented implies this header exists")
+                            .clone(),
+                    );
+                    Ok(response)
+                }
+                _ => {
+                    let mut unauthorized =
+                        ErrorResponse::new(Some("missing or invalid IPC auth token".to_string()));
+                    *unauthorized.status_mut() = StatusCode::UNAUTHORIZED;
+                    Err(unauthorized)
+                }
+            }
+        };
+        match tokio_tungstenite::accept_hdr_async(stream, callback).await {
+            Ok(ws) => ws,
+            Err(err) => {
+                tracing::debug!("websocket handshake failed: {err}");
+                return;
+            }
         }
     };
     tracing::debug!("ipc connection established");
@@ -179,26 +235,48 @@ mod tests {
     use super::*;
     use crate::storage::Storage;
 
+    const TEST_TOKEN: &str = "test-token-0123456789abcdef";
+
     async fn spawn_test_server() -> std::net::SocketAddr {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = Arc::new(DaemonService::new(storage).await);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
+        let token: Arc<str> = Arc::from(TEST_TOKEN);
 
         tokio::spawn(async move {
             if let Ok((stream, _)) = listener.accept().await {
-                handle_connection(stream, service).await;
+                handle_connection(stream, service, token).await;
             }
         });
         addr
     }
 
+    /// Builds an otherwise-normal client handshake request carrying
+    /// `token` as the WebSocket subprotocol — the same header
+    /// `handle_connection` checks — so tests can exercise both a
+    /// matching and a missing/wrong token against a real handshake.
+    fn request_with_token(
+        addr: std::net::SocketAddr,
+        token: &str,
+    ) -> tokio_tungstenite::tungstenite::handshake::client::Request {
+        use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+        let mut request = format!("ws://{addr}")
+            .into_client_request()
+            .expect("valid client request");
+        request.headers_mut().insert(
+            "sec-websocket-protocol",
+            token.parse().expect("token is a valid header value"),
+        );
+        request
+    }
+
     async fn connect(
         addr: std::net::SocketAddr,
     ) -> tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>> {
-        let (ws, _) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
+        let (ws, _) = tokio_tungstenite::connect_async(request_with_token(addr, TEST_TOKEN))
             .await
-            .expect("connect");
+            .expect("connect with the correct token");
         ws
     }
 
@@ -317,5 +395,43 @@ mod tests {
             panicking.await.is_err(),
             "the deliberately panicking task should report an Err, not silently succeed"
         );
+    }
+
+    /// The whole point of the token check: `127.0.0.1` is reachable by
+    /// any local process, not just the intended Flutter UI, and a
+    /// connection presenting no proof of that at all must never reach
+    /// the point of receiving state or being able to send a command.
+    #[tokio::test]
+    async fn a_connection_with_no_token_is_rejected_before_the_handshake_completes() {
+        let addr = spawn_test_server().await;
+        let result = tokio_tungstenite::connect_async(format!("ws://{addr}")).await;
+        assert!(
+            result.is_err(),
+            "a handshake with no auth token must not succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_with_the_wrong_token_is_rejected() {
+        let addr = spawn_test_server().await;
+        let result =
+            tokio_tungstenite::connect_async(request_with_token(addr, "not-the-real-token")).await;
+        assert!(
+            result.is_err(),
+            "a handshake with an incorrect auth token must not succeed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_connection_with_the_correct_token_is_accepted() {
+        let addr = spawn_test_server().await;
+        // `connect` already sends TEST_TOKEN; success here (no panic) is
+        // the assertion — a fresh connection reaching the point of
+        // receiving its first initial event is proven by the existing
+        // `a_new_connection_receives_exactly_five_initial_events_in_order`
+        // test, which uses this same helper.
+        let mut ws = connect(addr).await;
+        let msg = ws.next().await.expect("frame").expect("ok frame");
+        assert!(msg.into_text().is_ok());
     }
 }
