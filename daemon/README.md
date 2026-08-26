@@ -64,10 +64,17 @@ cargo clippy -p flow-core -p flow-platform --target x86_64-pc-windows-msvc --all
 **Cross-language contract test** (`daemon/todos.json` task D5): `flutter/test/data/ipc_daemon_repository_manual_test.dart` runs the same 13 scenarios `mock_daemon_repository_test.dart` proves against the Dart mock, against a real `flow-daemon` process instead — confirming the Rust and Dart sides agree, not just that each independently passes its own tests. Manual and not part of either `cargo test` or a plain `flutter test`:
 
 ```sh
-# terminal 1, from the repo root — a fresh HOME so the daemon seeds mock-parity data
-HOME=$(mktemp -d) cargo run -p flow-daemon
+# both terminals — a fresh, *shared* HOME so the daemon seeds mock-parity
+# data and both processes agree on where ~/.flow/ipc.token lives; the
+# daemon writes it there on startup, and IpcDaemonRepository (terminal 2)
+# reads it from the identical path to authenticate its connection
+export HOME=$(mktemp -d)
 
-# terminal 2
+# terminal 1, from the repo root
+cargo run -p flow-daemon
+
+# terminal 2 (same HOME as terminal 1 — export it there too, or run both
+# commands from one shell that already has it exported)
 cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repository_manual_test.dart
 ```
 
@@ -192,7 +199,7 @@ Not wired into `main.rs`: nothing in the actual daemon binary spawns `send_while
 
 ## Security posture during this phase
 
-The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only and assumes it's reachable solely by the local user, per `docs/contracts/README.md`'s scope note — it does not carry its own authentication in v0.1. The daemon-to-daemon Channel (tracks G and H, both done) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.
+The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only, and every connection to it must present a random token (`src/ipc/auth.rs`, persisted at `~/.flow/ipc.token`) as its WebSocket subprotocol before the handshake completes — `127.0.0.1` being reachable by any local process, not just the intended UI, is exactly the gap this closes; the daemon started up before this fix, but so could a connection from anything else on the machine. The daemon-to-daemon Channel (tracks G and H, both done) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.
 
 ### Pairing trust gate (track H2)
 

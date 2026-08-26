@@ -12,8 +12,24 @@ use std::net::SocketAddr;
 use flow_core::channel::{Channel, ChannelError, ChannelKind, ChannelMessage};
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+/// Every real `ChannelMessage` this connection carries is small — a
+/// single `InputEvent`, a `PairingWireMessage`, or one `snow` handshake
+/// frame (`channel::noise`'s own buffer for those is 65535 bytes) — so
+/// there's no legitimate reason to accept tokio-tungstenite's generous
+/// library defaults (64MB message / 16MB frame) here. An explicit,
+/// tighter cap means a malformed or hostile peer can't make this
+/// connection buffer tens of megabytes for one frame before the
+/// application layer ever sees it (daemon review gap #32).
+fn channel_websocket_config() -> WebSocketConfig {
+    const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+    WebSocketConfig::default()
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES))
+}
 
 /// A `Channel` backed by a WebSocket over a plain TCP connection.
 pub struct TcpChannel {
@@ -23,9 +39,13 @@ pub struct TcpChannel {
 impl TcpChannel {
     /// Connects to a peer daemon already listening at `addr`.
     pub async fn connect(addr: SocketAddr) -> Result<Self, ChannelError> {
-        let (stream, _response) = tokio_tungstenite::connect_async(format!("ws://{addr}"))
-            .await
-            .map_err(|_| ChannelError::Unreachable)?;
+        let (stream, _response) = tokio_tungstenite::connect_async_with_config(
+            format!("ws://{addr}"),
+            Some(channel_websocket_config()),
+            false,
+        )
+        .await
+        .map_err(|_| ChannelError::Unreachable)?;
         Ok(Self { stream })
     }
 
@@ -33,9 +53,12 @@ impl TcpChannel {
     /// already-accepted TCP connection (from a `TcpListener::accept()`
     /// in the daemon's peer-listening loop, track G3/G7).
     pub async fn accept(stream: TcpStream) -> Result<Self, ChannelError> {
-        let ws_stream = tokio_tungstenite::accept_async(MaybeTlsStream::Plain(stream))
-            .await
-            .map_err(|_| ChannelError::ConnectionLost)?;
+        let ws_stream = tokio_tungstenite::accept_async_with_config(
+            MaybeTlsStream::Plain(stream),
+            Some(channel_websocket_config()),
+        )
+        .await
+        .map_err(|_| ChannelError::ConnectionLost)?;
         Ok(Self { stream: ws_stream })
     }
 }
@@ -103,11 +126,14 @@ mod tests {
     async fn a_hand_crafted_keydown_is_received_verbatim() {
         let (mut client, mut server) = connected_pair().await;
 
-        let sent = ChannelMessage::Input(InputEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: "A".to_string(),
-            modifiers: vec![],
-            timestamp_ms: 123,
-        }));
+        let sent = ChannelMessage::Input {
+            sequence: 1,
+            event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: "A".to_string(),
+                modifiers: vec![],
+                timestamp_ms: 123,
+            }),
+        };
         client.send(sent.clone()).await.expect("send");
 
         let received = server.recv().await.expect("recv");

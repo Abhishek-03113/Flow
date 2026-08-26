@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use flow_core::ipc::IPC_PORT;
 use flow_daemon::hotkey;
+use flow_daemon::ipc::auth;
 use flow_daemon::ipc::server::handle_connection;
 use flow_daemon::service::DaemonService;
 use flow_daemon::storage::{history_logger, Storage};
@@ -29,6 +30,14 @@ async fn main() {
     let _hotkey_runner = hotkey::runner::spawn(&service);
     let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
 
+    // Every IPC connection must present this token (`auth::token_path()`)
+    // as its WebSocket subprotocol — `127.0.0.1` is reachable by any
+    // local process, not just the intended Flutter UI, and this is what
+    // actually tells the two apart now instead of trusting the loopback
+    // address alone.
+    let ipc_token: Arc<str> = Arc::from(auth::load_or_generate_token());
+    tracing::info!("IPC auth token: {}", auth::token_path().display());
+
     let listener = TcpListener::bind(("127.0.0.1", IPC_PORT))
         .await
         .unwrap_or_else(|e| panic!("failed to bind 127.0.0.1:{IPC_PORT}: {e}"));
@@ -41,8 +50,9 @@ async fn main() {
                     Ok((stream, peer)) => {
                         tracing::debug!("accepted connection from {peer}");
                         let service = Arc::clone(&service);
+                        let ipc_token = Arc::clone(&ipc_token);
                         tokio::spawn(async move {
-                            handle_connection(stream, service).await;
+                            handle_connection(stream, service, ipc_token).await;
                         });
                     }
                     Err(e) => {

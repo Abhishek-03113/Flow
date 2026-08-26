@@ -13,6 +13,7 @@ import '../domain/pairing.dart';
 import '../domain/permission_status.dart';
 import '../domain/settings.dart';
 import '../domain/switch_key_binding.dart';
+import 'ipc_auth.dart';
 import 'ipc_codec.dart';
 import 'ipc_constants.dart';
 import 'replay_channel.dart';
@@ -26,10 +27,21 @@ import 'replay_channel.dart';
 /// Connects on construction; [dispose] closes the socket.
 class IpcDaemonRepository implements DaemonRepository {
   /// Connects to `flow-daemon` at [uri] (defaults to
-  /// [flowDaemonIpcUri]).
+  /// [flowDaemonIpcUri]), presenting [loadIpcToken]'s value as the
+  /// WebSocket subprotocol — `daemon/src/ipc/server.rs` rejects the
+  /// handshake outright without a matching one (`127.0.0.1` is reachable
+  /// by any local process, not just this app). A `null` token (the
+  /// daemon has never run, so it hasn't generated one yet) is passed
+  /// through as no protocols at all, which the daemon likewise rejects —
+  /// the same "can't connect" failure shape as the daemon simply not
+  /// being up.
   factory IpcDaemonRepository({Uri? uri}) {
+    final token = loadIpcToken();
     return IpcDaemonRepository.withChannel(
-      WebSocketChannel.connect(uri ?? flowDaemonIpcUri()),
+      WebSocketChannel.connect(
+        uri ?? flowDaemonIpcUri(),
+        protocols: token == null ? null : [token],
+      ),
     );
   }
 

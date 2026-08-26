@@ -9,21 +9,52 @@
 use flow_core::channel::{Channel, ChannelAddress};
 use flow_core::device::HostOs;
 use flow_core::pairing::PairingStage;
+use flow_daemon::channel::noise::NoiseChannel;
 use flow_daemon::channel::tcp::TcpChannel;
 use flow_daemon::discovery::DiscoveredPeer;
+use flow_daemon::identity::DeviceIdentity;
 use flow_daemon::service::DaemonService;
+use flow_daemon::storage::device_repo::DeviceRepo;
 use flow_daemon::storage::Storage;
 use tokio::net::TcpListener;
 
-async fn service() -> DaemonService {
+/// A `DaemonService` alongside the `Storage` handle it was built on, so a
+/// test can look past the service's own façade at what actually landed
+/// in the device repository (the real acceptance criterion for the
+/// review's identity/trust fix: not just "pairing still works," but
+/// "the peer's real public key got persisted, not None").
+#[derive(Clone)]
+struct TestDaemon {
+    service: DaemonService,
+    storage: Storage,
+}
+
+async fn service() -> TestDaemon {
     let storage = Storage::open_in_memory().await.expect("open in-memory db");
-    DaemonService::new(storage).await
+    let service = DaemonService::new(storage.clone()).await;
+    TestDaemon { service, storage }
+}
+
+/// A standalone identity for a test's own hand-rolled responder task,
+/// independent of any `DaemonService` — the real responder path
+/// (`DaemonService::accept_pairing_request`) uses the service's own
+/// persisted identity, but a test driving the wire protocol directly
+/// just needs *a* valid one to complete the Noise handshake with.
+async fn a_standalone_identity() -> DeviceIdentity {
+    let storage = Storage::open_in_memory().await.expect("open identity db");
+    DeviceIdentity::load_or_generate(storage).await
 }
 
 #[tokio::test]
 async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
-    let service_a = service().await;
-    let service_b = service().await;
+    let TestDaemon {
+        service: service_a,
+        storage: storage_a,
+    } = service().await;
+    let TestDaemon {
+        service: service_b,
+        storage: storage_b,
+    } = service().await;
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -86,15 +117,59 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
     responder.await.expect("responder task");
 
     let a_devices = service_a.watch_devices().borrow().clone();
+    let b_in_a = a_devices
+        .iter()
+        .find(|d| d.name == "Studio B")
+        .unwrap_or_else(|| panic!("device A's list should contain device B: {a_devices:?}"));
+
+    // Found by id prefix, not by name: B's own seed data independently
+    // includes a local device also named "MacBook" (every fresh
+    // DaemonService seeds one) — a real name collision between "B's own
+    // idea of itself" and "the actual remote device A," exactly the
+    // review's point that a name is never a safe way to pick out a
+    // specific device. Only the newly-paired entry's id carries the
+    // "pk:" prefix this fix adds.
+    let b_devices = service_b.watch_devices().borrow().clone();
+    let a_in_b = b_devices
+        .iter()
+        .find(|d| d.id.0.starts_with("pk:"))
+        .unwrap_or_else(|| panic!("device B's list should contain device A: {b_devices:?}"));
+    assert_eq!(a_in_b.name, "MacBook");
+
+    // The actual fix this test now proves, not just "pairing still
+    // works": each side's identity for the other is the real, proven H1
+    // public key from the Noise handshake (`pk:<hex>`), and that same
+    // key — not None — is what's sitting in the device repository, which
+    // is what H2's trust gate will check on any future connection.
     assert!(
-        a_devices.iter().any(|d| d.name == "Studio B"),
-        "device A's list should contain device B: {a_devices:?}"
+        b_in_a.id.0.starts_with("pk:"),
+        "device B's id on A's side should be its public key, not its name: {}",
+        b_in_a.id.0
+    );
+    assert!(
+        a_in_b.id.0.starts_with("pk:"),
+        "device A's id on B's side should be its public key, not its name: {}",
+        a_in_b.id.0
     );
 
-    let b_devices = service_b.watch_devices().borrow().clone();
-    assert!(
-        b_devices.iter().any(|d| d.name == "MacBook"),
-        "device B's list should contain device A: {b_devices:?}"
+    let b_record = DeviceRepo::new(storage_a)
+        .find_by_id(b_in_a.id.clone())
+        .await
+        .expect("device B's record persisted on A's side");
+    assert_eq!(
+        b_record.public_key.as_ref().map(Vec::len),
+        Some(32),
+        "device B's real 32-byte ed25519 public key should be persisted, not None"
+    );
+
+    let a_record = DeviceRepo::new(storage_b)
+        .find_by_id(a_in_b.id.clone())
+        .await
+        .expect("device A's record persisted on B's side");
+    assert_eq!(
+        a_record.public_key.as_ref().map(Vec::len),
+        Some(32),
+        "device A's real 32-byte ed25519 public key should be persisted, not None"
     );
 }
 
@@ -103,7 +178,9 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
 /// side gains a new device.
 #[tokio::test]
 async fn a_rejected_real_pairing_request_lands_in_failed_not_paired() {
-    let service_a = service().await;
+    let TestDaemon {
+        service: service_a, ..
+    } = service().await;
 
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -112,8 +189,12 @@ async fn a_rejected_real_pairing_request_lands_in_failed_not_paired() {
 
     tokio::spawn(async move {
         let (stream, _peer) = listener.accept().await.expect("accept");
-        let mut channel = TcpChannel::accept(stream).await.expect("accept ws");
-        let _ = flow_daemon::channel::handshake::respond_to_pairing(&mut channel, |_req| {
+        let channel = TcpChannel::accept(stream).await.expect("accept ws");
+        let identity = a_standalone_identity().await;
+        let mut noise_channel = NoiseChannel::accept(channel, &identity)
+            .await
+            .expect("responder side of the Noise handshake");
+        let _ = flow_daemon::channel::handshake::respond_to_pairing(&mut noise_channel, |_req| {
             flow_core::pairing::PairingDecision::Reject
         })
         .await;

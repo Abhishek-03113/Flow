@@ -163,11 +163,14 @@ mod tests {
             .expect("connect");
         let mut server = server.await.expect("server task");
 
-        let sent = ChannelMessage::Input(InputEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: "A".to_string(),
-            modifiers: vec![],
-            timestamp_ms: 0,
-        }));
+        let sent = ChannelMessage::Input {
+            sequence: 1,
+            event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
+                key: "A".to_string(),
+                modifiers: vec![],
+                timestamp_ms: 0,
+            }),
+        };
         client.send(sent.clone()).await.expect("send");
         let received = server.recv().await.expect("recv");
         assert_eq!(received, sent);

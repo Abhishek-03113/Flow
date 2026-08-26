@@ -23,8 +23,10 @@ use tokio::sync::{watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+use crate::channel::noise::NoiseChannel;
 use crate::channel::{handshake, negotiate};
 use crate::discovery::DiscoveredPeer;
+use crate::identity::DeviceIdentity;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
@@ -160,6 +162,11 @@ fn next_switchable_device(state: &ServiceState) -> Option<DeviceId> {
 pub struct DaemonService {
     state: Arc<RwLock<ServiceState>>,
     storage: Storage,
+    /// This daemon's own persisted `H1` identity — used to authenticate
+    /// and encrypt real pairing handshakes (`NoiseChannel`, `H3`) rather
+    /// than trusting a peer's self-reported name outright. See
+    /// `request_real_pairing`/`accept_pairing_request`.
+    identity: DeviceIdentity,
     devices_tx: watch::Sender<Vec<Device>>,
     link_state_tx: watch::Sender<DaemonLinkState>,
     pairing_session_tx: watch::Sender<PairingSession>,
@@ -175,6 +182,7 @@ pub struct DaemonService {
 impl DaemonService {
     pub async fn new(storage: Storage) -> Self {
         let state = ServiceState::load_or_seed(&storage).await;
+        let identity = DeviceIdentity::load_or_generate(storage.clone()).await;
 
         let (devices_tx, _) = watch::channel(devices_list(&state));
         let (link_state_tx, _) = watch::channel(state.link_state);
@@ -185,6 +193,7 @@ impl DaemonService {
         Self {
             state: Arc::new(RwLock::new(state)),
             storage,
+            identity,
             devices_tx,
             link_state_tx,
             pairing_session_tx,
@@ -512,22 +521,38 @@ impl DaemonService {
         self.schedule_terminal_to_idle(PairingStage::Paired).await;
     }
 
-    /// `Requesting -> Paired` or `Requesting -> Failed`, driven by a real
-    /// handshake over whichever `Channel` medium `connect_best_available`
-    /// (G6) negotiates for `address` — the real-network counterpart to
-    /// `on_pair_request_elapsed`'s timer-only mock flow, taken whenever
-    /// `candidate` came from a live discovery rather than the mock
-    /// `candidates_pool`.
+    /// `Requesting -> Paired` or `Requesting -> Failed`, driven by a real,
+    /// Noise-authenticated handshake over whichever `Channel` medium
+    /// `connect_best_available` (G6) negotiates for `address` — the
+    /// real-network counterpart to `on_pair_request_elapsed`'s timer-only
+    /// mock flow, taken whenever `candidate` came from a live discovery
+    /// rather than the mock `candidates_pool`.
+    ///
+    /// The paired device's stable identity is the peer's `H1` public key
+    /// proven by that handshake (`DeviceId` derived from it, per the
+    /// review gap on name-based identity — a peer's self-reported
+    /// `device_name` is display metadata, never the trust/identity key),
+    /// and that same public key is what gets persisted, so `H2`'s trust
+    /// gate can recognize this device on a future connection regardless
+    /// of which name it presents then.
     async fn on_real_pairing_request(&self, candidate: PairingCandidate, address: ChannelAddress) {
         match self.request_real_pairing(&address).await {
-            Ok(PairingDecision::Accept) => {
+            Ok((PairingDecision::Accept, peer_public_key)) => {
+                // `candidate.name`/`.os` (this device's own discovery-time
+                // record of the peer) are still the best display metadata
+                // available: the pairing handshake itself only carries a
+                // decision back to the initiator, not the responder's own
+                // name/OS. The device's *identity*, unlike its display
+                // name, comes from the handshake's proven public key, not
+                // from anything either side merely claims.
+                let device_id = device_id_from_public_key(&peer_public_key);
                 let new_device = {
                     let mut state = self.state.write().await;
                     if state.pairing_session.stage != PairingStage::Requesting {
                         return;
                     }
                     let device = Device {
-                        id: DeviceId(candidate.id.clone()),
+                        id: device_id.clone(),
                         name: candidate.name.clone(),
                         os: candidate.os,
                         state: DeviceState::Inactive,
@@ -541,7 +566,7 @@ impl DaemonService {
                 DeviceRepo::new(self.storage.clone())
                     .upsert(DeviceRecord {
                         device: new_device,
-                        public_key: None,
+                        public_key: Some(peer_public_key),
                         removable: true,
                     })
                     .await;
@@ -551,7 +576,7 @@ impl DaemonService {
                 self.emit_pairing_session().await;
                 self.schedule_terminal_to_idle(PairingStage::Paired).await;
             }
-            Ok(PairingDecision::Reject) => {
+            Ok((PairingDecision::Reject, _peer_public_key)) => {
                 self.fail_pairing("the peer rejected the pairing request".to_string())
                     .await;
             }
@@ -561,16 +586,25 @@ impl DaemonService {
         }
     }
 
-    /// Negotiates a `Channel` for `address` (G6) and runs the initiator
-    /// side of the pairing exchange (`channel::handshake`) over it.
-    /// Written entirely against the `Channel` trait — no branch on
-    /// `ChannelKind` anywhere in this method or in `channel::handshake` —
-    /// proof that G1's abstraction holds all the way up to pairing.
+    /// Negotiates a `Channel` for `address` (G6), authenticates and
+    /// encrypts it with a Noise handshake keyed by this daemon's own
+    /// `H1` identity (`NoiseChannel::initiate`), then runs the initiator
+    /// side of the pairing exchange (`channel::handshake`) over the
+    /// resulting encrypted channel — not the raw negotiated one. Written
+    /// entirely against the `Channel` trait — no branch on `ChannelKind`
+    /// anywhere in this method or in `channel::handshake` — proof that
+    /// G1's abstraction holds all the way up to pairing. Returns the
+    /// peer's proven public key alongside the decision so the caller
+    /// never has to fall back to trusting the peer's self-reported name
+    /// as its identity.
     async fn request_real_pairing(
         &self,
         address: &ChannelAddress,
-    ) -> Result<PairingDecision, ChannelError> {
-        let mut channel = negotiate::connect_best_available(std::slice::from_ref(address)).await?;
+    ) -> Result<(PairingDecision, Vec<u8>), ChannelError> {
+        let channel = negotiate::connect_best_available(std::slice::from_ref(address)).await?;
+        let mut noise_channel = NoiseChannel::initiate(channel, &self.identity).await?;
+        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+
         let (local_name, local_os) = self.local_device_identity().await;
         let request = PairingRequest {
             device_name: local_name,
@@ -581,7 +615,8 @@ impl DaemonService {
             // buildNote) — left blank rather than fabricated.
             address: String::new(),
         };
-        handshake::request_pairing(channel.as_mut(), request).await
+        let decision = handshake::request_pairing(&mut noise_channel, request).await?;
+        Ok((decision, peer_public_key))
     }
 
     /// This device's own name/OS, as already recorded for
@@ -599,9 +634,15 @@ impl DaemonService {
     }
 
     /// Accepts an already-negotiated `Channel` from an incoming pairing
-    /// attempt (a peer's own `pair_with_candidate`), runs the responder
-    /// side of the handshake, and — on acceptance — upserts the
-    /// initiator as a paired device on this side too, so
+    /// attempt (a peer's own `pair_with_candidate`), authenticates and
+    /// encrypts it with a Noise handshake keyed by this daemon's own
+    /// `H1` identity (`NoiseChannel::accept` — the responder counterpart
+    /// to `request_real_pairing`'s `::initiate`), runs the responder side
+    /// of the pairing exchange over the resulting encrypted channel, and
+    /// — on acceptance — upserts the initiator as a paired device on this
+    /// side too, keyed by its proven public key rather than the
+    /// self-reported `device_name` in its `PairingRequest` (a claimed
+    /// name is display metadata, never a trust identity), so
     /// `docs/product/vision.md` §16's "once accepted, the devices become
     /// trusted" holds symmetrically for both ends of one handshake, not
     /// just the initiator's.
@@ -615,16 +656,19 @@ impl DaemonService {
     /// silently assumed. See this task's `buildNote`.
     pub async fn accept_pairing_request(
         &self,
-        mut channel: Box<dyn Channel>,
+        channel: Box<dyn Channel>,
     ) -> Result<(), ChannelError> {
+        let mut noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
+        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+
         let (request, decision) =
-            handshake::respond_to_pairing(channel.as_mut(), |_request| PairingDecision::Accept)
+            handshake::respond_to_pairing(&mut noise_channel, |_request| PairingDecision::Accept)
                 .await?;
         if decision != PairingDecision::Accept {
             return Ok(());
         }
 
-        let device_id = DeviceId(format!("peer:{}", request.device_name));
+        let device_id = device_id_from_public_key(&peer_public_key);
         let device = Device {
             id: device_id.clone(),
             name: request.device_name,
@@ -639,7 +683,7 @@ impl DaemonService {
         DeviceRepo::new(self.storage.clone())
             .upsert(DeviceRecord {
                 device,
-                public_key: None,
+                public_key: Some(peer_public_key),
                 removable: true,
             })
             .await;
@@ -785,6 +829,20 @@ impl DaemonService {
         self.permission_tx.send_replace(permission);
         Ok(())
     }
+}
+
+/// A real paired device's stable identity: derived from its proven `H1`
+/// public key, not its self-reported name — multiple machines can
+/// legitimately advertise the same display name (`daemon/todos.json`'s
+/// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
+/// the same trust identity just because they share a name), but two
+/// public keys are never accidentally equal.
+fn device_id_from_public_key(public_key: &[u8]) -> DeviceId {
+    DeviceId(format!("pk:{}", hex_encode(public_key)))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 fn seed_device_records() -> Vec<DeviceRecord> {
