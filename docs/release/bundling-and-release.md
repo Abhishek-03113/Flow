@@ -11,7 +11,7 @@ It is not a GitHub Actions workflow, not a `.github/release.yml`, not an actual 
 - `Cargo.toml` (workspace) and `flutter/pubspec.yaml` both already say `0.1.0` — already in sync, by coincidence rather than policy so far. This document turns that coincidence into a policy (see "Versioning" below).
 - No CI configuration exists in the repo yet (`.github/workflows/` doesn't exist).
 - No `packaging/` directory exists yet — `daemon/todos.json` J4 (launchd/systemd/Windows-service scaffolding) hasn't landed.
-- `daemon/todos.json` tracks A/P/B/C/D are done (real daemon, real IPC, real persistence); E (platform input), F (switch-hotkey), G (Channels/networking), H (security), I (reliability), J (packaging) are not.
+- `daemon/todos.json` tracks A/P/B/C/D are done (real daemon, real Control Link, real persistence); E (platform input), F (switch-hotkey), G (Channels/networking), H (security), I (reliability), J (packaging) are not.
 
 A release strategy written against a daemon that can't yet capture input or talk to another machine would be fiction. So this document is a **ladder**, not a single "how to ship v1.0.0" recipe — each rung is tied to what `daemon/todos.json` actually needs to be true first, and to the manual verification gates `docs/testing/manual-testing-strategy.md` already defines.
 
@@ -31,7 +31,7 @@ Rather than stitching together three unrelated platform tools (a DMG script, an 
 Flow is two artifacts that must be installed and versioned together but run as two independent processes (vision.md §8: "the daemon should continue working even if the UI is closed"):
 
 - **`flow-daemon`** (Rust binary) — installed once, registered to start at login/boot as an OS-level service, runs continuously whether or not the UI is open.
-- **The Flutter app** — installed alongside it, launched by the user (or from a tray icon once real tray docking exists), purely a client of the already-running daemon over local IPC (`docs/contracts/`).
+- **The Flutter app** — installed alongside it, launched by the user (or from a tray icon once real tray docking exists), purely a client of the already-running daemon over the local Control Link (`docs/contracts/`).
 
 **One installer per platform installs both and registers the daemon's auto-start.** Not two separate downloads — vision.md's "installation takes minutes" success criterion means a user runs one installer, and by the time it finishes, both the daemon is running and the app is launchable. This is also the point where `daemon/todos.json` J4's scaffolded service-unit files (`launchd` plist, `systemd` unit) stop being scaffolding and become something an installer actually places and activates — J4 explicitly does not do that activation step; this document is where that step gets specified.
 
@@ -83,7 +83,7 @@ cargo packager --release --manifest-path packaging/flow-packager/Cargo.toml
 
 **The contract version (`docs/contracts/CHANGELOG.md`, currently `0.1.1`) and the Channels protocol version (`docs/architecture/channels.md`, currently `0.1.0`) are independent of the product version number.** A product release's notes should state which contract/protocol versions it implements (useful for debugging a mismatched UI/daemon pair, or eventually for compatibility checks between two paired machines running different product versions), but a contract patch doesn't force a product version bump and vice versa.
 
-**SemVer**, standard meaning for this project: a `MAJOR` bump is a breaking change to the local IPC contract or the Channels wire protocol that isn't backward compatible (i.e., an old UI can't talk to a new daemon or vice versa); `MINOR` is new user-facing capability; `PATCH` is a bug fix with no contract change. Pre-1.0, breaking changes don't require a major bump (standard SemVer pre-1.0 exception) but still get a `CHANGELOG.md` entry.
+**SemVer**, standard meaning for this project: a `MAJOR` bump is a breaking change to the local Control Link contract or the Channels wire protocol that isn't backward compatible (i.e., an old UI can't talk to a new daemon or vice versa); `MINOR` is new user-facing capability; `PATCH` is a bug fix with no contract change. Pre-1.0, breaking changes don't require a major bump (standard SemVer pre-1.0 exception) but still get a `CHANGELOG.md` entry.
 
 **Git tagging:** annotated tags `vX.Y.Z` on `main` only, created after the version-bump commit merges. A root `CHANGELOG.md` (doesn't exist yet — recommended as the next concrete step whenever the first tagged release is actually being cut, in Keep a Changelog style) tracks product-level release notes; this is distinct from `docs/contracts/CHANGELOG.md`, which only tracks the wire contract's own history.
 

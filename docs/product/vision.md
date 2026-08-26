@@ -72,7 +72,7 @@ Example:
                ▼                             ▼
         ┌─────────────┐               ┌─────────────┐
         │   Device A  │◄─────────────►│   Device B  │
-        │    Active   │   Transport   │   Inactive  │
+        │    Active   │    Channel    │   Inactive  │
         └─────────────┘               └─────────────┘
 ```
 
@@ -157,7 +157,7 @@ The architecture should be split into two major layers:
 │  Onboarding                               │
 └─────────────────────┬─────────────────────┘
                       │
-                Local IPC / API
+                 Control Link
                       │
 ┌─────────────────────▼─────────────────────┐
 │             Native Daemon                 │
@@ -173,7 +173,7 @@ The architecture should be split into two major layers:
 │  Device State                              │
 └─────────────────────┬─────────────────────┘
                       │
-                Transport Layer
+                 Channel Layer
                       │
           ┌───────────┼───────────┐
           ▼           ▼           ▼
@@ -308,49 +308,49 @@ This provides several benefits:
 - Daemon can start at boot
 - Easier background operation
 - Cleaner architecture
-- Transport can evolve independently
+- Channel can evolve independently
 - UI can be redesigned without touching core functionality
 
 ---
 
 ## 9. Communication Between Flutter and Daemon
 
-Flutter should communicate with the local daemon through an IPC mechanism rather than directly managing remote device networking.
+Flutter should communicate with the local daemon through a Control Link rather than directly managing remote device networking.
 
 Conceptually:
 
 ```
 Flutter
    │
-   │ Local IPC
+   │ Control Link
    ▼
 Daemon
    │
-   │ Remote Transport
+   │ Channel
    ▼
 Other Device
 ```
 
-Possible local communication mechanisms:
+Possible Control Link mediums:
 
 - Unix domain sockets on macOS/Linux
 - Named pipes on Windows
 - Local TCP as a cross-platform fallback
-- Other platform-specific IPC mechanisms
+- Other platform-specific local mediums
 
-The exact mechanism can be decided during implementation.
+The exact medium can be decided during implementation.
 
 The important architectural rule is:
 
-Flutter should not care whether remote devices communicate over WebSocket, Bluetooth, QUIC, or another future transport.
+Flutter should not care whether remote devices communicate over WebSocket, Bluetooth, QUIC, or another future Channel medium.
 
 ---
 
 ## 10. Connectivity
 
-The transport layer should be abstracted from the beginning.
+The Channel abstraction should be in place from the beginning.
 
-### POC Transport
+### POC Channel
 
 The initial implementation should use:
 
@@ -378,15 +378,15 @@ This provides:
 
 ---
 
-### Future Transports
+### Future Channels
 
-The architecture should allow additional transport implementations.
+The architecture should allow additional Channel implementations.
 
 Potential options:
 
 **WebSocket**
 
-Initial LAN transport.
+Initial LAN Channel medium.
 
 **Bluetooth**
 
@@ -394,11 +394,11 @@ Useful when devices are nearby and the user does not want to depend on the local
 
 **TCP / QUIC**
 
-Potential future low-level transports.
+Potential future low-level Channel mediums.
 
-**Other local transports**
+**Other local Channel mediums**
 
-The transport layer should remain replaceable without changing the input or application layers.
+The Channel abstraction should remain replaceable without changing the input or application layers.
 
 Conceptually:
 
@@ -463,7 +463,7 @@ Mouse:
 The event protocol should remain independent of:
 
 - Operating system
-- Transport
+- Channel medium
 - UI
 - Device topology
 
@@ -607,7 +607,7 @@ The settings experience should remain simple while allowing progressive expansio
 - Pair new device
 - Remove device
 - Connection status
-- Preferred transport
+- Preferred Channel medium
 - Auto reconnect
 
 ### Input
@@ -629,7 +629,7 @@ The settings experience should remain simple while allowing progressive expansio
 
 Potential future settings:
 
-- Transport configuration
+- Channel configuration
 - Debug logging
 - Event latency
 - Connection timeout
@@ -672,7 +672,7 @@ Future versions should use secure device identity and key exchange rather than r
 
 Keyboard and mouse events are highly sensitive.
 
-Even though the initial POC can assume a trusted local network, the production product must treat the communication channel as sensitive.
+Even though the initial POC can assume a trusted local network, the production product must treat the Channel as sensitive.
 
 The eventual system should support:
 
@@ -743,16 +743,16 @@ Responsibilities:
 ```
 Flutter
    ↕
-Local IPC
+Control Link
    ↕
 Rust Daemon
    ↕
-Remote Transport
+Channel
    ↕
 Other Daemon
 ```
 
-**Initial remote transport**
+**Initial remote Channel medium**
 
 WebSocket
 
@@ -760,7 +760,7 @@ WebSocket
 
 - Bluetooth
 - QUIC
-- Other low-latency transports
+- Other low-latency Channel mediums
 
 ---
 
@@ -775,7 +775,7 @@ cross-device/
 │   ├── protocol/
 │   ├── device/
 │   ├── pairing/
-│   ├── transport/
+│   ├── channel/
 │   └── state/
 │
 ├── daemon/
@@ -1090,7 +1090,7 @@ The final product should maintain a simple conceptual model:
               │ Observe      │
               └──────┬───────┘
                      │
-                    IPC
+              Control Link
                      │
                      ▼
               ┌──────────────┐
@@ -1102,7 +1102,7 @@ The final product should maintain a simple conceptual model:
               │ Secure       │
               └──────┬───────┘
                      │
-                  Transport
+                  Channel
                      │
                      ▼
               ┌──────────────┐

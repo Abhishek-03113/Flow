@@ -1,6 +1,6 @@
 # Data Model
 
-Contract version: **0.1.0** (see `CHANGELOG.md`). Every entity below has a Dart type (in `flutter/lib/domain/`) and the JSON shape it would take on the wire once an IPC transport exists. Field names are `snake_case` on the wire and `camelCase` in Dart, converted 1:1.
+Contract version: **0.1.0** (see `CHANGELOG.md`). Every entity below has a Dart type (in `flutter/lib/domain/`) and the JSON shape it would take on the wire once the Control Link medium exists. Field names are `snake_case` on the wire and `camelCase` in Dart, converted 1:1.
 
 ## `Device`
 
