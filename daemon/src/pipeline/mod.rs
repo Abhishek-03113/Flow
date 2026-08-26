@@ -14,10 +14,13 @@
 //! is this pipeline: it's the first place capture, a `Channel`, and
 //! injection are wired into one continuous loop.
 
+use std::collections::HashSet;
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use flow_core::channel::{Channel, ChannelMessage};
 use flow_core::device::{Device, DeviceId, DeviceState};
 use flow_core::input::InputInjector;
-use flow_core::protocol::InputEvent;
+use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
 use tokio::sync::{mpsc, watch};
 
 use crate::service::LOCAL_DEVICE_ID;
@@ -84,12 +87,22 @@ pub async fn send_while_active(
 /// millisecond under a coarse OS clock, which a timestamp-based check
 /// can't distinguish from an actual replay without either wrongly
 /// dropping real input or wrongly accepting a replay.
+///
+/// Stuck-input safety (daemon review gap #18): if the connection drops
+/// between a `KeyDown`/`ButtonDown` this loop already injected and its
+/// matching `KeyUp`/`ButtonUp`, the remote OS is left believing that
+/// key/button is held forever — there's no third party to tell it
+/// otherwise once the `Channel` that would have carried the release is
+/// gone. `HeldInputTracker` exists specifically to make that release
+/// happen anyway, synthesized locally, the moment this loop ends for any
+/// reason.
 pub async fn receive_and_inject<I>(mut channel: Box<dyn Channel>, mut injector: I)
 where
     I: InputInjector,
     I::Error: std::fmt::Debug,
 {
     let mut last_sequence: Option<u64> = None;
+    let mut held = HeldInputTracker::default();
     loop {
         match channel.recv().await {
             Ok(ChannelMessage::Input { sequence, event }) => {
@@ -97,14 +110,91 @@ where
                     continue;
                 }
                 last_sequence = Some(sequence);
-                if let Err(err) = injector.inject(&event) {
-                    tracing::warn!("input injection failed: {err:?}");
+                match injector.inject(&event) {
+                    Ok(()) => held.observe(&event),
+                    Err(err) => tracing::warn!("input injection failed: {err:?}"),
                 }
             }
             Ok(_) => continue,
             Err(_) => break,
         }
     }
+    held.release_all(&mut injector);
+}
+
+/// Tracks which keys/mouse buttons this side has injected a `KeyDown`/
+/// `ButtonDown` for with no matching `KeyUp`/`ButtonUp` seen yet, so
+/// [`receive_and_inject`] can synthesize the release itself once the
+/// `Channel` that would have carried a real one is gone — the mitigation
+/// `daemon/todos.json`'s review calls a "hard invariant": a dropped
+/// connection must never leave the remote OS believing input is
+/// permanently held.
+#[derive(Default)]
+struct HeldInputTracker {
+    keys: HashSet<String>,
+    buttons: HashSet<MouseButton>,
+}
+
+impl HeldInputTracker {
+    /// Updates held state from an event this side just successfully
+    /// injected. Only ever called on a successful `inject` — an event the
+    /// OS never actually saw shouldn't register as newly held.
+    fn observe(&mut self, event: &InputEvent) {
+        match event {
+            InputEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) => {
+                self.keys.insert(key.clone());
+            }
+            InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
+                self.keys.remove(key);
+            }
+            InputEvent::Mouse(MouseEvent::ButtonDown { button, .. }) => {
+                self.buttons.insert(*button);
+            }
+            InputEvent::Mouse(MouseEvent::ButtonUp { button, .. }) => {
+                self.buttons.remove(button);
+            }
+            InputEvent::Mouse(MouseEvent::Move { .. })
+            | InputEvent::Mouse(MouseEvent::Scroll { .. }) => {}
+        }
+    }
+
+    /// Synthesizes and injects a `KeyUp`/`ButtonUp` for everything still
+    /// tracked as held, then clears. A failure releasing one held
+    /// key/button doesn't stop the rest from being attempted — a partial
+    /// release is still strictly better than releasing none.
+    fn release_all<I>(&mut self, injector: &mut I)
+    where
+        I: InputInjector,
+        I::Error: std::fmt::Debug,
+    {
+        let timestamp_ms = now_ms();
+        for key in self.keys.drain() {
+            let event = InputEvent::Keyboard(KeyboardEvent::KeyUp {
+                key,
+                modifiers: Vec::new(),
+                timestamp_ms,
+            });
+            if let Err(err) = injector.inject(&event) {
+                tracing::warn!("failed to release a held key on disconnect: {err:?}");
+            }
+        }
+        for button in self.buttons.drain() {
+            let event = InputEvent::Mouse(MouseEvent::ButtonUp {
+                button,
+                timestamp_ms,
+            });
+            if let Err(err) = injector.inject(&event) {
+                tracing::warn!("failed to release a held mouse button on disconnect: {err:?}");
+            }
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -287,7 +377,17 @@ mod tests {
 
         let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
 
-        let first = a_key_event("first");
+        // Mouse::Move deliberately, not a KeyDown: that isolates this
+        // test to sequence-based replay dropping alone, with no
+        // held-key release (a KeyDown never released before disconnect
+        // would itself inject a synthesized KeyUp — a real and separately
+        // tested behavior, see `a_key_held_when_the_connection_drops_is_released_not_left_stuck`,
+        // just not what this test is about).
+        let first = InputEvent::Mouse(MouseEvent::Move {
+            dx: 1,
+            dy: 1,
+            timestamp_ms: 0,
+        });
         sender_side
             .send(ChannelMessage::Input {
                 sequence: 5,
@@ -301,9 +401,9 @@ mod tests {
         // frame per H4's guard, must be dropped rather than injected,
         // even though its own timestamp_ms differs (proving the check is
         // on sequence, not timestamp).
-        let replay = InputEvent::Keyboard(KeyboardEvent::KeyDown {
-            key: "replay".to_string(),
-            modifiers: vec![],
+        let replay = InputEvent::Mouse(MouseEvent::Move {
+            dx: 99,
+            dy: 99,
             timestamp_ms: 999,
         });
         sender_side
@@ -398,5 +498,176 @@ mod tests {
         drop(capture_tx);
         drop(devices_tx);
         pipeline.await.expect("pipeline task");
+    }
+
+    fn key_down(key: &str) -> InputEvent {
+        InputEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: key.to_string(),
+            modifiers: vec![],
+            timestamp_ms: 0,
+        })
+    }
+
+    fn key_up(key: &str) -> InputEvent {
+        InputEvent::Keyboard(KeyboardEvent::KeyUp {
+            key: key.to_string(),
+            modifiers: vec![],
+            timestamp_ms: 0,
+        })
+    }
+
+    fn button_down(button: MouseButton) -> InputEvent {
+        InputEvent::Mouse(MouseEvent::ButtonDown {
+            button,
+            timestamp_ms: 0,
+        })
+    }
+
+    /// Reads whatever the injector received next, expecting a `KeyUp`/
+    /// `ButtonUp` — the synthesized release, since nothing else in these
+    /// tests injects one directly.
+    async fn expect_next_is_key_up(rx: &mut mpsc::UnboundedReceiver<InputEvent>, key: &str) {
+        match rx.recv().await.expect("a release event") {
+            InputEvent::Keyboard(KeyboardEvent::KeyUp { key: released, .. }) => {
+                assert_eq!(released, key);
+            }
+            other => panic!("expected a synthesized KeyUp for {key:?}, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_key_held_when_the_connection_drops_is_released_not_left_stuck() {
+        let (mut sender_side, receiver_side) = connected_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
+
+        sender_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: key_down("A"),
+            })
+            .await
+            .expect("send keydown");
+        assert_eq!(rx.recv().await.expect("keydown injected"), key_down("A"));
+
+        // The connection drops with no matching KeyUp ever sent — exactly
+        // the "key_down sent, connection drops, key_up never arrives"
+        // scenario the review calls out.
+        sender_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        expect_next_is_key_up(&mut rx, "A").await;
+        assert!(
+            rx.try_recv().is_err(),
+            "exactly one synthesized release, nothing extra"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_key_already_released_before_disconnect_is_not_released_again() {
+        let (mut sender_side, receiver_side) = connected_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
+
+        sender_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: key_down("A"),
+            })
+            .await
+            .expect("send keydown");
+        assert_eq!(rx.recv().await.expect("keydown injected"), key_down("A"));
+
+        sender_side
+            .send(ChannelMessage::Input {
+                sequence: 2,
+                event: key_up("A"),
+            })
+            .await
+            .expect("send keyup");
+        assert_eq!(rx.recv().await.expect("keyup injected"), key_up("A"));
+
+        sender_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        assert!(
+            rx.try_recv().is_err(),
+            "a key already released normally must not get a second, spurious release"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_held_mouse_button_when_the_connection_drops_is_released() {
+        let (mut sender_side, receiver_side) = connected_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
+
+        sender_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: button_down(MouseButton::Left),
+            })
+            .await
+            .expect("send button down");
+        assert_eq!(
+            rx.recv().await.expect("button down injected"),
+            button_down(MouseButton::Left)
+        );
+
+        sender_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        match rx.recv().await.expect("a release event") {
+            InputEvent::Mouse(MouseEvent::ButtonUp { button, .. }) => {
+                assert_eq!(button, MouseButton::Left);
+            }
+            other => panic!("expected a synthesized ButtonUp, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn multiple_held_keys_are_all_released_on_disconnect() {
+        let (mut sender_side, receiver_side) = connected_pair().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(receive_and_inject(receiver_side, injector));
+
+        for (sequence, key) in [(1, "Ctrl"), (2, "Shift"), (3, "A")] {
+            sender_side
+                .send(ChannelMessage::Input {
+                    sequence,
+                    event: key_down(key),
+                })
+                .await
+                .expect("send keydown");
+            assert_eq!(rx.recv().await.expect("keydown injected"), key_down(key));
+        }
+
+        sender_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        let mut released = std::collections::HashSet::new();
+        for _ in 0..3 {
+            match rx.recv().await.expect("a release event") {
+                InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
+                    released.insert(key);
+                }
+                other => panic!("expected a synthesized KeyUp, got {other:?}"),
+            }
+        }
+        assert_eq!(
+            released,
+            ["Ctrl", "Shift", "A"]
+                .into_iter()
+                .map(str::to_string)
+                .collect()
+        );
     }
 }
