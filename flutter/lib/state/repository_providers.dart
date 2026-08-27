@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/ipc_daemon_repository.dart';
@@ -34,6 +35,14 @@ const _daemonMode = String.fromEnvironment(
 /// local IPC) is the default; `FLOW_DAEMON_MODE=mock` opts into the mock
 /// for UI-only development or demoing without a daemon running.
 final daemonRepositoryProvider = Provider<DaemonRepository>((ref) {
+  // Not a hidden UI signal — a plain terminal log for whoever is running
+  // `flutter run` and trying to tell "the app is on the mock backend" apart
+  // from "it's on IPC but can't reach flow-daemon", which look identical
+  // in the UI otherwise but need completely different fixes.
+  debugPrint(
+    'flow-daemon: daemon backend = $_daemonMode'
+    '${_daemonMode == 'ipc' ? '' : ' (pass --dart-define=FLOW_DAEMON_MODE=ipc for the real daemon)'}',
+  );
   if (_daemonMode == 'ipc') {
     final repository = IpcDaemonRepository();
     ref.onDispose(() => unawaited(repository.dispose()));
