@@ -5,16 +5,36 @@
 //! serves the local IPC contract (`docs/contracts/daemon-ipc.md`) over a
 //! WebSocket on `127.0.0.1:IPC_PORT` until the process is asked to stop.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
+use flow_core::channel::Channel;
+use flow_core::device::DeviceId;
+use flow_core::input::InputCapture;
 use flow_core::ipc::IPC_PORT;
+use flow_daemon::channel::tcp::TcpChannel;
+use flow_daemon::discovery::tcp::{DiscoveryService, DISCOVERY_PORT};
+use flow_daemon::discovery::DiscoveredPeer;
 use flow_daemon::hotkey;
 use flow_daemon::ipc::auth;
 use flow_daemon::ipc::server::handle_connection;
-use flow_daemon::service::DaemonService;
+use flow_daemon::pipeline;
+use flow_daemon::service::{DaemonService, IncomingPeerConnection};
 use flow_daemon::storage::{history_logger, Storage};
-use tokio::net::TcpListener;
+use flow_platform::{new_default_input_injector, DefaultInputCapture};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
+
+/// Devices this daemon currently has a live, authenticated
+/// daemon-to-daemon connection to — keyed by the peer's proven identity
+/// (`DeviceId`, derived from its `H1` public key), not its address or
+/// name, both of which can change between reconnects. Shared between the
+/// outbound (discovery-driven redial) and inbound (peer channel accept
+/// loop) paths purely to avoid opening a second, redundant connection to
+/// a peer this daemon is already streaming input with.
+type ConnectedPeers = Arc<Mutex<HashSet<DeviceId>>>;
 
 #[tokio::main]
 async fn main() {
@@ -29,6 +49,13 @@ async fn main() {
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
     let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
+
+    let connected_peers: ConnectedPeers = Arc::new(Mutex::new(HashSet::new()));
+    if let Some(peer_channel_port) =
+        spawn_peer_channel_listener(Arc::clone(&service), Arc::clone(&connected_peers)).await
+    {
+        spawn_discovery(Arc::clone(&service), connected_peers, peer_channel_port).await;
+    }
 
     // Every IPC connection must present this token (`auth::token_path()`)
     // as its WebSocket subprotocol — `127.0.0.1` is reachable by any
@@ -66,6 +93,241 @@ async fn main() {
             }
         }
     }
+}
+
+/// Binds the daemon-to-daemon peer channel listener — distinct from the
+/// local IPC port above (Flutter<->daemon) and from the discovery UDP
+/// port (`DISCOVERY_PORT`, announce/listen only) — and spawns its accept
+/// loop. Bound to `0.0.0.0` (unlike the IPC listener's `127.0.0.1`-only
+/// binding) since real peers reach it from elsewhere on the LAN. An
+/// ephemeral port (`0`) is used and the actual bound port is returned so
+/// [`spawn_discovery`] can advertise it in this daemon's own announces
+/// (`discovery::tcp`'s own doc comment: "the port this peer's own
+/// `TcpChannel` listener is bound to"). Returns `None` — logging a
+/// warning, not panicking — if the bind itself fails; the daemon still
+/// serves local IPC and the switch-key hotkey normally without it, the
+/// same "degrade gracefully" contract `hotkey::runner::spawn` already
+/// has for a missing capture device.
+async fn spawn_peer_channel_listener(
+    service: Arc<DaemonService>,
+    connected_peers: ConnectedPeers,
+) -> Option<u16> {
+    let listener = match TcpListener::bind(("0.0.0.0", 0)).await {
+        Ok(listener) => listener,
+        Err(err) => {
+            tracing::warn!("peer channel listener not started: {err}");
+            return None;
+        }
+    };
+    let port = listener
+        .local_addr()
+        .expect("bound listener has a local address")
+        .port();
+    tracing::info!("flow-daemon peer channel listening on 0.0.0.0:{port}");
+
+    tokio::spawn(async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, peer_addr)) => {
+                    tracing::debug!("accepted peer connection from {peer_addr}");
+                    let service = Arc::clone(&service);
+                    let connected_peers = Arc::clone(&connected_peers);
+                    tokio::spawn(async move {
+                        handle_incoming_peer_stream(service, stream, connected_peers).await;
+                    });
+                }
+                Err(err) => {
+                    tracing::warn!("failed to accept peer connection: {err}");
+                }
+            }
+        }
+    });
+
+    Some(port)
+}
+
+/// Starts this daemon's TCP peer discovery (`discovery::tcp`, track G3):
+/// a single UDP socket both listens for other daemons' announces and
+/// periodically broadcasts this one's own presence, feeding every
+/// successfully-parsed announce to two independent consumers —
+/// `DaemonService::note_discovered_peer` (unchanged existing behavior:
+/// surfaces the peer as a pairing candidate) and a redial attempt for
+/// the case where the announcing peer turns out to already be a trusted,
+/// paired device (`DaemonService::dial_if_trusted`) — so a previously
+/// paired device that becomes reachable again (Wi-Fi reconnect, the
+/// other daemon restarting) resumes streaming without any user action.
+async fn spawn_discovery(
+    service: Arc<DaemonService>,
+    connected_peers: ConnectedPeers,
+    channel_port: u16,
+) {
+    let (name, os) = service.local_device_identity().await;
+
+    let discovery = match DiscoveryService::bind(DISCOVERY_PORT, name, os, channel_port).await {
+        Ok(discovery) => discovery,
+        Err(err) => {
+            tracing::warn!("discovery service not started: {err}");
+            return;
+        }
+    };
+    tracing::info!("flow-daemon discovery listening on 0.0.0.0:{DISCOVERY_PORT}");
+
+    tokio::spawn(async move {
+        let mut announce_interval = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = announce_interval.tick() => {
+                    let _ = discovery.announce_to(DiscoveryService::broadcast_destination()).await;
+                }
+                received = discovery.recv_one() => {
+                    match received {
+                        Ok(Some(peer)) => {
+                            handle_discovered_peer(&service, peer, &connected_peers).await;
+                        }
+                        Ok(None) => continue,
+                        Err(err) => {
+                            tracing::warn!("discovery listener stopped: {err}");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// One discovered peer, fed to both consumers described in
+/// [`spawn_discovery`]'s doc comment.
+async fn handle_discovered_peer(
+    service: &Arc<DaemonService>,
+    peer: DiscoveredPeer,
+    connected_peers: &ConnectedPeers,
+) {
+    service.note_discovered_peer(peer.clone()).await;
+
+    let Some((channel, device_id)) = service.dial_if_trusted(peer.address).await else {
+        return;
+    };
+    if !try_claim_peer(connected_peers, &device_id).await {
+        let mut channel = channel;
+        let _ = channel.close().await;
+        return;
+    }
+    run_peer_pipeline(
+        Arc::clone(service),
+        channel,
+        device_id,
+        connected_peers.clone(),
+    )
+    .await;
+}
+
+/// One incoming daemon-to-daemon connection on the peer channel
+/// listener: dispatches via `DaemonService::accept_incoming_peer_channel`
+/// and, for an already-trusted peer, runs the streaming pipeline —
+/// deduplicated against `connected_peers` the same way the outbound
+/// (discovery-driven) path is, since both an inbound and an outbound
+/// connection attempt to the same peer can race in a real deployment.
+async fn handle_incoming_peer_stream(
+    service: Arc<DaemonService>,
+    stream: TcpStream,
+    connected_peers: ConnectedPeers,
+) {
+    let channel: Box<dyn Channel> = match TcpChannel::accept(stream).await {
+        Ok(channel) => Box::new(channel),
+        Err(err) => {
+            tracing::debug!("peer connection failed the WebSocket handshake: {err}");
+            return;
+        }
+    };
+    match service.accept_incoming_peer_channel(channel).await {
+        Ok(IncomingPeerConnection::HandledAsPairing) => {}
+        Ok(IncomingPeerConnection::TrustedPeer(channel, device_id)) => {
+            if try_claim_peer(&connected_peers, &device_id).await {
+                run_peer_pipeline(service, channel, device_id, connected_peers).await;
+            } else {
+                let mut channel = channel;
+                let _ = channel.close().await;
+            }
+        }
+        Err(err) => {
+            tracing::debug!("incoming peer connection rejected: {err}");
+        }
+    }
+}
+
+/// Atomically checks-and-inserts `device_id` into `connected_peers`,
+/// returning whether this caller "won" and should proceed to run the
+/// pipeline. Guards against both directions (an outbound redial racing
+/// an inbound accept for the same paired peer) trying to run two
+/// concurrent connections to one device at once.
+async fn try_claim_peer(connected_peers: &ConnectedPeers, device_id: &DeviceId) -> bool {
+    connected_peers.lock().await.insert(device_id.clone())
+}
+
+/// Runs the real input-streaming pipeline (`pipeline::run_paired_connection`)
+/// over an already-authenticated connection to `device_id`, using a
+/// dedicated real per-OS capture/injector pair for the duration of this
+/// one connection — the same construction `hotkey::runner::spawn` already
+/// uses for its own, separate capture instance, since OS input capture
+/// supports more than one independent listener. Degrades gracefully, not
+/// fatally, when the platform adapter can't start (no capturable device,
+/// missing permission), matching the hotkey runner's own behavior: this
+/// one peer connection's pipeline doesn't start, but the rest of the
+/// daemon (IPC, other peer connections) is unaffected. Always releases
+/// `device_id`'s claim in `connected_peers` on the way out, however this
+/// ends, so a later reconnect isn't wrongly blocked forever.
+async fn run_peer_pipeline(
+    service: Arc<DaemonService>,
+    channel: Box<dyn Channel>,
+    device_id: DeviceId,
+    connected_peers: ConnectedPeers,
+) {
+    tracing::info!("streaming pipeline starting for peer {device_id:?}");
+    let devices_rx = service.watch_devices();
+
+    let (capture_tx, capture_rx) = std::sync::mpsc::channel();
+    let mut capture = DefaultInputCapture::new(capture_tx);
+    if let Err(err) = capture.start() {
+        tracing::warn!(
+            "peer pipeline for {device_id:?} not started: input capture failed: {err:?}"
+        );
+        connected_peers.lock().await.remove(&device_id);
+        return;
+    }
+
+    let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        for event in capture_rx {
+            if bridge_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+
+    // `new_default_input_injector`'s error is `Box<dyn std::error::Error>`
+    // — not `Send` — and this whole function runs inside `tokio::spawn`,
+    // which requires every value live across an `.await` to be `Send`.
+    // Logging and discarding it inside this synchronous closure (never
+    // itself crossing an `.await`) keeps the non-`Send` error out of the
+    // async state machine entirely, rather than trying to keep it alive
+    // only until a `drop()` right before the next `.await`.
+    let injector = new_default_input_injector()
+        .map_err(|err| {
+            tracing::warn!(
+                "peer pipeline for {device_id:?} not started: input injection failed: {err:?}"
+            );
+        })
+        .ok();
+    let Some(injector) = injector else {
+        connected_peers.lock().await.remove(&device_id);
+        return;
+    };
+
+    pipeline::run_paired_connection(channel, bridge_rx, devices_rx, injector).await;
+    drop(capture);
+    tracing::info!("streaming pipeline ended for peer {device_id:?}");
+    connected_peers.lock().await.remove(&device_id);
 }
 
 /// The database file lives under the platform data directory (via the

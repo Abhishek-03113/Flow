@@ -190,6 +190,73 @@ impl HeldInputTracker {
     }
 }
 
+/// The full-duplex counterpart to [`send_while_active`]/[`receive_and_inject`]
+/// for a single already-authenticated connection to a paired peer, where
+/// either side may become the locally-active device at different points
+/// over that connection's lifetime — so this daemon must be able to both
+/// send (while local) and receive-and-inject (while remote) over the
+/// *same* connection, not two separate ones.
+///
+/// `Channel::send`/`::recv` both take `&mut self`, and nothing in this
+/// codebase splits a `Channel` into independent read/write halves (see
+/// `channel::noise::NoiseChannel`'s single shared `TransportState`, used
+/// for both directions — splitting it safely would need real redesign,
+/// not just here). So rather than run `send_while_active` and
+/// `receive_and_inject` concurrently on two tasks sharing one channel,
+/// this single task interleaves both directions itself with
+/// `tokio::select!` — the same technique `send_while_active` already
+/// uses to race its `capture_events`/`devices` inputs against each
+/// other, just extended to a third branch reading off `channel` too.
+pub async fn run_paired_connection<I>(
+    mut channel: Box<dyn Channel>,
+    mut capture_events: mpsc::UnboundedReceiver<InputEvent>,
+    mut devices: watch::Receiver<Vec<Device>>,
+    mut injector: I,
+) where
+    I: InputInjector,
+    I::Error: std::fmt::Debug,
+{
+    let mut send_sequence: u64 = 0;
+    let mut last_received_sequence: Option<u64> = None;
+    let mut held = HeldInputTracker::default();
+
+    loop {
+        tokio::select! {
+            event = capture_events.recv() => {
+                let Some(event) = event else { break; };
+                if is_local_device_active(&devices.borrow_and_update()) {
+                    send_sequence += 1;
+                    if channel.send(ChannelMessage::Input { sequence: send_sequence, event }).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            changed = devices.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+            }
+            received = channel.recv() => {
+                match received {
+                    Ok(ChannelMessage::Input { sequence, event }) => {
+                        if last_received_sequence.is_some_and(|last| sequence <= last) {
+                            continue;
+                        }
+                        last_received_sequence = Some(sequence);
+                        match injector.inject(&event) {
+                            Ok(()) => held.observe(&event),
+                            Err(err) => tracing::warn!("input injection failed: {err:?}"),
+                        }
+                    }
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    held.release_all(&mut injector);
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -669,5 +736,79 @@ mod tests {
                 .map(str::to_string)
                 .collect()
         );
+    }
+
+    #[tokio::test]
+    async fn run_paired_connection_handles_both_directions_over_one_connection() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(vec![local_device(DeviceState::Active)]);
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side, capture_rx, devices_rx, injector,
+        ));
+
+        // Local side is active: a captured event streams out to the peer.
+        let outgoing = a_key_event("A");
+        capture_tx
+            .send(outgoing.clone())
+            .expect("send captured event");
+        let received_by_peer = peer_side.recv().await.expect("recv");
+        assert_eq!(
+            received_by_peer,
+            ChannelMessage::Input {
+                sequence: 1,
+                event: outgoing
+            }
+        );
+
+        // The peer sends something back (as if it just became active
+        // itself) — our side must inject it, over this same connection,
+        // proving both directions share one `run_paired_connection` task
+        // rather than needing two separate channels.
+        let incoming = a_key_event("Z");
+        peer_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: incoming.clone(),
+            })
+            .await
+            .expect("send");
+        let injected = rx.recv().await.expect("injector received the event");
+        assert_eq!(injected, incoming);
+
+        drop(capture_tx);
+        drop(devices_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+    }
+
+    #[tokio::test]
+    async fn run_paired_connection_releases_held_input_when_the_connection_drops() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (_devices_tx, devices_rx) = watch::channel(vec![local_device(DeviceState::Inactive)]);
+        let (_capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side, capture_rx, devices_rx, injector,
+        ));
+
+        peer_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: key_down("A"),
+            })
+            .await
+            .expect("send keydown");
+        assert_eq!(rx.recv().await.expect("keydown injected"), key_down("A"));
+
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        expect_next_is_key_up(&mut rx, "A").await;
     }
 }

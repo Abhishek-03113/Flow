@@ -30,6 +30,18 @@ use crate::identity::DeviceIdentity;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
+use crate::trust::TrustGate;
+
+/// Outcome of [`DaemonService::accept_incoming_peer_channel`]: either the
+/// connection was a pairing attempt from a peer this daemon didn't yet
+/// trust (handled and recorded in place — nothing further for the
+/// caller to do), or it's a live, Noise-authenticated connection to an
+/// already-paired device, handed back so `main.rs` can run the
+/// input-streaming pipeline over it.
+pub enum IncomingPeerConnection {
+    HandledAsPairing,
+    TrustedPeer(Box<dyn Channel>, DeviceId),
+}
 
 /// "This device" — the machine `flow-daemon` itself is running on. Never
 /// removable, never offered as a pairing candidate; matches
@@ -624,7 +636,7 @@ impl DaemonService {
     /// `PairingRequest`. Falls back to a generic name if the local
     /// device record is ever missing, which shouldn't happen in
     /// practice since `load_or_seed` always seeds it.
-    async fn local_device_identity(&self) -> (String, HostOs) {
+    async fn local_device_identity_inner(&self) -> (String, HostOs) {
         let state = self.state.read().await;
         state
             .devices
@@ -660,10 +672,26 @@ impl DaemonService {
     ) -> Result<(), ChannelError> {
         let mut noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+        self.accept_pairing_over(&mut noise_channel, peer_public_key)
+            .await
+    }
 
+    /// The post-handshake half of [`Self::accept_pairing_request`],
+    /// factored out so `main.rs`'s incoming peer-connection dispatcher
+    /// (`accept_incoming_peer_channel`, below) can reuse it: that
+    /// dispatcher has to run the Noise handshake itself *before* it can
+    /// tell a pairing attempt apart from an already-trusted peer's
+    /// reconnect (there's no proven identity to branch on until the
+    /// handshake produces one), so it can't go through
+    /// `accept_pairing_request` without handshaking twice on the same
+    /// connection.
+    async fn accept_pairing_over(
+        &self,
+        channel: &mut dyn Channel,
+        peer_public_key: Vec<u8>,
+    ) -> Result<(), ChannelError> {
         let (request, decision) =
-            handshake::respond_to_pairing(&mut noise_channel, |_request| PairingDecision::Accept)
-                .await?;
+            handshake::respond_to_pairing(channel, |_request| PairingDecision::Accept).await?;
         if decision != PairingDecision::Accept {
             return Ok(());
         }
@@ -689,6 +717,77 @@ impl DaemonService {
             .await;
         self.emit_devices().await;
         Ok(())
+    }
+
+    /// Accepts one incoming daemon-to-daemon connection on the peer
+    /// channel listener (`main.rs`, not yet wired anywhere before this):
+    /// runs the Noise handshake first (there's no peer identity to check
+    /// against the trust store before it completes), then branches on
+    /// whether the resulting proven identity already belongs to a paired
+    /// device. An already-trusted peer is handed back to the caller as a
+    /// live, authenticated [`Channel`] to run the input-streaming
+    /// pipeline over; an untrusted peer is treated as a pairing attempt
+    /// and handled in place via [`Self::accept_pairing_over`] — the same
+    /// "always accept" responder behavior `accept_pairing_request` uses.
+    pub async fn accept_incoming_peer_channel(
+        &self,
+        channel: Box<dyn Channel>,
+    ) -> Result<IncomingPeerConnection, ChannelError> {
+        let noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
+        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+
+        let trust = TrustGate::new(self.storage.clone());
+        if trust.is_trusted(&peer_public_key).await {
+            let device_id = device_id_from_public_key(&peer_public_key);
+            return Ok(IncomingPeerConnection::TrustedPeer(
+                Box::new(noise_channel),
+                device_id,
+            ));
+        }
+
+        let mut noise_channel = noise_channel;
+        self.accept_pairing_over(&mut noise_channel, peer_public_key)
+            .await?;
+        Ok(IncomingPeerConnection::HandledAsPairing)
+    }
+
+    /// The outbound counterpart to [`Self::accept_incoming_peer_channel`]:
+    /// given a live-discovered peer's address, negotiates a `Channel`
+    /// (`G6`) and runs the Noise handshake as initiator to find out who's
+    /// actually there, purely by proven identity — never by the
+    /// self-reported name a discovery announce carries, per this
+    /// codebase's own standing rule that a name is never a safe way to
+    /// pick out a specific device. Returns `Some` only when that identity
+    /// is already a paired device, i.e. this is a reconnect to maintain,
+    /// not a fresh peer to surface through the pairing flow (that path
+    /// stays `note_discovered_peer`'s job, unaffected by this method).
+    pub async fn dial_if_trusted(
+        &self,
+        address: ChannelAddress,
+    ) -> Option<(Box<dyn Channel>, DeviceId)> {
+        let channel = negotiate::connect_best_available(std::slice::from_ref(&address))
+            .await
+            .ok()?;
+        let noise_channel = NoiseChannel::initiate(channel, &self.identity).await.ok()?;
+        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+
+        let trust = TrustGate::new(self.storage.clone());
+        if !trust.is_trusted(&peer_public_key).await {
+            let mut noise_channel = noise_channel;
+            let _ = noise_channel.close().await;
+            return None;
+        }
+        let device_id = device_id_from_public_key(&peer_public_key);
+        let channel: Box<dyn Channel> = Box::new(noise_channel);
+        Some((channel, device_id))
+    }
+
+    /// This device's own name/OS as recorded for [`LOCAL_DEVICE_ID`] —
+    /// exposed for `main.rs`'s discovery-announce loop, which needs to
+    /// advertise this daemon's real name/OS rather than a hardcoded
+    /// placeholder.
+    pub async fn local_device_identity(&self) -> (String, HostOs) {
+        self.local_device_identity_inner().await
     }
 
     /// Moves the pairing session to `Failed` with `message`, unless it
@@ -1350,5 +1449,130 @@ mod tests {
             service.request_permission().await,
             Err(FlowError::PermissionAlreadyGranted)
         );
+    }
+
+    #[tokio::test]
+    async fn accept_incoming_peer_channel_treats_an_untrusted_initiator_as_a_pairing_attempt() {
+        use crate::channel::tcp::TcpChannel;
+        use tokio::net::TcpListener;
+
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+
+        let initiator_identity_storage =
+            Storage::open_in_memory().await.expect("open initiator db");
+        let initiator_identity = DeviceIdentity::load_or_generate(initiator_identity_storage).await;
+        let initiator = tokio::spawn(async move {
+            let tcp = TcpChannel::connect(addr).await.expect("connect");
+            let mut noise = NoiseChannel::initiate(tcp, &initiator_identity)
+                .await
+                .expect("initiator handshake");
+            handshake::request_pairing(
+                &mut noise,
+                PairingRequest {
+                    device_name: "New Laptop".to_string(),
+                    device_os: HostOs::Linux,
+                    address: String::new(),
+                },
+            )
+            .await
+            .expect("decision")
+        });
+
+        let (stream, _peer) = listener.accept().await.expect("accept");
+        let channel: Box<dyn Channel> =
+            Box::new(TcpChannel::accept(stream).await.expect("accept ws"));
+        let outcome = service
+            .accept_incoming_peer_channel(channel)
+            .await
+            .expect("accept incoming");
+        assert!(matches!(outcome, IncomingPeerConnection::HandledAsPairing));
+
+        let decision = initiator.await.expect("initiator task");
+        assert_eq!(decision, PairingDecision::Accept);
+
+        let devices = service.watch_devices().borrow().clone();
+        assert!(devices.iter().any(|d| d.name == "New Laptop"));
+    }
+
+    #[tokio::test]
+    async fn accept_incoming_peer_channel_hands_back_a_live_channel_for_an_already_trusted_peer() {
+        use crate::channel::tcp::TcpChannel;
+        use tokio::net::TcpListener;
+
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage.clone()).await;
+
+        let peer_identity_storage = Storage::open_in_memory().await.expect("open peer db");
+        let peer_identity = DeviceIdentity::load_or_generate(peer_identity_storage).await;
+        let peer_public_key = peer_identity.public_key_bytes().to_vec();
+        DeviceRepo::new(storage.clone())
+            .upsert(DeviceRecord {
+                device: Device {
+                    id: DeviceId("peer".to_string()),
+                    name: "Trusted Peer".to_string(),
+                    os: HostOs::Linux,
+                    state: DeviceState::Inactive,
+                    last_seen: Utc::now(),
+                },
+                public_key: Some(peer_public_key.clone()),
+                removable: true,
+            })
+            .await;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind listener");
+        let addr = listener.local_addr().expect("local addr");
+        let initiator = tokio::spawn(async move {
+            let tcp = TcpChannel::connect(addr).await.expect("connect");
+            NoiseChannel::initiate(tcp, &peer_identity)
+                .await
+                .expect("initiator handshake")
+        });
+
+        let (stream, _peer) = listener.accept().await.expect("accept");
+        let channel: Box<dyn Channel> =
+            Box::new(TcpChannel::accept(stream).await.expect("accept ws"));
+        let outcome = service
+            .accept_incoming_peer_channel(channel)
+            .await
+            .expect("accept incoming");
+        match outcome {
+            IncomingPeerConnection::TrustedPeer(_, device_id) => {
+                assert_eq!(device_id, device_id_from_public_key(&peer_public_key));
+            }
+            IncomingPeerConnection::HandledAsPairing => {
+                panic!("expected a trusted peer, not a pairing attempt")
+            }
+        }
+        initiator.await.expect("initiator task");
+    }
+
+    #[tokio::test]
+    async fn dial_if_trusted_is_none_when_the_peer_at_that_address_is_unpaired() {
+        use crate::channel::tcp::TcpChannel;
+        use tokio::net::TcpListener;
+
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        let responder_identity_storage = Storage::open_in_memory().await.expect("open db");
+        let responder_identity = DeviceIdentity::load_or_generate(responder_identity_storage).await;
+        tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.expect("accept");
+            let tcp = TcpChannel::accept(stream).await.expect("accept ws");
+            let _ = NoiseChannel::accept(tcp, &responder_identity).await;
+        });
+
+        let result = service.dial_if_trusted(ChannelAddress::Tcp(addr)).await;
+        assert!(result.is_none());
     }
 }
