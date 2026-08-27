@@ -38,6 +38,9 @@ pub enum FlowError {
 
     #[error("permission already granted")]
     PermissionAlreadyGranted,
+
+    #[error("link state is {0:?}, not disconnected or error — nothing to retry")]
+    LinkNotRecoverable(crate::link::DaemonLinkState),
 }
 
 impl FlowError {
@@ -54,6 +57,7 @@ impl FlowError {
             FlowError::CandidateNotFound(_) => "candidate_not_found",
             FlowError::InvalidSwitchKey => "invalid_switch_key",
             FlowError::PermissionAlreadyGranted => "permission_already_granted",
+            FlowError::LinkNotRecoverable(_) => "link_not_recoverable",
         }
     }
 }
@@ -88,6 +92,10 @@ mod tests {
         assert_eq!(
             FlowError::PermissionAlreadyGranted.code(),
             "permission_already_granted"
+        );
+        assert_eq!(
+            FlowError::LinkNotRecoverable(crate::link::DaemonLinkState::Connected).code(),
+            "link_not_recoverable"
         );
     }
 }

@@ -64,4 +64,13 @@ abstract class DaemonRepository {
   /// Triggers the OS permission prompt. Requires the current
   /// [PermissionStatus.granted] to be `false`.
   Future<void> requestPermission();
+
+  /// Reissues a connection attempt after the link has been given up on —
+  /// `docs/contracts/daemon-ipc.md`'s `disconnected --(user retries)-->
+  /// connecting` and `error --(user retries)--> connecting` transitions.
+  /// Requires the current [DaemonLinkState] to be [DaemonLinkState.disconnected]
+  /// or [DaemonLinkState.error]. Only moves the state to `connecting`, not
+  /// straight to `connected` — actual recovery still shows up on
+  /// [watchLinkState] once (if) it happens, same as any other command.
+  Future<void> retryConnection();
 }

@@ -4,7 +4,7 @@
 //! (`docs/contracts/README.md` ground rule 2: "MockDaemonRepository must
 //! implement the interface exactly, including timing behavior").
 //!
-//! Case-for-case cross-reference (13 cases in both files) — if a case is
+//! Case-for-case cross-reference (15 cases in both files) — if a case is
 //! added/renamed on one side, update the other:
 //!
 //! | Dart test name                                                              | Rust test name |
@@ -22,6 +22,8 @@
 //! | setSwitchKey updates settings                                              | `set_switch_key_updates_settings` |
 //! | resetSettings restores defaults after a change                             | `reset_settings_restores_defaults_after_a_change` |
 //! | requestPermission grants and then rejects a second request                 | `request_permission_grants_and_then_rejects_a_second_request` |
+//! | retryConnection rejects when the link is not disconnected or error         | `retry_connection_rejects_when_the_link_is_not_disconnected_or_error` |
+//! | retryConnection moves a disconnected link through connecting to connected  | `retry_connection_moves_a_disconnected_link_to_connecting` (no Rust equivalent to the mock's auto "connecting -> connected" timer — real recovery is discovery-driven, not this command's own job; see `retry_connection`'s doc comment) |
 
 use flow_core::device::DeviceState;
 use flow_core::error::FlowError;
@@ -221,5 +223,29 @@ async fn request_permission_grants_and_then_rejects_a_second_request() {
     assert_eq!(
         service.request_permission().await,
         Err(FlowError::PermissionAlreadyGranted)
+    );
+}
+
+#[tokio::test]
+async fn retry_connection_rejects_when_the_link_is_not_disconnected_or_error() {
+    let service = service().await;
+    assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Connected);
+
+    assert_eq!(
+        service.retry_connection().await,
+        Err(FlowError::LinkNotRecoverable(DaemonLinkState::Connected))
+    );
+}
+
+#[tokio::test]
+async fn retry_connection_moves_a_disconnected_link_to_connecting() {
+    let service = service().await;
+    service.set_link_state(DaemonLinkState::Disconnected);
+
+    service.retry_connection().await.expect("retry accepted");
+
+    assert_eq!(
+        *service.watch_link_state().borrow(),
+        DaemonLinkState::Connecting
     );
 }

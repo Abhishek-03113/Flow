@@ -122,6 +122,33 @@ void main() {
     });
   }
 
+  testWidgets(
+    'tapping Retry while disconnected asks the daemon to retry, not a fake toast',
+    (tester) async {
+      repo.debugSetLinkState(DaemonLinkState.disconnected);
+      await tester.pumpWidget(host());
+      await tester.pump();
+
+      expect(find.text('Retry'), findsOneWidget);
+      await tester.tap(find.text('Retry'));
+      await tester.pump();
+
+      // No fake "Reconnected" toast — retryConnection actually asks the
+      // daemon, and success only shows up once watchLinkState reports it.
+      expect(find.text('Reconnected'), findsNothing);
+      expect(
+        container.read(linkStateProvider).valueOrNull,
+        DaemonLinkState.connecting,
+      );
+
+      await tester.pump(const Duration(milliseconds: 950));
+      expect(
+        container.read(linkStateProvider).valueOrNull,
+        DaemonLinkState.connected,
+      );
+    },
+  );
+
   testWidgets('pairing flow renders all four stages', (tester) async {
     await tester.pumpWidget(host());
     await tester.pump();

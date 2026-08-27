@@ -1,8 +1,10 @@
 //! `IpcRequest -> DaemonService` call, matching `req.command` against the
-//! 9 known commands from `sharedContractConstants.commands`
-//! (`daemon/todos.json` task C2). The single place a raw request string
-//! is matched against a command name and a JSON payload is deserialized
-//! into a concrete argument type.
+//! 9 original commands from `sharedContractConstants.commands`
+//! (`daemon/todos.json` task C2) plus `retry_connection` (added once a
+//! real daemon-to-daemon link could actually be `Disconnected`/`Error`,
+//! see `docs/contracts/CHANGELOG.md`). The single place a raw request
+//! string is matched against a command name and a JSON payload is
+//! deserialized into a concrete argument type.
 
 use flow_core::ipc::{ErrorPayload, IpcRequest, IpcResponse};
 use flow_core::settings::SettingsPatch;
@@ -77,6 +79,10 @@ async fn handle(
         "reset_settings" => service.reset_settings().await.map_err(ErrorPayload::from),
         "request_permission" => service
             .request_permission()
+            .await
+            .map_err(ErrorPayload::from),
+        "retry_connection" => service
+            .retry_connection()
             .await
             .map_err(ErrorPayload::from),
         other => Err(unknown_command(other)),
@@ -199,6 +205,49 @@ mod tests {
             IpcResponse::Err { ok, error, .. } => {
                 assert!(!ok);
                 assert_eq!(error.code, "invalid_payload");
+            }
+            other => panic!("expected Err, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_connection_round_trips_through_dispatch() {
+        use flow_core::link::DaemonLinkState;
+
+        let service = service().await;
+        service.set_link_state(DaemonLinkState::Disconnected);
+        let req = IpcRequest {
+            id: "req-6".to_string(),
+            command: "retry_connection".to_string(),
+            payload: Value::Null,
+        };
+        let response = dispatch(&service, req).await;
+        assert_eq!(
+            response,
+            IpcResponse::Ack {
+                id: "req-6".to_string(),
+                ok: true
+            }
+        );
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Connecting
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_connection_while_already_connected_is_rejected() {
+        let service = service().await;
+        let req = IpcRequest {
+            id: "req-7".to_string(),
+            command: "retry_connection".to_string(),
+            payload: Value::Null,
+        };
+        let response = dispatch(&service, req).await;
+        match response {
+            IpcResponse::Err { ok, error, .. } => {
+                assert!(!ok);
+                assert_eq!(error.code, "link_not_recoverable");
             }
             other => panic!("expected Err, got {other:?}"),
         }
