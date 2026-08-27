@@ -81,12 +81,19 @@ class _RealApp extends ConsumerStatefulWidget {
 
 class _RealAppState extends ConsumerState<_RealApp>
     with WindowListener, TrayListener {
+  /// Guards [_setUpTray] so it only ever runs once — it's called both from
+  /// [build] (in case onboarding was already complete when the app
+  /// launched) and from the [onboardingCompleteProvider] listener (once it
+  /// flips to complete), and re-docking the same tray icon twice is wasted
+  /// work at best.
+  bool _trayReady = false;
+
   @override
   void initState() {
     super.initState();
     windowManager.addListener(this);
     trayManager.addListener(this);
-    unawaited(_initWindowAndTray());
+    unawaited(_initWindow());
   }
 
   @override
@@ -98,15 +105,28 @@ class _RealAppState extends ConsumerState<_RealApp>
 
   /// Swallows any failure from these platform-channel calls rather than
   /// letting one propagate out of `initState` — there's no native
-  /// `window_manager`/`tray_manager` implementation to talk to under
-  /// `flutter test` (no docked tray icon there is expected, not a bug),
-  /// and on a real desktop a tray/window setup failure shouldn't take
-  /// the rest of the app down with it, the same "degrade gracefully, not
-  /// fatally" contract the daemon's own hotkey runner already uses for a
-  /// missing capture device.
-  Future<void> _initWindowAndTray() async {
+  /// `window_manager` implementation to talk to under `flutter test`, and
+  /// on a real desktop a window setup failure shouldn't take the rest of
+  /// the app down with it, the same "degrade gracefully, not fatally"
+  /// contract the daemon's own hotkey runner already uses for a missing
+  /// capture device.
+  Future<void> _initWindow() async {
     try {
       await windowManager.setPreventClose(true);
+    } catch (_) {
+      // No window plugin available in this environment.
+    }
+  }
+
+  /// Docks the tray/menu-bar icon. Deliberately *not* called until
+  /// onboarding has completed at least once: a tray icon the user can
+  /// click into a half-set-up app (no permission granted, nothing paired
+  /// yet) is more confusing than reassuring, and every tray action below
+  /// assumes a real window and daemon state already exist to act on.
+  Future<void> _setUpTray() async {
+    if (_trayReady) return;
+    _trayReady = true;
+    try {
       await trayManager.setIcon(
         Platform.isWindows ? 'assets/tray_icon.ico' : 'assets/tray_icon.png',
       );
@@ -129,7 +149,8 @@ class _RealAppState extends ConsumerState<_RealApp>
         ),
       );
     } catch (_) {
-      // No tray/window plugin available in this environment.
+      // No tray plugin available in this environment.
+      _trayReady = false;
     }
   }
 
@@ -159,6 +180,11 @@ class _RealAppState extends ConsumerState<_RealApp>
 
   @override
   void onTrayIconMouseDown() {
+    // A stray event from a tray icon that's already been torn down (or,
+    // defensively, one that somehow fires before `_setUpTray` ever ran)
+    // should never reach into `window_manager` — this is the guard that
+    // keeps a tray click from crashing the app during/around onboarding.
+    if (!_trayReady) return;
     unawaited(_toggleWindow());
   }
 
@@ -172,6 +198,7 @@ class _RealAppState extends ConsumerState<_RealApp>
 
   @override
   void onTrayIconRightMouseDown() {
+    if (!_trayReady) return;
     unawaited(trayManager.popUpContextMenu());
   }
 
@@ -179,26 +206,45 @@ class _RealAppState extends ConsumerState<_RealApp>
   Widget build(BuildContext context) {
     final platform = currentHostOs();
     final onboardingComplete = ref.watch(onboardingCompleteProvider);
+    final c = FlowColors.of(context);
+
+    // Dock the tray icon the moment onboarding is (or already was, on a
+    // returning launch) complete — never before, so there's nothing in
+    // the menu bar/system tray for the user to click into while setup is
+    // still in progress (see `_setUpTray`'s own doc comment).
+    if (onboardingComplete.valueOrNull == true) {
+      unawaited(_setUpTray());
+    }
 
     Widget onboarding() => OnboardingFlow(
       platform: platform,
+      standalone: true,
       onDone: () {
         unawaited(_completeOnboarding());
       },
     );
 
+    final content = onboardingComplete.when(
+      loading: () => const SizedBox.shrink(),
+      // Can't tell whether onboarding has run before (no local
+      // preferences plugin available) — fail safe by showing it
+      // again rather than risking dropping straight into the
+      // dashboard for someone who never onboarded at all.
+      error: (_, _) => onboarding(),
+      data: (complete) =>
+          complete ? AppWindowShell(platform: platform) : onboarding(),
+    );
+
+    // The onboarding/dashboard content already carries its own glass
+    // panels; behind them this real OS window wants a soft, unmistakably
+    // "desktop-ish" backdrop rather than a flat near-black rectangle —
+    // reusing the same wallpaper gradient the dev harness paints behind
+    // its mock desktop, since that's exactly the surface a floating panel
+    // is designed to sit on.
     return Scaffold(
-      body: Center(
-        child: onboardingComplete.when(
-          loading: () => const SizedBox.shrink(),
-          // Can't tell whether onboarding has run before (no local
-          // preferences plugin available) — fail safe by showing it
-          // again rather than risking dropping straight into the
-          // dashboard for someone who never onboarded at all.
-          error: (_, _) => onboarding(),
-          data: (complete) =>
-              complete ? AppWindowShell(platform: platform) : onboarding(),
-        ),
+      body: Container(
+        decoration: BoxDecoration(gradient: c.wallpaper),
+        child: Center(child: content),
       ),
     );
   }
