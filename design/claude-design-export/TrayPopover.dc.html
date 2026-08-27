@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<style>
+@keyframes cd-pop { from { opacity: 0; transform: scale(0.96) translateY(-6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes cd-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes cd-spin { to { transform: rotate(360deg); } }
+@keyframes cd-breathe { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</helmet>
+<div style="{{ st.popover }}">
+  <sc-if value="{{ isMain }}" hint-placeholder-val="{{ true }}">
+    <div style="{{ st.header }}">
+      <div style="{{ st.appGlyph }}"></div>
+      <div style="{{ st.headerText }}">
+        <div style="{{ st.appName }}">Cross Device</div>
+        <div style="{{ st.statusText }}">{{ statusLabel }}</div>
+      </div>
+      <div style="{{ st.statusDot }}"></div>
+    </div>
+
+    <sc-if value="{{ hasBanner }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.banner }}">
+        <div style="{{ st.bannerText }}">{{ bannerText }}</div>
+        <div style="{{ st.bannerBtn }}" onClick="{{ onRecover }}">{{ bannerAction }}</div>
+      </div>
+    </sc-if>
+
+    <div style="{{ st.sectionLabel }}">Using</div>
+    <div style="{{ st.activeCard }}">
+      <div style="{{ st.activeDot }}"></div>
+      <div style="{{ st.cardText }}">
+        <div style="{{ st.activeName }}">{{ activeName }}</div>
+        <div style="{{ st.activeMeta }}">{{ activeMeta }}</div>
+      </div>
+      <div style="{{ st.keyHint }}">{{ switchKey }}</div>
+    </div>
+
+    <div style="{{ st.sectionLabel }}">Devices</div>
+    <sc-for list="{{ others }}" as="d" hint-placeholder-count="2">
+      <div style="{{ d.rowStyle }}" onClick="{{ d.onSwitch }}">
+        <div style="{{ d.dotStyle }}"></div>
+        <div style="{{ st.cardText }}">
+          <div style="{{ d.nameStyle }}">{{ d.name }}</div>
+          <div style="{{ st.rowMeta }}">{{ d.stateText }}</div>
+        </div>
+        <div style="{{ st.arrow }}">{{ d.arrow }}</div>
+      </div>
+    </sc-for>
+
+    <div style="{{ st.menuRow }}" onClick="{{ onStartPairing }}">
+      <div style="{{ st.plus }}">+</div>
+      <div style="{{ st.menuLabel }}">Pair New Device</div>
+    </div>
+
+    <div style="{{ st.divider }}"></div>
+    <div style="{{ st.menuRow }}" onClick="{{ onOpenDashboard }}">
+      <div style="{{ st.menuLabel }}">Dashboard</div>
+      <div style="{{ st.chev }}">&#8599;</div>
+    </div>
+    <div style="{{ st.menuRow }}" onClick="{{ onOpenSettings }}">
+      <div style="{{ st.menuLabel }}">Settings</div>
+      <div style="{{ st.chev }}">&#8599;</div>
+    </div>
+    <div style="{{ st.menuRow }}">
+      <div style="{{ st.menuLabelMuted }}">Quit Cross Device</div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isPairing }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ st.header }}">
+      <div style="{{ st.backBtn }}" onClick="{{ onCancelPairing }}">&#8249;</div>
+      <div style="{{ st.appName }}">Pair New Device</div>
+    </div>
+    <sc-if value="{{ isSearching }}" hint-placeholder-val="{{ true }}">
+      <div style="{{ st.center }}">
+        <div style="{{ st.spinner }}"></div>
+        <div style="{{ st.centerTitle }}">Searching for devices&#8230;</div>
+        <div style="{{ st.centerHint }}">Keep Cross Device open on your other computer.</div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ isFound }}" hint-placeholder-val="{{ false }}">
+      <sc-for list="{{ candidates }}" as="cd" hint-placeholder-count="2">
+        <div style="{{ st.candidateRow }}">
+          <div style="{{ st.idleDot }}"></div>
+          <div style="{{ st.cardText }}">
+            <div style="{{ st.rowName }}">{{ cd.name }}</div>
+            <div style="{{ st.rowMeta }}">Nearby</div>
+          </div>
+          <div style="{{ st.pairBtn }}" onClick="{{ cd.onPair }}">Pair</div>
+        </div>
+      </sc-for>
+      <div style="{{ st.footHint }}">Only devices signed in as you appear here.</div>
+    </sc-if>
+    <sc-if value="{{ isRequesting }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.center }}">
+        <div style="{{ st.spinner }}"></div>
+        <div style="{{ st.centerTitle }}">Waiting for approval&#8230;</div>
+        <div style="{{ st.centerHint }}">Approve the request on {{ pairTarget }}.</div>
+      </div>
+    </sc-if>
+    <sc-if value="{{ isPaired }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.center }}">
+        <div style="{{ st.successGlyph }}">&#10003;</div>
+        <div style="{{ st.centerTitle }}">{{ pairTarget }} connected</div>
+        <div style="{{ st.centerHint }}">Press {{ switchKey }} to switch to it.</div>
+      </div>
+    </sc-if>
+  </sc-if>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:360,&quot;height&quot;:520},&quot;platform&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;macos&quot;,&quot;options&quot;:[&quot;macos&quot;,&quot;windows&quot;,&quot;linux&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;dark&quot;,&quot;options&quot;:[&quot;dark&quot;,&quot;light&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;connState&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;default&quot;:&quot;connected&quot;,&quot;options&quot;:[&quot;connected&quot;,&quot;connecting&quot;,&quot;reconnecting&quot;,&quot;disconnected&quot;,&quot;error&quot;,&quot;permission&quot;],&quot;tsType&quot;:&quot;string&quot;},&quot;switchKey&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;Scroll Lock&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+const FONT = '-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable","Segoe UI",Roboto,"Helvetica Neue",sans-serif';
+const EASE = 'all 180ms cubic-bezier(0.32,0.72,0,1)';
+
+const STATE_META = {
+  connected: { label: 'Connected', dot: '#30d158', banner: null, action: null },
+  connecting: { label: 'Connecting\u2026', dot: '#ff9f0a', banner: null, action: null },
+  reconnecting: { label: 'Reconnecting\u2026', dot: '#ff9f0a', banner: 'Work Laptop dropped out. Trying again.', action: 'Cancel' },
+  disconnected: { label: 'Disconnected', dot: '#8e8e93', banner: 'Work Laptop is unavailable.', action: 'Retry' },
+  error: { label: 'Connection lost', dot: '#ff453a', banner: 'Input sharing paused until Work Laptop is back.', action: 'Retry' },
+  permission: { label: 'Needs permission', dot: '#ff453a', banner: 'Allow input access to share your keyboard.', action: 'Allow' },
+};
+
+class Component extends DCLogic {
+  state = {
+    devices: [
+      { id: 'd1', name: 'MacBook', os: 'macOS', status: 'active' },
+      { id: 'd2', name: 'Work Laptop', os: 'Windows', status: 'inactive' },
+      { id: 'd3', name: 'Desktop', os: 'Linux', status: 'disconnected' },
+    ],
+    popView: 'main', pairStep: 'searching', pairTarget: 'Office Mac Mini', switching: null, localState: null,
+  };
+  _timers = [];
+  later(fn, ms) { this._timers.push(setTimeout(fn, ms)); }
+  componentWillUnmount() { this._timers.forEach(clearTimeout); }
+
+  switchTo(id) {
+    if (this.state.switching) return;
+    this.setState({ switching: id });
+    this.later(() => this.setState((s) => ({
+      switching: null,
+      devices: s.devices.map((d) => ({ ...d, status: d.id === id ? 'active' : (d.status === 'active' ? 'inactive' : d.status) })),
+    })), 400);
+  }
+  startPairing() {
+    this.setState({ popView: 'pairing', pairStep: 'searching' });
+    this.later(() => { if (this.state.popView === 'pairing') this.setState({ pairStep: 'found' }); }, 1200);
+  }
+  pairWith(name) {
+    this.setState({ pairStep: 'requesting', pairTarget: name });
+    this.later(() => {
+      this.setState((s) => ({
+        pairStep: 'paired',
+        devices: s.devices.some((d) => d.name === name) ? s.devices : [...s.devices, { id: 'p' + Date.now(), name, os: 'macOS', status: 'inactive' }],
+      }));
+      this.later(() => this.setState({ popView: 'main' }), 1600);
+    }, 1500);
+  }
+
+  tokens() {
+    const dark = (this.props.theme || 'dark') === 'dark';
+    if (dark) return {
+      glass: 'rgba(28,28,32,0.68)', border: 'rgba(255,255,255,0.14)', hi: 'inset 0 1px 0 rgba(255,255,255,0.09)',
+      mat1: 'rgba(255,255,255,0.055)', mat2: 'rgba(255,255,255,0.1)', mat3: 'rgba(255,255,255,0.14)',
+      t1: 'rgba(255,255,255,0.94)', t2: 'rgba(255,255,255,0.56)', t3: 'rgba(255,255,255,0.36)',
+      accent: 'oklch(0.66 0.16 250)', accentSoft: 'rgba(110,140,255,0.16)', accentText: '#fff',
+      hairline: 'rgba(255,255,255,0.09)', shadow: '0 24px 64px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)',
+    };
+    return {
+      glass: 'rgba(252,252,254,0.74)', border: 'rgba(0,0,0,0.08)', hi: 'inset 0 1px 0 rgba(255,255,255,0.7)',
+      mat1: 'rgba(10,12,20,0.045)', mat2: 'rgba(10,12,20,0.075)', mat3: 'rgba(10,12,20,0.1)',
+      t1: 'rgba(0,0,0,0.88)', t2: 'rgba(0,0,0,0.5)', t3: 'rgba(0,0,0,0.34)',
+      accent: 'oklch(0.55 0.18 250)', accentSoft: 'oklch(0.94 0.03 250)', accentText: '#fff',
+      hairline: 'rgba(0,0,0,0.08)', shadow: '0 24px 60px rgba(20,24,40,0.2), 0 2px 6px rgba(20,24,40,0.1)',
+    };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const p = this.props || {};
+    const c = this.tokens();
+    const platform = p.platform || 'macos';
+    const radius = platform === 'macos' ? 16 : (platform === 'windows' ? 10 : 12);
+    const connState = p.connState || 'connected';
+    const meta = STATE_META[connState] || STATE_META.connected;
+    const switchKey = p.switchKey || 'Scroll Lock';
+
+    const dot = (color, ring, anim) => ({
+      width: '9px', height: '9px', borderRadius: '50%', flexShrink: 0,
+      background: ring ? 'transparent' : color, border: ring ? '1.5px solid ' + color : 'none',
+      boxShadow: ring ? 'none' : '0 0 8px ' + color + '66',
+      animation: anim ? 'cd-breathe 1.4s ease-in-out infinite' : 'none', transition: EASE,
+    });
+    const rowBase = { display: 'flex', alignItems: 'center', gap: '11px', padding: '9px 12px', borderRadius: '10px', cursor: 'pointer', transition: EASE, margin: '0 8px 3px' };
+    const btn = { padding: '5px 11px', borderRadius: '7px', fontSize: '12px', fontWeight: 590, cursor: 'pointer', transition: EASE, whiteSpace: 'nowrap' };
+
+    const devices = s.devices;
+    const active = devices.find((d) => d.status === 'active') || devices[0];
+    const others = devices.filter((d) => d.id !== active.id).map((d) => {
+      const isSwitching = s.switching === d.id;
+      const stateText = isSwitching ? 'Switching\u2026' : (d.status === 'inactive' ? (connState === 'connecting' ? 'Connecting\u2026' : 'Connected') : 'Disconnected');
+      const dotStyle = isSwitching ? dot('#ff9f0a', false, true)
+        : (d.status === 'inactive' ? dot(connState === 'connecting' ? '#ff9f0a' : '#0a84ff', true, connState === 'connecting') : dot(c.t3, true, false));
+      return {
+        ...d, stateText, dotStyle,
+        nameStyle: { fontSize: '13px', fontWeight: 590, color: d.status === 'disconnected' ? c.t2 : c.t1 },
+        rowStyle: { ...rowBase, background: isSwitching ? c.mat2 : c.mat1 },
+        arrow: d.status === 'disconnected' ? '' : '\u2192',
+        onSwitch: () => this.switchTo(d.id),
+      };
+    });
+
+    const candidates = [{ name: 'Office Mac Mini' }, { name: 'Studio Linux' }]
+      .filter((x) => !devices.some((d) => d.name === x.name))
+      .map((x) => ({ ...x, onPair: () => this.pairWith(x.name) }));
+
+    return {
+      isMain: s.popView === 'main', isPairing: s.popView === 'pairing',
+      isSearching: s.pairStep === 'searching', isFound: s.pairStep === 'found',
+      isRequesting: s.pairStep === 'requesting', isPaired: s.pairStep === 'paired',
+      statusLabel: meta.label, hasBanner: !!meta.banner, bannerText: meta.banner, bannerAction: meta.action,
+      activeName: active.name, activeMeta: 'Active \u00b7 ' + active.os, switchKey, others, candidates,
+      pairTarget: s.pairTarget,
+      onStartPairing: () => this.startPairing(),
+      onCancelPairing: () => this.setState({ popView: 'main' }),
+      onRecover: p.onRecover || (() => {}),
+      onOpenDashboard: p.onOpenDashboard || (() => {}),
+      onOpenSettings: p.onOpenSettings || (() => {}),
+      st: {
+        popover: { width: '312px', paddingBottom: '9px', background: c.glass, backdropFilter: 'blur(44px) saturate(180%)', WebkitBackdropFilter: 'blur(44px) saturate(180%)', border: '1px solid ' + c.border, borderRadius: radius + 'px', boxShadow: c.shadow + ', ' + c.hi, overflow: 'hidden', fontFamily: FONT, letterSpacing: '-0.005em', animation: 'cd-pop 220ms cubic-bezier(0.32,0.72,0,1)' },
+        header: { display: 'flex', alignItems: 'center', gap: '10px', padding: '13px 14px 11px' },
+        headerText: { display: 'flex', flexDirection: 'column', gap: '1px', flex: 1, minWidth: 0 },
+        appGlyph: { width: '26px', height: '26px', borderRadius: '8px', background: c.accent, boxShadow: '0 2px 6px rgba(0,0,0,0.25)', flexShrink: 0 },
+        appName: { fontSize: '13.5px', fontWeight: 640, color: c.t1 },
+        statusText: { fontSize: '11.5px', color: c.t2 },
+        statusDot: dot(meta.dot, false, connState === 'connecting' || connState === 'reconnecting'),
+        banner: { margin: '0 12px 10px', padding: '10px 12px', borderRadius: '11px', background: c.mat1, display: 'flex', alignItems: 'center', gap: '10px' },
+        bannerText: { fontSize: '11.5px', color: c.t2, lineHeight: 1.35, flex: 1 },
+        bannerBtn: { ...btn, background: c.mat2, color: c.t1 },
+        sectionLabel: { padding: '4px 20px 6px', fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: c.t3 },
+        activeCard: { ...rowBase, cursor: 'default', background: c.accentSoft, border: '1px solid ' + c.border, padding: '11px 12px', marginBottom: '8px' },
+        activeDot: dot('#30d158', false, false),
+        cardText: { display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 },
+        activeName: { fontSize: '14px', fontWeight: 640, color: c.t1 },
+        activeMeta: { fontSize: '11.5px', color: c.t2 },
+        keyHint: { fontSize: '10.5px', fontWeight: 640, color: c.t2, padding: '3px 7px', borderRadius: '6px', background: c.mat2, whiteSpace: 'nowrap' },
+        rowName: { fontSize: '13px', fontWeight: 590, color: c.t1 },
+        rowMeta: { fontSize: '11.5px', color: c.t2 },
+        arrow: { fontSize: '13px', color: c.t3 },
+        menuRow: { ...rowBase, background: 'transparent', padding: '8px 12px' },
+        menuLabel: { fontSize: '13px', fontWeight: 500, color: c.t1, flex: 1 },
+        menuLabelMuted: { fontSize: '13px', fontWeight: 500, color: c.t2, flex: 1 },
+        plus: { fontSize: '14px', fontWeight: 600, color: c.accent, width: '9px', textAlign: 'center' },
+        chev: { fontSize: '11px', color: c.t3 },
+        divider: { height: '1px', background: c.hairline, margin: '7px 12px' },
+        backBtn: { width: '22px', height: '22px', borderRadius: '7px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '15px', color: c.t2, cursor: 'pointer', background: c.mat1 },
+        center: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '9px', padding: '20px 24px 26px', textAlign: 'center', animation: 'cd-fade 220ms ease' },
+        centerTitle: { fontSize: '13.5px', fontWeight: 590, color: c.t1 },
+        centerHint: { fontSize: '11.5px', color: c.t2, lineHeight: 1.4 },
+        spinner: { width: '20px', height: '20px', borderRadius: '50%', border: '2px solid ' + c.mat2, borderTopColor: c.accent, animation: 'cd-spin 0.8s linear infinite' },
+        candidateRow: { ...rowBase, cursor: 'default', background: c.mat1, animation: 'cd-fade 200ms ease' },
+        idleDot: dot(c.t2, true, false),
+        pairBtn: { ...btn, background: c.accent, color: c.accentText },
+        footHint: { fontSize: '11px', color: c.t3, padding: '4px 20px 6px', lineHeight: 1.4 },
+        successGlyph: { width: '34px', height: '34px', borderRadius: '50%', background: '#30d158', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '16px' },
+      },
+    };
+  }
+}
+
+</script>
+</body>
+</html>

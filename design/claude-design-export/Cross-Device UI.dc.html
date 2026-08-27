@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<style>
+@keyframes cd-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes cd-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@keyframes cd-toast-in { from { opacity: 0; transform: translate(-50%,-8px); } to { opacity: 1; transform: translate(-50%,0); } }
+</style>
+</helmet>
+<div style="{{ st.root }}">
+  <div style="{{ st.toolbar }}">
+    <div style="{{ st.brandRow }}">
+      <div style="{{ st.brandMark }}"></div>
+      <div style="{{ st.brandText }}">Cross Device</div>
+    </div>
+    <div style="{{ st.navRow }}">
+      <sc-for list="{{ navItems }}" as="item" hint-placeholder-count="7">
+        <div style="{{ item.style }}" onClick="{{ item.onClick }}">{{ item.label }}</div>
+      </sc-for>
+    </div>
+    <div style="{{ st.rightRow }}">
+      <div style="{{ st.segment }}">
+        <sc-for list="{{ platformOptions }}" as="opt" hint-placeholder-count="3">
+          <div style="{{ opt.style }}" onClick="{{ opt.onClick }}">{{ opt.label }}</div>
+        </sc-for>
+      </div>
+      <div style="{{ st.segment }}">
+        <sc-for list="{{ themeOptions }}" as="opt" hint-placeholder-count="2">
+          <div style="{{ opt.style }}" onClick="{{ opt.onClick }}">{{ opt.label }}</div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <div style="{{ st.desktop }}">
+    <div style="{{ st.wallpaper }}"></div>
+    <div style="{{ st.bar }}">
+      <div style="{{ st.barLeft }}">
+        <sc-if value="{{ isGnome }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ st.barActivities }}">Activities</div>
+        </sc-if>
+        <sc-if value="{{ isWin }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ st.winStart }}"></div>
+        </sc-if>
+        <sc-if value="{{ isMac }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ st.macApple }}">&#9673;</div>
+        </sc-if>
+      </div>
+      <sc-if value="{{ showBarClock }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ st.barClock }}">{{ clockText }}</div>
+      </sc-if>
+      <div style="{{ st.barRight }}">
+        <sc-for list="{{ barIcons }}" as="ic" hint-placeholder-count="3">
+          <div style="{{ st.barIcon }}"></div>
+        </sc-for>
+        <div style="{{ st.trayIconWrap }}" onClick="{{ toggleTray }}">
+          <div style="{{ st.trayIcon }}"></div>
+        </div>
+        <sc-if value="{{ !showBarClock }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ st.barClockInline }}">{{ clockText }}</div>
+        </sc-if>
+      </div>
+    </div>
+
+    <sc-if value="{{ toast }}" hint-placeholder-val="{{ null }}">
+      <div style="{{ st.toast }}">{{ toast }}</div>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'tray' }}" hint-placeholder-val="{{ true }}">
+      <sc-if value="{{ trayOpen }}" hint-placeholder-val="{{ true }}">
+        <div style="{{ st.popoverAnchor }}">
+          <div style="{{ st.popover }}">
+            <div style="{{ st.popHeader }}">
+              <div style="{{ st.popHeaderRow }}">
+                <span style="{{ activeDot }}"></span>
+                <span style="{{ st.popStatusText }}">Connected</span>
+              </div>
+              <div style="{{ st.popActiveText }}">Active on {{ activeDevice.name }}</div>
+            </div>
+            <div style="{{ st.divider }}"></div>
+            <div style="{{ st.popRowActive }}">
+              <div style="{{ activeDevice.avatarStyle }}">{{ activeDevice.initial }}</div>
+              <div style="{{ st.popRowText }}">
+                <div style="{{ st.popRowName }}">{{ activeDevice.name }}</div>
+                <div style="{{ st.popRowSub }}">This device</div>
+              </div>
+              <span style="{{ st.dotGreenSmall }}"></span>
+            </div>
+            <sc-for list="{{ otherDevices }}" as="d" hint-placeholder-count="2">
+              <div style="{{ st.popRow }}" onClick="{{ d.onSwitch }}">
+                <div style="{{ d.avatarStyle }}">{{ d.initial }}</div>
+                <div style="{{ st.popRowText }}">
+                  <div style="{{ st.popRowName }}">{{ d.name }}</div>
+                  <div style="{{ st.popRowSub }}">{{ d.statusLabel }}</div>
+                </div>
+                <div style="{{ st.switchLink }}">Switch &#8250;</div>
+              </div>
+            </sc-for>
+            <div style="{{ st.divider }}"></div>
+            <div style="{{ st.popRow }}" onClick="{{ goSwitchKey }}">
+              <div style="{{ st.popRowText }}">
+                <div style="{{ st.popMenuLabel }}">Switch key</div>
+              </div>
+              <div style="{{ st.switchKeyValue }}">{{ switchKey }}</div>
+            </div>
+            <div style="{{ st.popRow }}" onClick="{{ goPairing }}">
+              <div style="{{ st.popMenuLabel }}">Pair new device&#8230;</div>
+            </div>
+            <div style="{{ st.popRow }}" onClick="{{ goSettings }}">
+              <div style="{{ st.popMenuLabel }}">Settings&#8230;</div>
+            </div>
+            <div style="{{ st.divider }}"></div>
+            <div style="{{ st.popRowQuit }}">
+              <div style="{{ st.popMenuLabel }}">Quit</div>
+              <div style="{{ st.popShortcutHint }}">{{ quitHint }}</div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'states' }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.chipsRow }}">
+        <sc-for list="{{ errorDefs }}" as="e" hint-placeholder-count="6">
+          <div style="{{ e.chipStyle }}" onClick="{{ e.onClick }}">{{ e.title }}</div>
+        </sc-for>
+      </div>
+      <div style="{{ st.popoverAnchor }}">
+        <div style="{{ st.popover }}">
+          <div style="{{ st.popHeader }}">
+            <div style="{{ st.popHeaderRow }}">
+              <span style="{{ selectedError.dotStyle }}"></span>
+              <span style="{{ st.popStatusText }}">{{ selectedError.title }}</span>
+            </div>
+          </div>
+          <div style="{{ st.divider }}"></div>
+          <div style="{{ st.errorBody }}">{{ selectedError.body }}</div>
+          <sc-if value="{{ selectedError.action }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ st.errorActionRow }}">
+              <div style="{{ st.primaryBtnSmall }}" onClick="{{ dismissErrorDemo }}">{{ selectedError.action }}</div>
+            </div>
+          </sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'onboarding' }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.windowWrap }}">
+        <div style="{{ st.windowBox }}">
+          <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="Welcome to Cross Device" bg="{{ c.bgElevated }}" border="{{ c.border }}" text-color="{{ c.textPrimary }}" text-secondary="{{ c.textSecondary }}" hint-size="100%,40px"></dc-import>
+          <div style="{{ st.windowBody }}">
+            <div style="{{ st.progressRow }}">
+              <sc-for list="{{ onboardDots }}" as="dot" hint-placeholder-count="5">
+                <div style="{{ dot.style }}"></div>
+              </sc-for>
+            </div>
+
+            <sc-if value="{{ onboardStep === 0 }}" hint-placeholder-val="{{ true }}">
+              <div style="{{ st.obCenter }}">
+                <div style="{{ st.obIcon }}"></div>
+                <div style="{{ st.obTitle }}">One keyboard. Every computer.</div>
+                <div style="{{ st.obSubtitle }}">Use the keyboard and mouse you already own to control every computer on your desk. Switch instantly with a single key.</div>
+                <div style="{{ st.primaryBtn }}" onClick="{{ onboardNext }}">Get Started</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ onboardStep === 1 }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.obLeft }}">
+                <div style="{{ st.obHeading }}">How it works</div>
+                <sc-for list="{{ explainBullets }}" as="b" hint-placeholder-count="3">
+                  <div style="{{ st.bulletRow }}">
+                    <div style="{{ st.bulletDot }}"></div>
+                    <div style="{{ st.bulletText }}">{{ b }}</div>
+                  </div>
+                </sc-for>
+                <div style="{{ st.obFooterRow }}">
+                  <div style="{{ st.secondaryBtn }}" onClick="{{ onboardBack }}">Back</div>
+                  <div style="{{ st.primaryBtn }}" onClick="{{ onboardNext }}">Continue</div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ onboardStep === 2 }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.obLeft }}">
+                <div style="{{ st.obHeading }}">Grant permissions</div>
+                <div style="{{ st.obDesc }}">{{ plat.label }} requires the following access to share your keyboard and mouse.</div>
+                <sc-for list="{{ permissions }}" as="perm" hint-placeholder-count="2">
+                  <div style="{{ st.permRow }}">
+                    <div style="{{ st.permText }}">
+                      <div style="{{ st.permName }}">{{ perm.name }}</div>
+                      <div style="{{ st.permDesc }}">{{ perm.desc }}</div>
+                    </div>
+                    <div style="{{ perm.btnStyle }}" onClick="{{ perm.onClick }}">{{ perm.btnLabel }}</div>
+                  </div>
+                </sc-for>
+                <div style="{{ st.obFooterRow }}">
+                  <div style="{{ st.secondaryBtn }}" onClick="{{ onboardBack }}">Back</div>
+                  <div style="{{ continueBtnStyle }}" onClick="{{ onboardNext }}">Continue</div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ onboardStep === 3 }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.obLeft }}">
+                <div style="{{ st.obHeading }}">Find your other computer</div>
+                <div style="{{ st.obDesc }}">Make sure Cross Device is running on the other computer and it's on the same network.</div>
+                <sc-if value="{{ !onboardFound }}" hint-placeholder-val="{{ true }}">
+                  <div style="{{ st.scanRow }}">
+                    <div style="{{ st.spinner }}"></div>
+                    <div style="{{ st.scanText }}">Searching for devices&#8230;</div>
+                  </div>
+                  <div style="{{ st.secondaryBtn }}" onClick="{{ onboardScan }}">Simulate found device</div>
+                </sc-if>
+                <sc-if value="{{ onboardFound }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ st.foundRow }}">
+                    <div style="{{ st.foundAvatar }}">W</div>
+                    <div style="{{ st.popRowText }}">
+                      <div style="{{ st.popRowName }}">Work Laptop</div>
+                      <div style="{{ st.popRowSub }}">Windows &#183; nearby</div>
+                    </div>
+                    <div style="{{ st.primaryBtnSmall }}" onClick="{{ onboardPairStart }}">Pair</div>
+                  </div>
+                </sc-if>
+                <div style="{{ st.obFooterRow }}">
+                  <div style="{{ st.secondaryBtn }}" onClick="{{ onboardBack }}">Back</div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ onboardStep === 4 }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.obCenter }}">
+                <sc-if value="{{ onboardPairStep === 'requesting' }}" hint-placeholder-val="{{ true }}">
+                  <div style="{{ st.spinnerBig }}"></div>
+                  <div style="{{ st.obTitle }}">Waiting for approval&#8230;</div>
+                  <div style="{{ st.obSubtitle }}">Accept the request on Work Laptop to finish pairing.</div>
+                  <div style="{{ st.secondaryBtn }}" onClick="{{ onboardPairAccept }}">Simulate accept on Work Laptop</div>
+                </sc-if>
+                <sc-if value="{{ onboardPairStep === 'success' }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ st.successIcon }}">&#10003;</div>
+                  <div style="{{ st.obTitle }}">You're all set</div>
+                  <div style="{{ st.obSubtitle }}">Work Laptop is paired and trusted. Press {{ switchKey }} anytime to switch to it.</div>
+                  <div style="{{ st.primaryBtn }}" onClick="{{ finishOnboarding }}">Open Cross Device</div>
+                </sc-if>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'dashboard' }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.windowWrap }}">
+        <div style="{{ st.windowBoxWide }}">
+          <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="Cross Device" bg="{{ c.bgElevated }}" border="{{ c.border }}" text-color="{{ c.textPrimary }}" text-secondary="{{ c.textSecondary }}" hint-size="100%,40px"></dc-import>
+          <div style="{{ st.windowBody }}">
+            <div style="{{ st.dashHeaderRow }}">
+              <div>
+                <div style="{{ st.obHeading }}">Devices</div>
+                <div style="{{ st.obDesc }}">This device: {{ activeDevice.name }} &#183; {{ plat.label }}</div>
+              </div>
+              <div style="{{ st.primaryBtnSmall }}" onClick="{{ goPairing }}">Pair new device</div>
+            </div>
+            <sc-for list="{{ dashboardDevices }}" as="d" hint-placeholder-count="3">
+              <div style="{{ st.deviceCard }}">
+                <div style="{{ d.avatarStyle }}">{{ d.initial }}</div>
+                <div style="{{ st.popRowText }}">
+                  <div style="{{ st.popRowName }}">{{ d.name }}</div>
+                  <div style="{{ st.popRowSub }}">{{ d.os }} &#183; {{ d.lastSeen }}</div>
+                </div>
+                <div style="{{ d.statusPillStyle }}">
+                  <span style="{{ d.dotStyle }}"></span>{{ d.statusLabel }}
+                </div>
+                <sc-if value="{{ !d.isActive }}" hint-placeholder-val="{{ true }}">
+                  <div style="{{ st.secondaryBtnSmall }}" onClick="{{ d.onSwitch }}">Switch</div>
+                </sc-if>
+                <sc-if value="{{ !d.isThisDevice }}" hint-placeholder-val="{{ true }}">
+                  <div style="{{ st.removeBtn }}" onClick="{{ d.onRemove }}">&#10005;</div>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'pairing' }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.windowWrap }}">
+        <div style="{{ st.windowBoxWide }}">
+          <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="Pair a Device" bg="{{ c.bgElevated }}" border="{{ c.border }}" text-color="{{ c.textPrimary }}" text-secondary="{{ c.textSecondary }}" hint-size="100%,40px"></dc-import>
+          <div style="{{ st.windowBody }}">
+            <sc-if value="{{ pairingStep === 'discover' }}" hint-placeholder-val="{{ true }}">
+              <div style="{{ st.obHeading }}">Available devices</div>
+              <div style="{{ st.obDesc }}">Devices running Cross Device on your network.</div>
+              <sc-for list="{{ availableDevices }}" as="d" hint-placeholder-count="2">
+                <div style="{{ st.foundRow }}">
+                  <div style="{{ d.avatarStyle }}">{{ d.initial }}</div>
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">{{ d.name }}</div>
+                    <div style="{{ st.popRowSub }}">{{ d.os }}</div>
+                  </div>
+                  <div style="{{ st.primaryBtnSmall }}" onClick="{{ d.onPair }}">Pair</div>
+                </div>
+              </sc-for>
+            </sc-if>
+
+            <sc-if value="{{ pairingStep === 'requesting' }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.twoPanel }}">
+                <div style="{{ st.panel }}">
+                  <div style="{{ st.panelLabel }}">This device</div>
+                  <div style="{{ st.obCenterInline }}">
+                    <div style="{{ st.spinnerBig }}"></div>
+                    <div style="{{ st.obSubtitle }}">Waiting for {{ pairingTarget.name }} to accept&#8230;</div>
+                    <div style="{{ st.secondaryBtn }}" onClick="{{ pairingCancel }}">Cancel</div>
+                  </div>
+                </div>
+                <div style="{{ st.panel }}">
+                  <div style="{{ st.panelLabel }}">{{ pairingTarget.name }}</div>
+                  <div style="{{ st.requestCard }}">
+                    <div style="{{ st.obDesc }}">"{{ activeDevice.name }}" wants to connect.</div>
+                    <div style="{{ st.rowGap }}">
+                      <div style="{{ st.secondaryBtn }}" onClick="{{ pairingReject }}">Reject</div>
+                      <div style="{{ st.primaryBtn }}" onClick="{{ pairingAccept }}">Accept</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ pairingStep === 'rejected' }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.obCenter }}">
+                <div style="{{ st.errorIcon }}">&#10005;</div>
+                <div style="{{ st.obTitle }}">Request declined</div>
+                <div style="{{ st.obSubtitle }}">{{ pairingTarget.name }} declined the pairing request.</div>
+                <div style="{{ st.primaryBtn }}" onClick="{{ pairingRetry }}">Try Again</div>
+              </div>
+            </sc-if>
+
+            <sc-if value="{{ pairingStep === 'success' }}" hint-placeholder-val="{{ false }}">
+              <div style="{{ st.obCenter }}">
+                <div style="{{ st.successIcon }}">&#10003;</div>
+                <div style="{{ st.obTitle }}">Paired &amp; trusted</div>
+                <div style="{{ st.obSubtitle }}">{{ pairingTarget.name }} can now share input with this device.</div>
+                <div style="{{ st.primaryBtn }}" onClick="{{ pairingDone }}">Done</div>
+              </div>
+            </sc-if>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'settings' }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.windowWrap }}">
+        <div style="{{ st.settingsBox }}">
+          <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="Settings" bg="{{ c.bgElevated }}" border="{{ c.border }}" text-color="{{ c.textPrimary }}" text-secondary="{{ c.textSecondary }}" hint-size="100%,40px"></dc-import>
+          <div style="{{ st.settingsRow }}">
+            <div style="{{ st.settingsSidebar }}">
+              <sc-for list="{{ settingsTabs }}" as="tab" hint-placeholder-count="6">
+                <div style="{{ tab.style }}" onClick="{{ tab.onClick }}">{{ tab.label }}</div>
+              </sc-for>
+            </div>
+            <div style="{{ st.settingsContent }}">
+
+              <sc-if value="{{ settingsTab === 'general' }}" hint-placeholder-val="{{ true }}">
+                <div style="{{ st.obHeading }}">General</div>
+                <sc-for list="{{ generalToggles }}" as="t" hint-placeholder-count="2">
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.popRowText }}">
+                      <div style="{{ st.popRowName }}">{{ t.label }}</div>
+                      <div style="{{ st.permDesc }}">{{ t.desc }}</div>
+                    </div>
+                    <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                  </div>
+                </sc-for>
+              </sc-if>
+
+              <sc-if value="{{ settingsTab === 'devices' }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obHeading }}">Devices</div>
+                <sc-for list="{{ dashboardDevices }}" as="d" hint-placeholder-count="3">
+                  <div style="{{ st.deviceCard }}">
+                    <div style="{{ d.avatarStyle }}">{{ d.initial }}</div>
+                    <div style="{{ st.popRowText }}">
+                      <div style="{{ st.popRowName }}">{{ d.name }}</div>
+                      <div style="{{ st.popRowSub }}">{{ d.os }} &#183; {{ d.lastSeen }}</div>
+                    </div>
+                    <div style="{{ d.statusPillStyle }}"><span style="{{ d.dotStyle }}"></span>{{ d.statusLabel }}</div>
+                    <sc-if value="{{ !d.isThisDevice }}" hint-placeholder-val="{{ true }}">
+                      <div style="{{ st.removeBtn }}" onClick="{{ d.onRemove }}">&#10005;</div>
+                    </sc-if>
+                  </div>
+                </sc-for>
+                <div style="{{ st.secondaryBtn }}" onClick="{{ goPairing }}">Pair new device&#8230;</div>
+              </sc-if>
+
+              <sc-if value="{{ settingsTab === 'input' }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obHeading }}">Input</div>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Switch key</div>
+                    <div style="{{ st.permDesc }}">Press this key to switch the active computer.</div>
+                  </div>
+                  <div style="{{ st.secondaryBtnSmall }}" onClick="{{ goSwitchKey }}">{{ switchKey }}</div>
+                </div>
+                <sc-for list="{{ inputToggles }}" as="t" hint-placeholder-count="2">
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.popRowText }}">
+                      <div style="{{ st.popRowName }}">{{ t.label }}</div>
+                      <div style="{{ st.permDesc }}">{{ t.desc }}</div>
+                    </div>
+                    <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                  </div>
+                </sc-for>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Pointer sensitivity</div>
+                  </div>
+                  <div style="{{ st.segment }}">
+                    <sc-for list="{{ sensitivityOptions }}" as="opt" hint-placeholder-count="3">
+                      <div style="{{ opt.style }}" onClick="{{ opt.onClick }}">{{ opt.label }}</div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ settingsTab === 'connection' }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obHeading }}">Connection</div>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Network</div>
+                    <div style="{{ st.permDesc }}">Home Network</div>
+                  </div>
+                </div>
+                <sc-for list="{{ connectionToggles }}" as="t" hint-placeholder-count="1">
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.popRowText }}">
+                      <div style="{{ st.popRowName }}">{{ t.label }}</div>
+                      <div style="{{ st.permDesc }}">{{ t.desc }}</div>
+                    </div>
+                    <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                  </div>
+                </sc-for>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Transport</div>
+                  </div>
+                  <div style="{{ st.segment }}">
+                    <sc-for list="{{ transportOptions }}" as="opt" hint-placeholder-count="2">
+                      <div style="{{ opt.style }}" onClick="{{ opt.onClick }}">{{ opt.label }}</div>
+                    </sc-for>
+                  </div>
+                </div>
+              </sc-if>
+
+              <sc-if value="{{ settingsTab === 'startup' }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obHeading }}">Startup</div>
+                <sc-for list="{{ startupToggles }}" as="t" hint-placeholder-count="3">
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.popRowText }}">
+                      <div style="{{ st.popRowName }}">{{ t.label }}</div>
+                      <div style="{{ st.permDesc }}">{{ t.desc }}</div>
+                    </div>
+                    <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                  </div>
+                </sc-for>
+              </sc-if>
+
+              <sc-if value="{{ settingsTab === 'advanced' }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obHeading }}">Advanced</div>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Debug logging</div>
+                    <div style="{{ st.permDesc }}">Write detailed logs for troubleshooting.</div>
+                  </div>
+                  <div style="{{ debugToggle.track }}" onClick="{{ debugToggle.onClick }}"><div style="{{ debugToggle.thumb }}"></div></div>
+                </div>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Connection timeout</div>
+                  </div>
+                  <div style="{{ st.segment }}">
+                    <sc-for list="{{ timeoutOptions }}" as="opt" hint-placeholder-count="3">
+                      <div style="{{ opt.style }}" onClick="{{ opt.onClick }}">{{ opt.label }}</div>
+                    </sc-for>
+                  </div>
+                </div>
+                <div style="{{ st.settingRow }}">
+                  <div style="{{ st.popRowText }}">
+                    <div style="{{ st.popRowName }}">Average event latency</div>
+                  </div>
+                  <div style="{{ st.permDesc }}">~8 ms</div>
+                </div>
+                <div style="{{ st.dangerBtn }}" onClick="{{ resetAll }}">Reset all settings</div>
+              </sc-if>
+
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ screen === 'switchkey' }}" hint-placeholder-val="{{ false }}">
+      <div style="{{ st.windowWrap }}">
+        <div style="{{ st.windowBox }}">
+          <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="Switch Key" bg="{{ c.bgElevated }}" border="{{ c.border }}" text-color="{{ c.textPrimary }}" text-secondary="{{ c.textSecondary }}" hint-size="100%,40px"></dc-import>
+          <div style="{{ st.windowBody }}">
+            <div style="{{ st.currentKeyCard }}">
+              <div style="{{ st.permDesc }}">Current switch key</div>
+              <div style="{{ currentKeyStyle }}">{{ recording }}{{ displayKeyText }}</div>
+            </div>
+            <sc-for list="{{ presets }}" as="p" hint-placeholder-count="4">
+              <div style="{{ p.rowStyle }}" onClick="{{ p.onClick }}">
+                <div style="{{ p.dotStyle }}"></div>
+                <div style="{{ st.popRowName }}">{{ p.label }}</div>
+              </div>
+            </sc-for>
+            <div style="{{ customRowStyle }}" onClick="{{ toggleRecording }}">
+              <div style="{{ customDotStyle }}"></div>
+              <div style="{{ st.popRowText }}">
+                <div style="{{ st.popRowName }}">Custom</div>
+                <div style="{{ st.permDesc }}">{{ customHelperText }}</div>
+              </div>
+            </div>
+            <div style="{{ st.obFooterRow }}">
+              <div style="{{ st.secondaryBtn }}" onClick="{{ goBackFromSwitchKey }}">Cancel</div>
+              <div style="{{ st.primaryBtn }}" onClick="{{ saveSwitchKey }}">Save</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </sc-if>
+
+  </div>
+</div>
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#1c1c1e"/><circle cx="100" cy="80" r="30" fill="oklch(0.64 0.17 250)"/><rect x="60" y="130" width="80" height="14" rx="7" fill="#3a3a3c"/></svg></template>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const FONT = '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif';
+
+const STATUS_META = {
+  active: { label: 'Active', dot: '#30d158' },
+  inactive: { label: 'Connected \u00b7 Inactive', dot: '#0a84ff' },
+  disconnected: { label: 'Disconnected', dot: '#8e8e93' },
+};
+
+const ERROR_DEFS = [
+  { key: 'connecting', title: 'Connecting\u2026', dot: '#ff9f0a', body: 'Establishing a connection to Work Laptop.', action: null },
+  { key: 'reconnecting', title: 'Reconnecting\u2026', dot: '#ff9f0a', body: 'Connection lost. Attempting to reconnect to Work Laptop.', action: 'Cancel' },
+  { key: 'disconnected', title: 'Disconnected', dot: '#8e8e93', body: 'Work Laptop is offline. Input sharing is paused.', action: 'Retry' },
+  { key: 'pairingfailed', title: 'Pairing failed', dot: '#ff453a', body: 'Office Mac Mini did not respond to the pairing request.', action: 'Try Again' },
+  { key: 'unknown', title: 'Unknown device', dot: '#ff453a', body: 'A device tried to connect but is not trusted.', action: 'Block' },
+  { key: 'permission', title: 'Permission required', dot: '#ff453a', body: 'Grant Accessibility access to allow input sharing on this Mac.', action: 'Open Settings' },
+];
+
+const PRESETS = [
+  { key: 'scrolllock', label: 'Scroll Lock' },
+  { key: 'pause', label: 'Pause / Break' },
+  { key: 'f13', label: 'F13' },
+  { key: 'ctrlshiftspace', label: 'Ctrl + Shift + Space' },
+];
+
+class Component extends DCLogic {
+  state = {
+    theme: 'dark',
+    platform: 'macos',
+    screen: 'tray',
+    trayOpen: true,
+    devices: [
+      { id: 'd1', name: 'MacBook Pro', os: 'macOS', status: 'active', lastSeen: 'Now' },
+      { id: 'd2', name: 'Work Laptop', os: 'Windows', status: 'inactive', lastSeen: '2 min ago' },
+      { id: 'd3', name: 'Linux Desktop', os: 'Linux', status: 'disconnected', lastSeen: '3 days ago' },
+    ],
+    onboardStep: 0,
+    permGranted: false,
+    onboardFound: false,
+    onboardPairStep: 'requesting',
+    pairingStep: 'discover',
+    pairingTargetName: null,
+    settingsTab: 'general',
+    toggles: {
+      launchAtLogin: true, showTray: true, shareKeyboard: true, shareMouse: true,
+      autoReconnect: true, startOnBoot: true, autoConnect: true, debugLogging: false,
+    },
+    sensitivity: 'normal',
+    transport: 'local',
+    timeout: '10s',
+    switchKeyPreset: 'scrolllock',
+    customKeyValue: null,
+    recording: false,
+    errorDemo: 'connecting',
+    toast: null,
+  };
+
+  componentDidMount() {
+    this._onKeyDown = (e) => {
+      if (!this.state.recording) return;
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+      e.preventDefault();
+      const parts = [];
+      if (e.ctrlKey) parts.push('Ctrl');
+      if (e.altKey) parts.push('Alt');
+      if (e.shiftKey) parts.push('Shift');
+      if (e.metaKey) parts.push(this.state.platform === 'macos' ? '\u2318' : 'Win');
+      let key = e.key;
+      if (key === ' ') key = 'Space';
+      else if (key.length === 1) key = key.toUpperCase();
+      parts.push(key);
+      this.setState({ customKeyValue: parts.join(' + '), switchKeyPreset: 'custom', recording: false });
+    };
+    window.addEventListener('keydown', this._onKeyDown, true);
+  }
+  componentWillUnmount() {
+    window.removeEventListener('keydown', this._onKeyDown, true);
+  }
+
+  showToast(msg) {
+    this.setState({ toast: msg });
+    clearTimeout(this._toastTimer);
+    this._toastTimer = setTimeout(() => this.setState({ toast: null }), 1800);
+  }
+
+  switchDevice(id) {
+    this.setState((s) => ({
+      devices: s.devices.map((d) => ({ ...d, status: d.id === id ? 'active' : (d.status === 'active' ? 'inactive' : d.status) })),
+    }));
+  }
+  removeDevice(id) {
+    this.setState((s) => ({ devices: s.devices.filter((d) => d.id !== id) }));
+  }
+  toggleSetting(key) {
+    this.setState((s) => ({ toggles: { ...s.toggles, [key]: !s.toggles[key] } }));
+  }
+  resetAll() {
+    this.setState({
+      toggles: { launchAtLogin: true, showTray: true, shareKeyboard: true, shareMouse: true, autoReconnect: true, startOnBoot: true, autoConnect: true, debugLogging: false },
+      sensitivity: 'normal', transport: 'local', timeout: '10s',
+    });
+    this.showToast('Settings reset');
+  }
+
+  colors(theme) {
+    if (theme === 'dark') return {
+      bg: '#1c1c1e', bgElevated: '#28282a', bgHover: 'rgba(255,255,255,0.07)',
+      border: 'rgba(255,255,255,0.1)', divider: 'rgba(255,255,255,0.08)',
+      textPrimary: 'rgba(255,255,255,0.95)', textSecondary: 'rgba(255,255,255,0.58)', textTertiary: 'rgba(255,255,255,0.38)',
+      accent: 'oklch(0.64 0.17 250)', accentText: '#ffffff', accentSoft: 'rgba(120,140,255,0.14)',
+      barBg: 'rgba(18,18,20,0.9)', wallpaper: 'linear-gradient(160deg,#101216,#1c1f26)', danger: '#ff453a', dangerSoft: 'rgba(255,69,58,0.12)',
+    };
+    return {
+      bg: '#ffffff', bgElevated: '#f5f5f7', bgHover: 'rgba(0,0,0,0.045)',
+      border: 'rgba(0,0,0,0.09)', divider: 'rgba(0,0,0,0.08)',
+      textPrimary: 'rgba(0,0,0,0.9)', textSecondary: 'rgba(0,0,0,0.55)', textTertiary: 'rgba(0,0,0,0.38)',
+      accent: 'oklch(0.55 0.18 250)', accentText: '#ffffff', accentSoft: 'oklch(0.94 0.025 250)',
+      barBg: 'rgba(246,246,248,0.9)', wallpaper: 'linear-gradient(160deg,#e6e9ee,#ccd2dc)', danger: '#d92d20', dangerSoft: 'rgba(217,45,32,0.08)',
+    };
+  }
+
+  platformMeta(p) {
+    if (p === 'macos') return { label: 'macOS', barPos: 'top', barHeight: 26, radius: 10, controls: 'mac' };
+    if (p === 'windows') return { label: 'Windows', barPos: 'bottom', barHeight: 44, radius: 8, controls: 'win' };
+    return { label: 'Linux (GNOME)', barPos: 'top', barHeight: 30, radius: 8, controls: 'gnome' };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const c = this.colors(s.theme);
+    const plat = this.platformMeta(s.platform);
+    const isMac = plat.controls === 'mac', isWin = plat.controls === 'win', isGnome = plat.controls === 'gnome';
+
+    const row = (extra) => ({ display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 16px', cursor: 'pointer', ...extra });
+    const avatarStyle = (letter) => ({ width: '32px', height: '32px', borderRadius: '50%', background: c.bgHover, border: '1px solid ' + c.border, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', fontWeight: 700, color: c.textSecondary, flexShrink: 0 });
+
+    const decorate = (d) => {
+      const meta = STATUS_META[d.status];
+      return {
+        ...d, isActive: d.status === 'active', isThisDevice: d.id === 'd1',
+        initial: d.os[0], statusLabel: meta.label,
+        avatarStyle: avatarStyle(d.os[0]),
+        dotStyle: { width: '7px', height: '7px', borderRadius: '50%', background: meta.dot, flexShrink: 0 },
+        statusPillStyle: { display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: c.textSecondary, marginRight: '8px' },
+        onSwitch: () => this.switchDevice(d.id),
+        onRemove: () => this.removeDevice(d.id),
+      };
+    };
+    const devices = s.devices.map(decorate);
+    const activeDevice = devices.find((d) => d.isActive) || devices[0];
+    const otherDevices = devices.filter((d) => !d.isActive);
+    const dashboardDevices = devices;
+
+    const btnBase = { padding: '8px 14px', borderRadius: '7px', fontSize: '13px', fontWeight: 600, cursor: 'pointer', textAlign: 'center', userSelect: 'none' };
+    const st = {
+      root: { display: 'flex', flexDirection: 'column', height: '100vh', width: '100%', background: c.bg, fontFamily: FONT, color: c.textPrimary, overflow: 'hidden' },
+      toolbar: { display: 'flex', alignItems: 'center', gap: '20px', padding: '10px 20px', background: c.bgElevated, borderBottom: '1px solid ' + c.border, flexWrap: 'wrap', flexShrink: 0 },
+      brandRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+      brandMark: { width: '18px', height: '18px', borderRadius: '5px', background: c.accent },
+      brandText: { fontSize: '13px', fontWeight: 700, color: c.textPrimary, whiteSpace: 'nowrap' },
+      navRow: { display: 'flex', gap: '4px', flexWrap: 'wrap', flex: 1 },
+      rightRow: { display: 'flex', gap: '10px', marginLeft: 'auto' },
+      segment: { display: 'flex', background: c.bgHover, borderRadius: '7px', padding: '2px', gap: '2px' },
+      desktop: { position: 'relative', flex: 1, overflow: 'hidden' },
+      wallpaper: { position: 'absolute', inset: 0, background: c.wallpaper },
+      bar: { position: 'absolute', left: 0, right: 0, [plat.barPos]: 0, height: plat.barHeight + 'px', background: c.barBg, backdropFilter: 'blur(20px)', display: 'flex', alignItems: 'center', padding: '0 14px', gap: '10px', zIndex: 2, borderTop: plat.barPos === 'bottom' ? '1px solid ' + c.border : 'none', borderBottom: plat.barPos === 'top' ? '1px solid ' + c.border : 'none' },
+      barLeft: { display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: c.textSecondary },
+      barActivities: { fontSize: '12px', fontWeight: 600, color: c.textPrimary },
+      barClock: { position: 'absolute', left: '50%', transform: 'translateX(-50%)', fontSize: '12px', color: c.textPrimary, fontWeight: 500 },
+      barClockInline: { fontSize: '12px', color: c.textPrimary, fontWeight: 500, marginLeft: '4px' },
+      macApple: { fontSize: '13px', color: c.textPrimary },
+      winStart: { width: '14px', height: '14px', borderRadius: '3px', background: c.accent },
+      barRight: { display: 'flex', alignItems: 'center', gap: '10px', marginLeft: 'auto' },
+      barIcon: { width: '14px', height: '14px', borderRadius: '3px', background: c.textTertiary, opacity: 0.5 },
+      trayIconWrap: { cursor: 'pointer', padding: '3px', borderRadius: '5px' },
+      trayIcon: { width: '16px', height: '16px', borderRadius: '5px', background: s.trayOpen ? c.accent : c.textSecondary },
+      popoverAnchor: { position: 'absolute', right: '16px', [plat.barPos === 'top' ? 'top' : 'bottom']: (plat.barHeight + 10) + 'px', zIndex: 3 },
+      popover: { width: '308px', background: c.bg, border: '1px solid ' + c.border, borderRadius: plat.radius + 'px', boxShadow: '0 24px 60px rgba(0,0,0,0.35)', overflow: 'hidden', fontFamily: FONT },
+      popHeader: { padding: '14px 16px 12px', display: 'flex', flexDirection: 'column', gap: '5px' },
+      popHeaderRow: { display: 'flex', alignItems: 'center', gap: '8px' },
+      popStatusText: { fontSize: '12px', color: c.textSecondary, fontWeight: 600 },
+      popActiveText: { fontSize: '14px', fontWeight: 700, color: c.textPrimary },
+      divider: { height: '1px', background: c.divider, margin: '2px 0' },
+      popRowActive: row({ background: c.accentSoft }),
+      popRow: row({}),
+      popRowText: { display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 },
+      popRowName: { fontSize: '13px', fontWeight: 600, color: c.textPrimary },
+      popRowSub: { fontSize: '11.5px', color: c.textSecondary },
+      dotGreenSmall: { width: '7px', height: '7px', borderRadius: '50%', background: '#30d158', flexShrink: 0 },
+      switchLink: { fontSize: '12px', color: c.accent, fontWeight: 600, whiteSpace: 'nowrap' },
+      popMenuLabel: { fontSize: '13px', color: c.textPrimary, fontWeight: 500 },
+      switchKeyValue: { fontSize: '12px', color: c.textSecondary, fontWeight: 600, marginLeft: 'auto' },
+      popRowQuit: row({}),
+      popShortcutHint: { fontSize: '11px', color: c.textTertiary, marginLeft: 'auto' },
+      chipsRow: { position: 'absolute', left: '20px', [plat.barPos === 'top' ? 'top' : 'bottom']: (plat.barHeight + 16) + 'px', display: 'flex', gap: '8px', flexWrap: 'wrap', maxWidth: '55%', zIndex: 3 },
+      errorBody: { padding: '4px 16px 14px', fontSize: '12.5px', lineHeight: 1.5, color: c.textSecondary },
+      errorActionRow: { padding: '0 16px 16px' },
+      primaryBtnSmall: { ...btnBase, background: c.accent, color: c.accentText, padding: '7px 12px', fontSize: '12.5px' },
+      windowWrap: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3 },
+      windowBox: { width: '460px', maxHeight: '86%', background: c.bg, border: '1px solid ' + c.border, borderRadius: plat.radius + 'px', boxShadow: '0 30px 70px rgba(0,0,0,0.4)', overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: FONT },
+      windowBoxWide: { width: '620px', maxHeight: '86%', background: c.bg, border: '1px solid ' + c.border, borderRadius: plat.radius + 'px', boxShadow: '0 30px 70px rgba(0,0,0,0.4)', overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: FONT },
+      settingsBox: { width: '640px', height: '70%', background: c.bg, border: '1px solid ' + c.border, borderRadius: plat.radius + 'px', boxShadow: '0 30px 70px rgba(0,0,0,0.4)', overflow: 'hidden', display: 'flex', flexDirection: 'column', fontFamily: FONT },
+      windowBody: { padding: '26px 28px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' },
+      progressRow: { display: 'flex', gap: '6px', justifyContent: 'center', marginBottom: '18px' },
+      obCenter: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '14px', padding: '20px 10px' },
+      obCenterInline: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '10px' },
+      obIcon: { width: '56px', height: '56px', borderRadius: '16px', background: c.accent },
+      obTitle: { fontSize: '19px', fontWeight: 700, color: c.textPrimary },
+      obSubtitle: { fontSize: '13px', color: c.textSecondary, lineHeight: 1.5, maxWidth: '340px' },
+      obLeft: { display: 'flex', flexDirection: 'column', gap: '14px' },
+      obHeading: { fontSize: '17px', fontWeight: 700, color: c.textPrimary, marginBottom: '2px' },
+      obDesc: { fontSize: '12.5px', color: c.textSecondary, lineHeight: 1.5, marginBottom: '6px' },
+      bulletRow: { display: 'flex', gap: '10px', alignItems: 'flex-start' },
+      bulletDot: { width: '6px', height: '6px', borderRadius: '50%', background: c.accent, marginTop: '6px', flexShrink: 0 },
+      bulletText: { fontSize: '13px', color: c.textPrimary, lineHeight: 1.5 },
+      obFooterRow: { display: 'flex', gap: '10px', justifyContent: 'flex-end', marginTop: '10px' },
+      permRow: row({ border: '1px solid ' + c.border, borderRadius: '9px', marginBottom: '4px' }),
+      permText: { display: 'flex', flexDirection: 'column', gap: '2px', flex: 1 },
+      permName: { fontSize: '13px', fontWeight: 600, color: c.textPrimary },
+      permDesc: { fontSize: '11.5px', color: c.textSecondary },
+      scanRow: { display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 0' },
+      spinner: { width: '16px', height: '16px', borderRadius: '50%', border: '2px solid ' + c.border, borderTopColor: c.accent, animation: 'cd-spin 0.8s linear infinite' },
+      spinnerBig: { width: '28px', height: '28px', borderRadius: '50%', border: '3px solid ' + c.border, borderTopColor: c.accent, animation: 'cd-spin 0.8s linear infinite' },
+      scanText: { fontSize: '13px', color: c.textSecondary },
+      foundRow: row({ border: '1px solid ' + c.border, borderRadius: '9px' }),
+      foundAvatar: avatarStyle('W'),
+      successIcon: { width: '44px', height: '44px', borderRadius: '50%', background: '#30d158', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '20px' },
+      errorIcon: { width: '44px', height: '44px', borderRadius: '50%', background: c.danger, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '18px' },
+      twoPanel: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' },
+      panel: { border: '1px solid ' + c.border, borderRadius: '10px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px', minHeight: '180px' },
+      panelLabel: { fontSize: '11px', fontWeight: 700, color: c.textTertiary, textTransform: 'uppercase', letterSpacing: '0.04em' },
+      requestCard: { display: 'flex', flexDirection: 'column', gap: '12px', flex: 1, justifyContent: 'center' },
+      rowGap: { display: 'flex', gap: '8px' },
+      dashHeaderRow: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '10px' },
+      deviceCard: row({ border: '1px solid ' + c.border, borderRadius: '10px', marginBottom: '8px' }),
+      removeBtn: { width: '24px', height: '24px', borderRadius: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: c.textTertiary, cursor: 'pointer', flexShrink: 0 },
+      settingsRow: { display: 'flex', flex: 1, minHeight: 0 },
+      settingsSidebar: { width: '150px', borderRight: '1px solid ' + c.border, padding: '14px 8px', display: 'flex', flexDirection: 'column', gap: '2px', flexShrink: 0 },
+      settingsContent: { flex: 1, padding: '22px 26px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' },
+      settingRow: row({ padding: '10px 0', cursor: 'default' }),
+      dangerBtn: { ...btnBase, background: c.dangerSoft, color: c.danger, alignSelf: 'flex-start', marginTop: '10px' },
+      currentKeyCard: { border: '1px solid ' + c.border, borderRadius: '10px', padding: '16px', display: 'flex', flexDirection: 'column', gap: '6px', alignItems: 'center', marginBottom: '6px' },
+      toast: { position: 'absolute', top: '14px', left: '50%', background: c.textPrimary, color: c.bg, padding: '8px 16px', borderRadius: '20px', fontSize: '12.5px', fontWeight: 600, zIndex: 5, animation: 'cd-toast-in 0.2s ease', transform: 'translateX(-50%)' },
+    };
+
+    const navScreens = [
+      ['tray', 'Tray Popover'], ['onboarding', 'Onboarding'], ['dashboard', 'Dashboard'],
+      ['pairing', 'Pairing'], ['settings', 'Settings'], ['switchkey', 'Switch Key'], ['states', 'States'],
+    ];
+    const navItems = navScreens.map(([key, label]) => ({
+      label, onClick: () => this.setState({ screen: key, ...(key === 'tray' ? { trayOpen: true } : {}) }),
+      style: { padding: '6px 11px', borderRadius: '6px', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer', background: s.screen === key ? c.accent : 'transparent', color: s.screen === key ? c.accentText : c.textSecondary, whiteSpace: 'nowrap' },
+    }));
+    const platformOptions = [['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux']].map(([key, label]) => ({
+      label, onClick: () => this.setState({ platform: key }),
+      style: { padding: '5px 10px', borderRadius: '5px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', background: s.platform === key ? c.bg : 'transparent', color: s.platform === key ? c.textPrimary : c.textSecondary, boxShadow: s.platform === key ? '0 1px 2px rgba(0,0,0,0.15)' : 'none' },
+    }));
+    const themeOptions = [['dark', 'Dark'], ['light', 'Light']].map(([key, label]) => ({
+      label, onClick: () => this.setState({ theme: key }),
+      style: { padding: '5px 10px', borderRadius: '5px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', background: s.theme === key ? c.bg : 'transparent', color: s.theme === key ? c.textPrimary : c.textSecondary, boxShadow: s.theme === key ? '0 1px 2px rgba(0,0,0,0.15)' : 'none' },
+    }));
+
+    const errorDefs = ERROR_DEFS.map((e) => ({
+      ...e, onClick: () => this.setState({ errorDemo: e.key }),
+      dotStyle: { width: '8px', height: '8px', borderRadius: '50%', background: e.dot },
+      chipStyle: { padding: '6px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', background: s.errorDemo === e.key ? c.accent : c.bgHover, color: s.errorDemo === e.key ? c.accentText : c.textPrimary, border: '1px solid ' + (s.errorDemo === e.key ? c.accent : c.border) },
+    }));
+    const selectedError = errorDefs.find((e) => e.key === s.errorDemo);
+
+    const onboardDots = [0, 1, 2, 3, 4].map((i) => ({
+      style: { width: '6px', height: '6px', borderRadius: '50%', background: i === s.onboardStep ? c.accent : c.border },
+    }));
+    const explainBullets = [
+      'Use your existing keyboard and mouse on every computer at your desk.',
+      'Press one key to switch which computer is receiving input.',
+      'Everything happens over your local network, with no extra hardware.',
+    ];
+    const permissions = [
+      { name: 'Accessibility', desc: 'Lets Cross Device control input on this Mac.', granted: s.permGranted,
+        btnLabel: s.permGranted ? 'Granted' : 'Grant Access', onClick: () => this.setState({ permGranted: true }),
+        btnStyle: { ...btnBase, padding: '6px 12px', fontSize: '12px', background: s.permGranted ? c.accentSoft : c.accent, color: s.permGranted ? c.accent : c.accentText } },
+    ];
+    const continueBtnStyle = { ...btnBase, background: s.permGranted ? c.accent : c.bgHover, color: s.permGranted ? c.accentText : c.textTertiary, cursor: s.permGranted ? 'pointer' : 'default', padding: '8px 16px' };
+
+    const availableDevices = [{ id: 'a1', name: 'Office Mac Mini', os: 'macOS' }, { id: 'a2', name: 'Linux Desktop', os: 'Linux' }]
+      .filter((d) => !devices.some((dev) => dev.name === d.name))
+      .map((d) => ({ ...d, initial: d.os[0], avatarStyle: avatarStyle(d.os[0]), onPair: () => this.setState({ pairingStep: 'requesting', pairingTargetName: d.name }) }));
+    const pairingTarget = { name: s.pairingTargetName || 'Office Mac Mini' };
+
+    const settingsTabDefs = [['general', 'General'], ['devices', 'Devices'], ['input', 'Input'], ['connection', 'Connection'], ['startup', 'Startup'], ['advanced', 'Advanced']];
+    const settingsTabs = settingsTabDefs.map(([key, label]) => ({
+      label, onClick: () => this.setState({ settingsTab: key }),
+      style: { padding: '9px 12px', borderRadius: '7px', fontSize: '12.5px', fontWeight: 600, cursor: 'pointer', background: s.settingsTab === key ? c.accentSoft : 'transparent', color: s.settingsTab === key ? c.accent : c.textSecondary },
+    }));
+
+    const toggleStyles = (active) => ({
+      track: { width: '36px', height: '21px', borderRadius: '11px', background: active ? c.accent : c.bgHover, border: '1px solid ' + (active ? c.accent : c.border), display: 'flex', alignItems: 'center', padding: '2px', cursor: 'pointer', justifyContent: active ? 'flex-end' : 'flex-start', flexShrink: 0 },
+      thumb: { width: '15px', height: '15px', borderRadius: '50%', background: '#ffffff' },
+    });
+    const mkToggle = (key, label, desc) => ({ key, label, desc, ...toggleStyles(s.toggles[key]), onClick: () => this.toggleSetting(key) });
+    const generalToggles = [mkToggle('launchAtLogin', 'Launch at login', 'Start Cross Device automatically.'), mkToggle('showTray', isWin ? 'Show in system tray' : 'Show in menu bar', 'Keep the icon visible.')];
+    const inputToggles = [mkToggle('shareKeyboard', 'Share keyboard', 'Send keyboard input to other devices.'), mkToggle('shareMouse', 'Share mouse', 'Send mouse input to other devices.')];
+    const connectionToggles = [mkToggle('autoReconnect', 'Auto reconnect', 'Reconnect automatically after a dropped connection.')];
+    const startupToggles = [mkToggle('startOnBoot', 'Start on system boot', 'Launch when this computer starts.'), mkToggle('autoConnect', 'Auto-connect paired devices', 'Connect to trusted devices automatically.')];
+    const debugToggle = mkToggle('debugLogging', 'Debug logging', '');
+
+    const segOpt = (val, key, label, onClick) => ({ label, onClick, style: { padding: '5px 10px', borderRadius: '5px', fontSize: '12px', fontWeight: 600, cursor: 'pointer', background: val === key ? c.accent : 'transparent', color: val === key ? c.accentText : c.textSecondary } });
+    const sensitivityOptions = ['low', 'normal', 'high'].map((k) => segOpt(s.sensitivity, k, k[0].toUpperCase() + k.slice(1), () => this.setState({ sensitivity: k })));
+    const transportOptions = [segOpt(s.transport, 'local', 'Local Network', () => this.setState({ transport: 'local' })), { label: 'Bluetooth (soon)', onClick: () => {}, style: { padding: '5px 10px', borderRadius: '5px', fontSize: '12px', fontWeight: 600, color: c.textTertiary, cursor: 'default' } }];
+    const timeoutOptions = ['5s', '10s', '30s'].map((k) => segOpt(s.timeout, k, k, () => this.setState({ timeout: k })));
+
+    const presets = PRESETS.map((p) => ({
+      ...p, onClick: () => this.setState({ switchKeyPreset: p.key, recording: false }),
+      rowStyle: row({ border: '1px solid ' + (s.switchKeyPreset === p.key ? c.accent : c.border), borderRadius: '9px', marginBottom: '6px', background: s.switchKeyPreset === p.key ? c.accentSoft : 'transparent' }),
+      dotStyle: { width: '14px', height: '14px', borderRadius: '50%', border: '2px solid ' + (s.switchKeyPreset === p.key ? c.accent : c.textTertiary), background: s.switchKeyPreset === p.key ? c.accent : 'transparent', flexShrink: 0 },
+    }));
+    const isCustom = s.switchKeyPreset === 'custom';
+    const displayKeyLabel = isCustom ? (s.customKeyValue || 'Not set') : (PRESETS.find((p) => p.key === s.switchKeyPreset) || {}).label;
+    const switchKey = displayKeyLabel;
+    const customHelperText = s.recording ? 'Press any key combination\u2026' : (s.customKeyValue ? s.customKeyValue : 'Click to record a custom shortcut');
+
+    return {
+      st, c, plat, isMac, isWin, isGnome,
+      screen: s.screen, theme: s.theme, platform: s.platform,
+      trayOpen: s.trayOpen, toggleTray: () => this.setState((st_) => ({ trayOpen: !st_.trayOpen })),
+      clockText: 'Tue Aug 25 \u00b7 10:59 AM', showBarClock: isGnome, barIcons: [1, 2, 3],
+      activeDevice, otherDevices, dashboardDevices,
+      activeDot: { width: '8px', height: '8px', borderRadius: '50%', background: '#30d158' },
+      goSwitchKey: () => this.setState({ screen: 'switchkey' }),
+      goPairing: () => this.setState({ screen: 'pairing', pairingStep: 'discover' }),
+      goSettings: () => this.setState({ screen: 'settings' }),
+      quitHint: isMac ? '\u2318Q' : '',
+      navItems, platformOptions, themeOptions,
+      errorDefs, selectedError, dismissErrorDemo: () => this.setState({ errorDemo: 'connecting' }),
+      toast: s.toast,
+      onboardStep: s.onboardStep, onboardDots, explainBullets, permissions, continueBtnStyle,
+      onboardNext: () => this.setState((st_) => ({ onboardStep: Math.min(4, st_.onboardStep + 1) })),
+      onboardBack: () => this.setState((st_) => ({ onboardStep: Math.max(0, st_.onboardStep - 1) })),
+      onboardFound: s.onboardFound, onboardScan: () => this.setState({ onboardFound: true }),
+      onboardPairStart: () => this.setState({ onboardStep: 4, onboardPairStep: 'requesting' }),
+      onboardPairStep: s.onboardPairStep,
+      onboardPairAccept: () => this.setState({ onboardPairStep: 'success' }),
+      finishOnboarding: () => this.setState({ screen: 'dashboard' }),
+      pairingStep: s.pairingStep, availableDevices, pairingTarget,
+      pairingCancel: () => this.setState({ pairingStep: 'discover' }),
+      pairingReject: () => this.setState({ pairingStep: 'rejected' }),
+      pairingAccept: () => this.setState({ pairingStep: 'success' }),
+      pairingRetry: () => this.setState({ pairingStep: 'discover' }),
+      pairingDone: () => {
+        this.setState((st_) => {
+          const name = st_.pairingTargetName || 'Office Mac Mini';
+          if (st_.devices.some((d) => d.name === name)) return { screen: 'dashboard' };
+          return { screen: 'dashboard', devices: [...st_.devices, { id: 'p' + Date.now(), name, os: name.includes('Linux') ? 'Linux' : 'macOS', status: 'inactive', lastSeen: 'Just now' }] };
+        });
+        this.showToast('Device paired');
+      },
+      settingsTab: s.settingsTab, settingsTabs,
+      generalToggles, inputToggles, connectionToggles, startupToggles, debugToggle,
+      sensitivityOptions, transportOptions, timeoutOptions, resetAll: () => this.resetAll(),
+      presets, switchKey, recording: '', displayKeyText: displayKeyLabel,
+      currentKeyStyle: { fontSize: '22px', fontWeight: 700, color: c.textPrimary },
+      customRowStyle: row({ border: '1px solid ' + (isCustom ? c.accent : c.border), borderRadius: '9px', marginBottom: '14px', background: s.recording ? c.accentSoft : (isCustom ? c.accentSoft : 'transparent') }),
+      customDotStyle: { width: '14px', height: '14px', borderRadius: '50%', border: '2px solid ' + (isCustom ? c.accent : c.textTertiary), background: isCustom ? c.accent : 'transparent', flexShrink: 0, animation: s.recording ? 'cd-pulse 1s ease-in-out infinite' : 'none' },
+      customHelperText,
+      toggleRecording: () => this.setState((st_) => ({ recording: !st_.recording, switchKeyPreset: 'custom' })),
+      goBackFromSwitchKey: () => this.setState({ screen: 'tray', recording: false }),
+      saveSwitchKey: () => { this.setState({ screen: 'tray', recording: false }); this.showToast('Switch key saved'); },
+    };
+  }
+}
+
+</script>
+</body>
+</html>

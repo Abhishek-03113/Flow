@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics>
+<style>
+@keyframes cd-pop { from { opacity: 0; transform: scale(0.96) translateY(-6px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+@keyframes cd-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes cd-spin { to { transform: rotate(360deg); } }
+@keyframes cd-breathe { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+</style>
+</helmet>
+<div style="{{ st.root }}">
+  <div style="{{ st.harness }}">
+    <div style="{{ st.hGroup }}">
+      <div style="{{ st.brandMark }}"></div>
+      <span style="{{ st.hTitle }}">Cross Device</span>
+    </div>
+    <div style="{{ st.hGroup }}">
+      <span style="{{ st.hLabel }}">View</span>
+      <div style="{{ st.segment }}">
+        <sc-for list="{{ viewOptions }}" as="o" hint-placeholder-count="4">
+          <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="{{ st.hGroup }}">
+      <span style="{{ st.hLabel }}">Connection</span>
+      <div style="{{ st.segment }}">
+        <sc-for list="{{ stateOptions }}" as="o" hint-placeholder-count="6">
+          <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="{{ st.hRight }}">
+      <div style="{{ st.segment }}">
+        <sc-for list="{{ platformOptions }}" as="o" hint-placeholder-count="3">
+          <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+        </sc-for>
+      </div>
+      <div style="{{ st.segment }}">
+        <sc-for list="{{ themeOptions }}" as="o" hint-placeholder-count="2">
+          <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+        </sc-for>
+      </div>
+    </div>
+  </div>
+
+  <sc-if value="{{ isPlatformsView }}" hint-placeholder-val="{{ false }}">
+    <div style="{{ st.compareStrip }}">
+      <sc-for list="{{ platformFrames }}" as="f" hint-placeholder-count="3">
+        <div style="{{ st.compareCol }}">
+          <div style="{{ st.compareHead }}">
+            <div style="{{ st.compareName }}">{{ f.name }}</div>
+            <div style="{{ st.compareMeta }}">{{ f.meta }}</div>
+          </div>
+          <div style="{{ f.frameStyle }}">
+            <div style="{{ f.barStyle }}">
+              <span style="{{ f.barGlyphStyle }}">{{ f.barLeftLabel }}</span>
+              <span style="{{ f.barClockStyle }}">{{ f.clock }}</span>
+            </div>
+            <div style="{{ f.popWrapStyle }}">
+              <dc-import name="TrayPopover" platform="{{ f.key }}" theme="{{ theme }}" conn-state="{{ connState }}" switch-key="{{ switchKey }}" hint-size="312px,440px"></dc-import>
+            </div>
+          </div>
+        </div>
+      </sc-for>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isSingleView }}" hint-placeholder-val="{{ true }}">
+    <div style="{{ st.desktop }}">
+      <div style="{{ st.wallpaper }}"></div>
+
+      <div style="{{ st.bar }}">
+        <div style="{{ st.barLeft }}">
+          <sc-if value="{{ isWin }}" hint-placeholder-val="{{ false }}">
+            <div style="{{ st.winStart }}"></div>
+          </sc-if>
+          <span style="{{ st.barGlyph }}">{{ barLeftLabel }}</span>
+        </div>
+        <sc-if value="{{ isGnome }}" hint-placeholder-val="{{ false }}">
+          <div style="{{ st.barClockCenter }}">Tue 10:59</div>
+        </sc-if>
+        <div style="{{ st.barRight }}">
+          <sc-for list="{{ barIcons }}" as="i" hint-placeholder-count="3">
+            <div style="{{ st.barIcon }}"></div>
+          </sc-for>
+          <div style="{{ trayIconStyle }}" onClick="{{ toggleTray }}">
+            <div style="{{ trayGlyphStyle }}"></div>
+          </div>
+          <span style="{{ st.barClock }}">{{ barClockText }}</span>
+        </div>
+      </div>
+
+      <sc-if value="{{ showPopover }}" hint-placeholder-val="{{ true }}">
+        <div style="{{ st.popoverAnchor }}">
+          <dc-import name="TrayPopover" platform="{{ platform }}" theme="{{ theme }}" conn-state="{{ connState }}" switch-key="{{ switchKey }}" on-open-dashboard="{{ openDashboard }}" on-open-settings="{{ openSettings }}" on-recover="{{ recover }}" hint-size="312px,440px"></dc-import>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ st.windowWrap }}">
+          <div style="{{ st.onboardWindow }}">
+            <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="Cross Device" bg="{{ c.chromeBg }}" border="{{ c.border }}" text-color="{{ c.t1 }}" text-secondary="{{ c.t2 }}" hint-size="100%,40px"></dc-import>
+            <div style="{{ st.onboardBody }}">
+              <sc-if value="{{ obIsWelcome }}" hint-placeholder-val="{{ true }}">
+                <div style="{{ st.obStage }}">
+                  <div style="{{ st.obGlyph }}"></div>
+                  <div style="{{ st.obTitle }}">One keyboard. Every computer.</div>
+                  <div style="{{ st.obText }}">Keep using the keyboard and mouse you already have. Press one key to move to the computer beside it.</div>
+                  <div style="{{ st.primaryBtn }}" onClick="{{ obNext }}">Continue</div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ obIsPermission }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obStage }}">
+                  <div style="{{ st.obTitle }}">Allow input access</div>
+                  <div style="{{ st.obText }}">{{ plat.label }} needs your permission before Cross Device can pass keystrokes between computers.</div>
+                  <div style="{{ st.permCard }}">
+                    <div style="{{ st.cardText }}">
+                      <div style="{{ st.rowName }}">{{ plat.permName }}</div>
+                      <div style="{{ st.rowMeta }}">{{ permStatusText }}</div>
+                    </div>
+                    <div style="{{ permBtnStyle }}" onClick="{{ grantPermission }}">{{ permBtnLabel }}</div>
+                  </div>
+                  <div style="{{ obContinueStyle }}" onClick="{{ obNext }}">Continue</div>
+                </div>
+              </sc-if>
+              <sc-if value="{{ obIsPair }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obStage }}">
+                  <div style="{{ st.obTitle }}">Find your other computer</div>
+                  <div style="{{ st.obText }}">Pairing happens once. After that your computers recognise each other automatically.</div>
+                  <sc-if value="{{ obPairSearching }}" hint-placeholder-val="{{ true }}">
+                    <div style="{{ st.permCard }}">
+                      <div style="{{ st.spinner }}"></div>
+                      <div style="{{ st.rowMeta }}">Searching&#8230;</div>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ obPairFound }}" hint-placeholder-val="{{ false }}">
+                    <div style="{{ st.permCard }}">
+                      <div style="{{ st.idleDot }}"></div>
+                      <div style="{{ st.cardText }}">
+                        <div style="{{ st.rowName }}">Work Laptop</div>
+                        <div style="{{ st.rowMeta }}">Nearby</div>
+                      </div>
+                      <div style="{{ st.pairBtn }}" onClick="{{ obPair }}">Pair</div>
+                    </div>
+                  </sc-if>
+                  <sc-if value="{{ obPairRequesting }}" hint-placeholder-val="{{ false }}">
+                    <div style="{{ st.permCard }}">
+                      <div style="{{ st.spinner }}"></div>
+                      <div style="{{ st.rowMeta }}">Waiting for approval on Work Laptop&#8230;</div>
+                    </div>
+                  </sc-if>
+                </div>
+              </sc-if>
+              <sc-if value="{{ obIsDone }}" hint-placeholder-val="{{ false }}">
+                <div style="{{ st.obStage }}">
+                  <div style="{{ st.successGlyph }}">&#10003;</div>
+                  <div style="{{ st.obTitle }}">Ready</div>
+                  <div style="{{ st.obText }}">Cross Device lives in your {{ plat.trayName }} from now on. Press {{ switchKey }} to switch computers.</div>
+                  <div style="{{ st.primaryBtn }}" onClick="{{ finishOnboarding }}">Done</div>
+                </div>
+              </sc-if>
+              <div style="{{ st.obDots }}">
+                <sc-for list="{{ obDots }}" as="d" hint-placeholder-count="4">
+                  <div style="{{ d.style }}"></div>
+                </sc-for>
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isApp }}" hint-placeholder-val="{{ false }}">
+        <div style="{{ st.windowWrap }}">
+          <div style="{{ st.appWindow }}">
+            <dc-import name="WindowChrome" platform-controls="{{ plat.controls }}" title="{{ appTitle }}" bg="{{ c.chromeBg }}" border="{{ c.border }}" text-color="{{ c.t1 }}" text-secondary="{{ c.t2 }}" hint-size="100%,40px"></dc-import>
+            <div style="{{ st.appRow }}">
+              <div style="{{ st.sidebar }}">
+                <div style="{{ st.sidebarLabel }}">Overview</div>
+                <sc-for list="{{ navPrimary }}" as="n" hint-placeholder-count="1">
+                  <div style="{{ n.style }}" onClick="{{ n.onClick }}">{{ n.label }}</div>
+                </sc-for>
+                <div style="{{ st.sidebarLabel }}">Settings</div>
+                <sc-for list="{{ navSettings }}" as="n" hint-placeholder-count="4">
+                  <div style="{{ n.style }}" onClick="{{ n.onClick }}">{{ n.label }}</div>
+                </sc-for>
+              </div>
+              <div style="{{ st.appContent }}">
+
+                <sc-if value="{{ secDashboard }}" hint-placeholder-val="{{ true }}">
+                  <div style="{{ st.heroCard }}">
+                    <div style="{{ st.heroLabel }}">Controlling</div>
+                    <div style="{{ st.heroRow }}">
+                      <div style="{{ st.activeDotBig }}"></div>
+                      <div style="{{ st.heroName }}">{{ activeName }}</div>
+                      <div style="{{ st.keyHint }}">{{ switchKey }}</div>
+                    </div>
+                    <div style="{{ st.heroMeta }}">{{ statusLabel }}</div>
+                  </div>
+                  <div style="{{ st.sectionHeadRow }}">
+                    <div style="{{ st.sectionHeadFlat }}">Paired devices</div>
+                    <div style="{{ st.ghostBtn }}" onClick="{{ openTrayPairing }}">Pair new device</div>
+                  </div>
+                  <sc-for list="{{ devices }}" as="d" hint-placeholder-count="3">
+                    <div style="{{ st.appDeviceRow }}">
+                      <div style="{{ d.dotStyle }}"></div>
+                      <div style="{{ st.cardText }}">
+                        <div style="{{ d.nameStyle }}">{{ d.name }}</div>
+                        <div style="{{ st.rowMeta }}">{{ d.metaText }}</div>
+                      </div>
+                      <sc-if value="{{ d.canSwitch }}" hint-placeholder-val="{{ true }}">
+                        <div style="{{ st.pairBtn }}" onClick="{{ d.onSwitch }}">Switch</div>
+                      </sc-if>
+                      <sc-if value="{{ d.canRemove }}" hint-placeholder-val="{{ true }}">
+                        <div style="{{ st.removeBtn }}" onClick="{{ d.onRemove }}">&#10005;</div>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                </sc-if>
+
+                <sc-if value="{{ secGeneral }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ st.sectionHead }}">General</div>
+                  <sc-for list="{{ generalToggles }}" as="t" hint-placeholder-count="2">
+                    <div style="{{ st.settingRow }}">
+                      <div style="{{ st.cardText }}">
+                        <div style="{{ st.rowName }}">{{ t.label }}</div>
+                        <div style="{{ st.rowMeta }}">{{ t.desc }}</div>
+                      </div>
+                      <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                    </div>
+                  </sc-for>
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.cardText }}">
+                      <div style="{{ st.rowName }}">Appearance</div>
+                      <div style="{{ st.rowMeta }}">Match the system or pick a theme.</div>
+                    </div>
+                    <div style="{{ st.segment }}">
+                      <sc-for list="{{ themeOptions }}" as="o" hint-placeholder-count="2">
+                        <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ secDevices }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ st.sectionHead }}">Devices &amp; connection</div>
+                  <sc-for list="{{ devices }}" as="d" hint-placeholder-count="3">
+                    <div style="{{ st.appDeviceRow }}">
+                      <div style="{{ d.dotStyle }}"></div>
+                      <div style="{{ st.cardText }}">
+                        <div style="{{ d.nameStyle }}">{{ d.name }}</div>
+                        <div style="{{ st.rowMeta }}">{{ d.lastSeenText }}</div>
+                      </div>
+                      <sc-if value="{{ d.canRemove }}" hint-placeholder-val="{{ true }}">
+                        <div style="{{ st.removeBtn }}" onClick="{{ d.onRemove }}">&#10005;</div>
+                      </sc-if>
+                    </div>
+                  </sc-for>
+                  <sc-for list="{{ connectionToggles }}" as="t" hint-placeholder-count="2">
+                    <div style="{{ st.settingRow }}">
+                      <div style="{{ st.cardText }}">
+                        <div style="{{ st.rowName }}">{{ t.label }}</div>
+                        <div style="{{ st.rowMeta }}">{{ t.desc }}</div>
+                      </div>
+                      <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                    </div>
+                  </sc-for>
+                </sc-if>
+
+                <sc-if value="{{ secInput }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ st.sectionHead }}">Input</div>
+                  <div style="{{ st.keyCard }}">
+                    <div style="{{ st.rowMeta }}">Switch key</div>
+                    <div style="{{ keyDisplayStyle }}">{{ keyDisplayText }}</div>
+                    <div style="{{ st.recordBtn }}" onClick="{{ toggleRecording }}">{{ recordBtnLabel }}</div>
+                  </div>
+                  <div style="{{ st.presetRow }}">
+                    <sc-for list="{{ presets }}" as="p" hint-placeholder-count="4">
+                      <div style="{{ p.style }}" onClick="{{ p.onClick }}">{{ p.label }}</div>
+                    </sc-for>
+                  </div>
+                  <sc-for list="{{ inputToggles }}" as="t" hint-placeholder-count="2">
+                    <div style="{{ st.settingRow }}">
+                      <div style="{{ st.cardText }}">
+                        <div style="{{ st.rowName }}">{{ t.label }}</div>
+                        <div style="{{ st.rowMeta }}">{{ t.desc }}</div>
+                      </div>
+                      <div style="{{ t.track }}" onClick="{{ t.onClick }}"><div style="{{ t.thumb }}"></div></div>
+                    </div>
+                  </sc-for>
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.cardText }}">
+                      <div style="{{ st.rowName }}">Pointer sensitivity</div>
+                    </div>
+                    <div style="{{ st.segment }}">
+                      <sc-for list="{{ sensitivityOptions }}" as="o" hint-placeholder-count="3">
+                        <div style="{{ o.style }}" onClick="{{ o.onClick }}">{{ o.label }}</div>
+                      </sc-for>
+                    </div>
+                  </div>
+                </sc-if>
+
+                <sc-if value="{{ secAdvanced }}" hint-placeholder-val="{{ false }}">
+                  <div style="{{ st.sectionHead }}">Advanced</div>
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.cardText }}">
+                      <div style="{{ st.rowName }}">Diagnostics</div>
+                      <div style="{{ st.rowMeta }}">Average switch time 8 ms &#183; no dropped input today</div>
+                    </div>
+                  </div>
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.cardText }}">
+                      <div style="{{ st.rowName }}">{{ debugToggle.label }}</div>
+                      <div style="{{ st.rowMeta }}">{{ debugToggle.desc }}</div>
+                    </div>
+                    <div style="{{ debugToggle.track }}" onClick="{{ debugToggle.onClick }}"><div style="{{ debugToggle.thumb }}"></div></div>
+                  </div>
+                  <div style="{{ st.settingRow }}">
+                    <div style="{{ st.cardText }}">
+                      <div style="{{ st.rowName }}">{{ plat.permName }}</div>
+                      <div style="{{ st.rowMeta }}">{{ permStatusText }}</div>
+                    </div>
+                    <div style="{{ permBtnStyle }}" onClick="{{ grantPermission }}">{{ permBtnLabel }}</div>
+                  </div>
+                  <div style="{{ st.dangerBtn }}" onClick="{{ resetAll }}">Reset all settings</div>
+                </sc-if>
+
+              </div>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ toast }}" hint-placeholder-val="{{ null }}">
+        <div style="{{ st.toast }}">{{ toast }}</div>
+      </sc-if>
+    </div>
+  </sc-if>
+</div>
+<template id="__bundler_thumbnail"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200"><rect width="200" height="200" fill="#15171c"/><rect x="52" y="52" width="96" height="96" rx="24" fill="oklch(0.64 0.17 250)" opacity="0.9"/><circle cx="100" cy="100" r="18" fill="#fff"/></svg></template>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:1280,&quot;height&quot;:860}}">
+const FONT = '-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI Variable","Segoe UI",Roboto,"Helvetica Neue",sans-serif';
+const EASE = 'all 180ms cubic-bezier(0.32,0.72,0,1)';
+
+const STATE_LABELS = {
+  connected: 'Connected', connecting: 'Connecting', reconnecting: 'Reconnecting',
+  disconnected: 'Disconnected', error: 'Error', permission: 'Permission',
+};
+const PRESETS = ['Scroll Lock', 'Pause', 'F13', 'Ctrl + Shift + Space'];
+
+class Component extends DCLogic {
+  state = {
+    theme: 'dark', platform: 'macos', view: 'menubar', connState: 'connected', trayOpen: true,
+    devices: [
+      { id: 'd1', name: 'MacBook', os: 'macOS', status: 'active', lastSeen: 'Now' },
+      { id: 'd2', name: 'Work Laptop', os: 'Windows', status: 'inactive', lastSeen: '2 min ago' },
+      { id: 'd3', name: 'Desktop', os: 'Linux', status: 'disconnected', lastSeen: '3 days ago' },
+    ],
+    appSection: 'dashboard',
+    onboardStep: 0, obPairStep: 'searching', permGranted: false,
+    toggles: { launchAtLogin: true, showTray: true, autoReconnect: true, autoConnect: true, shareKeyboard: true, shareMouse: true, debugLogging: false },
+    sensitivity: 'normal', switchKey: 'Scroll Lock', recording: false, toast: null,
+  };
+  _timers = [];
+  later(fn, ms) { this._timers.push(setTimeout(fn, ms)); }
+
+  componentDidMount() {
+    this._onKey = (e) => {
+      if (!this.state.recording) return;
+      if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return;
+      e.preventDefault();
+      const parts = [];
+      if (e.ctrlKey) parts.push('Ctrl');
+      if (e.altKey) parts.push('Alt');
+      if (e.shiftKey) parts.push('Shift');
+      if (e.metaKey) parts.push(this.state.platform === 'macos' ? '\u2318' : 'Win');
+      parts.push(e.key === ' ' ? 'Space' : (e.key.length === 1 ? e.key.toUpperCase() : e.key));
+      this.setState({ switchKey: parts.join(' + '), recording: false });
+      this.toast('Switch key updated');
+    };
+    window.addEventListener('keydown', this._onKey, true);
+  }
+  componentWillUnmount() {
+    this._timers.forEach(clearTimeout);
+    window.removeEventListener('keydown', this._onKey, true);
+  }
+  toast(msg) {
+    this.setState({ toast: msg });
+    clearTimeout(this._toastT);
+    this._toastT = setTimeout(() => this.setState({ toast: null }), 1700);
+  }
+  switchTo(id) {
+    this.setState((s) => ({ devices: s.devices.map((d) => ({ ...d, status: d.id === id ? 'active' : (d.status === 'active' ? 'inactive' : d.status) })) }));
+    this.toast('Switched');
+  }
+  toggle(key) { this.setState((s) => ({ toggles: { ...s.toggles, [key]: !s.toggles[key] } })); }
+
+  tokens(theme) {
+    if (theme === 'dark') return {
+      border: 'rgba(255,255,255,0.14)', chromeBg: 'rgba(40,40,44,0.82)', winGlass: 'rgba(26,26,30,0.8)',
+      mat1: 'rgba(255,255,255,0.055)', mat2: 'rgba(255,255,255,0.1)', mat3: 'rgba(255,255,255,0.14)',
+      t1: 'rgba(255,255,255,0.94)', t2: 'rgba(255,255,255,0.56)', t3: 'rgba(255,255,255,0.36)',
+      accent: 'oklch(0.66 0.16 250)', accentSoft: 'rgba(110,140,255,0.16)', accentText: '#fff',
+      barBg: 'rgba(16,16,20,0.6)', hairline: 'rgba(255,255,255,0.09)', shell: '#0b0c0f',
+      wallpaper: 'radial-gradient(120% 90% at 15% 10%, #2b3550 0%, rgba(43,53,80,0) 60%), radial-gradient(100% 80% at 85% 20%, #3a2f4d 0%, rgba(58,47,77,0) 55%), radial-gradient(120% 110% at 60% 95%, #17222e 0%, rgba(23,34,46,0) 60%), #101319',
+      danger: '#ff453a', dangerSoft: 'rgba(255,69,58,0.14)', shadow: '0 24px 64px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3)',
+    };
+    return {
+      border: 'rgba(0,0,0,0.09)', chromeBg: 'rgba(246,246,249,0.88)', winGlass: 'rgba(250,250,252,0.86)',
+      mat1: 'rgba(10,12,20,0.045)', mat2: 'rgba(10,12,20,0.075)', mat3: 'rgba(10,12,20,0.1)',
+      t1: 'rgba(0,0,0,0.88)', t2: 'rgba(0,0,0,0.5)', t3: 'rgba(0,0,0,0.34)',
+      accent: 'oklch(0.55 0.18 250)', accentSoft: 'oklch(0.94 0.03 250)', accentText: '#fff',
+      barBg: 'rgba(255,255,255,0.55)', hairline: 'rgba(0,0,0,0.08)', shell: '#eef0f4',
+      wallpaper: 'radial-gradient(110% 90% at 20% 5%, #cfd9ef 0%, rgba(207,217,239,0) 60%), radial-gradient(90% 80% at 85% 25%, #e6d8ea 0%, rgba(230,216,234,0) 55%), radial-gradient(120% 110% at 55% 100%, #d5e2e6 0%, rgba(213,226,230,0) 60%), #e9ecf2',
+      danger: '#d92d20', dangerSoft: 'rgba(217,45,32,0.1)', shadow: '0 24px 60px rgba(20,24,40,0.2), 0 2px 6px rgba(20,24,40,0.1)',
+    };
+  }
+
+  platformMeta(p) {
+    if (p === 'macos') return { key: 'macos', label: 'macOS', barPos: 'top', barHeight: 26, radius: 16, controls: 'mac', trayName: 'menu bar', permName: 'Accessibility access', barLeft: 'Finder', clock: 'Tue 25 Aug  10:59' };
+    if (p === 'windows') return { key: 'windows', label: 'Windows', barPos: 'bottom', barHeight: 44, radius: 10, controls: 'win', trayName: 'system tray', permName: 'Input access', barLeft: '', clock: '10:59  25/08' };
+    return { key: 'linux', label: 'Linux', barPos: 'top', barHeight: 30, radius: 12, controls: 'gnome', trayName: 'tray', permName: 'Input device access', barLeft: 'Activities', clock: '' };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const c = this.tokens(s.theme);
+    const plat = this.platformMeta(s.platform);
+    const seg = (on) => ({ padding: '4px 9px', borderRadius: '6px', fontSize: '11.5px', fontWeight: 590, cursor: 'pointer', transition: EASE, background: on ? c.accent : 'transparent', color: on ? c.accentText : c.t2 });
+    const btn = { padding: '6px 12px', borderRadius: '8px', fontSize: '12px', fontWeight: 590, cursor: 'pointer', transition: EASE, whiteSpace: 'nowrap' };
+    const dotS = (color, ring) => ({ width: '9px', height: '9px', borderRadius: '50%', flexShrink: 0, background: ring ? 'transparent' : color, border: ring ? '1.5px solid ' + color : 'none', boxShadow: ring ? 'none' : '0 0 8px ' + color + '66' });
+
+    const devices = s.devices.map((d) => ({
+      ...d,
+      dotStyle: d.status === 'active' ? dotS('#30d158', false) : (d.status === 'inactive' ? dotS('#0a84ff', true) : dotS(c.t3, true)),
+      nameStyle: { fontSize: '13px', fontWeight: 590, color: d.status === 'disconnected' ? c.t2 : c.t1 },
+      metaText: d.os + ' \u00b7 ' + (d.status === 'active' ? 'Active' : (d.status === 'inactive' ? 'Connected' : 'Disconnected')),
+      lastSeenText: d.os + ' \u00b7 last seen ' + d.lastSeen,
+      canSwitch: d.status === 'inactive',
+      canRemove: d.id !== 'd1',
+      onSwitch: () => this.switchTo(d.id),
+      onRemove: () => { this.setState((x) => ({ devices: x.devices.filter((y) => y.id !== d.id) })); this.toast('Device removed'); },
+    }));
+    const active = devices.find((d) => d.status === 'active') || devices[0];
+
+    const mkToggle = (key, label, desc) => ({
+      label, desc,
+      track: { width: '38px', height: '22px', borderRadius: '11px', padding: '2px', display: 'flex', alignItems: 'center', justifyContent: s.toggles[key] ? 'flex-end' : 'flex-start', background: s.toggles[key] ? c.accent : c.mat2, cursor: 'pointer', transition: EASE, flexShrink: 0 },
+      thumb: { width: '18px', height: '18px', borderRadius: '50%', background: '#fff', boxShadow: '0 1px 3px rgba(0,0,0,0.25)' },
+      onClick: () => this.toggle(key),
+    });
+
+    const frameBase = { position: 'relative', width: '360px', height: '470px', borderRadius: '14px', overflow: 'hidden', background: c.wallpaper, border: '1px solid ' + c.border, boxShadow: c.shadow };
+    const platformFrames = ['macos', 'windows', 'linux'].map((k) => {
+      const m = this.platformMeta(k);
+      return {
+        key: k, name: m.label, meta: m.trayName,
+        frameStyle: frameBase,
+        barStyle: { position: 'absolute', left: 0, right: 0, [m.barPos]: 0, height: m.barHeight + 'px', background: c.barBg, backdropFilter: 'blur(24px) saturate(180%)', WebkitBackdropFilter: 'blur(24px) saturate(180%)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 10px', zIndex: 2, borderBottom: m.barPos === 'top' ? '1px solid ' + c.hairline : 'none', borderTop: m.barPos === 'bottom' ? '1px solid ' + c.hairline : 'none' },
+        barGlyphStyle: { fontSize: '11px', fontWeight: 590, color: c.t1 },
+        barClockStyle: { fontSize: '11px', fontWeight: 500, color: c.t1 },
+        barLeftLabel: m.barLeft || 'Start',
+        clock: m.clock || 'Tue 10:59',
+        popWrapStyle: { position: 'absolute', right: '14px', [m.barPos === 'top' ? 'top' : 'bottom']: (m.barHeight + 8) + 'px', transform: 'scale(0.9)', transformOrigin: m.barPos === 'top' ? 'top right' : 'bottom right', zIndex: 3 },
+      };
+    });
+
+    const st = {
+      root: { display: 'flex', flexDirection: 'column', minHeight: '100vh', width: '100%', background: c.shell, fontFamily: FONT, color: c.t1, letterSpacing: '-0.005em' },
+      harness: { display: 'flex', alignItems: 'center', gap: '18px', padding: '10px 18px', background: c.shell, borderBottom: '1px solid ' + c.hairline, flexWrap: 'wrap', flexShrink: 0 },
+      hGroup: { display: 'flex', alignItems: 'center', gap: '8px' },
+      hRight: { display: 'flex', alignItems: 'center', gap: '10px', marginLeft: 'auto' },
+      hTitle: { fontSize: '12.5px', fontWeight: 700, color: c.t1 },
+      hLabel: { fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: c.t3 },
+      brandMark: { width: '16px', height: '16px', borderRadius: '5px', background: c.accent },
+      segment: { display: 'flex', gap: '2px', padding: '2px', borderRadius: '8px', background: c.mat1 },
+      compareStrip: { display: 'flex', gap: '26px', padding: '30px 26px 40px', justifyContent: 'center', flexWrap: 'wrap' },
+      compareCol: { display: 'flex', flexDirection: 'column', gap: '10px' },
+      compareHead: { display: 'flex', alignItems: 'baseline', gap: '8px' },
+      compareName: { fontSize: '13px', fontWeight: 680, color: c.t1 },
+      compareMeta: { fontSize: '11.5px', color: c.t3 },
+      desktop: { position: 'relative', flex: 1, minHeight: '620px', overflow: 'hidden' },
+      wallpaper: { position: 'absolute', inset: 0, background: c.wallpaper },
+      bar: { position: 'absolute', left: 0, right: 0, [plat.barPos]: 0, height: plat.barHeight + 'px', background: c.barBg, backdropFilter: 'blur(24px) saturate(180%)', WebkitBackdropFilter: 'blur(24px) saturate(180%)', display: 'flex', alignItems: 'center', padding: '0 14px', gap: '10px', zIndex: 2, borderBottom: plat.barPos === 'top' ? '1px solid ' + c.hairline : 'none', borderTop: plat.barPos === 'bottom' ? '1px solid ' + c.hairline : 'none' },
+      barLeft: { display: 'flex', alignItems: 'center', gap: '10px' },
+      barGlyph: { fontSize: '12px', fontWeight: 590, color: c.t1 },
+      winStart: { width: '15px', height: '15px', borderRadius: '4px', background: c.accent },
+      barClockCenter: { position: 'absolute', left: '50%', transform: 'translateX(-50%)', fontSize: '12px', fontWeight: 590, color: c.t1 },
+      barRight: { display: 'flex', alignItems: 'center', gap: '12px', marginLeft: 'auto' },
+      barIcon: { width: '13px', height: '13px', borderRadius: '3px', background: c.t2, opacity: 0.55 },
+      barClock: { fontSize: '12px', fontWeight: 500, color: c.t1 },
+      popoverAnchor: { position: 'absolute', right: '16px', [plat.barPos === 'top' ? 'top' : 'bottom']: (plat.barHeight + 8) + 'px', zIndex: 4 },
+      windowWrap: { position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 3, padding: '52px 24px' },
+      onboardWindow: { width: '520px', background: c.winGlass, backdropFilter: 'blur(40px) saturate(180%)', WebkitBackdropFilter: 'blur(40px) saturate(180%)', border: '1px solid ' + c.border, borderRadius: (plat.radius + 2) + 'px', boxShadow: c.shadow, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+      onboardBody: { padding: '30px 34px 22px', display: 'flex', flexDirection: 'column', gap: '18px' },
+      obStage: { display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: '14px', animation: 'cd-fade 240ms ease' },
+      obGlyph: { width: '58px', height: '58px', borderRadius: '17px', background: c.accent, boxShadow: '0 8px 24px rgba(60,90,220,0.35)' },
+      obTitle: { fontSize: '20px', fontWeight: 680, color: c.t1, letterSpacing: '-0.02em' },
+      obText: { fontSize: '13px', lineHeight: 1.5, color: c.t2, maxWidth: '350px' },
+      permCard: { display: 'flex', alignItems: 'center', gap: '12px', width: '100%', padding: '12px 14px', borderRadius: '12px', background: c.mat1, textAlign: 'left' },
+      idleDot: dotS(c.t2, true),
+      spinner: { width: '20px', height: '20px', borderRadius: '50%', border: '2px solid ' + c.mat2, borderTopColor: c.accent, animation: 'cd-spin 0.8s linear infinite', flexShrink: 0 },
+      primaryBtn: { padding: '9px 20px', borderRadius: '9px', background: c.accent, color: c.accentText, fontSize: '13px', fontWeight: 620, cursor: 'pointer', transition: EASE, marginTop: '4px' },
+      pairBtn: { ...btn, background: c.accent, color: c.accentText },
+      obDots: { display: 'flex', gap: '6px', justifyContent: 'center' },
+      successGlyph: { width: '46px', height: '46px', borderRadius: '50%', background: '#30d158', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '21px' },
+      appWindow: { width: '720px', height: '470px', background: c.winGlass, backdropFilter: 'blur(40px) saturate(180%)', WebkitBackdropFilter: 'blur(40px) saturate(180%)', border: '1px solid ' + c.border, borderRadius: (plat.radius + 2) + 'px', boxShadow: c.shadow, overflow: 'hidden', display: 'flex', flexDirection: 'column' },
+      appRow: { display: 'flex', flex: 1, minHeight: 0 },
+      sidebar: { width: '176px', padding: '14px 10px', display: 'flex', flexDirection: 'column', gap: '2px', borderRight: '1px solid ' + c.hairline, flexShrink: 0 },
+      sidebarLabel: { fontSize: '10px', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: c.t3, padding: '10px 10px 4px' },
+      appContent: { flex: 1, padding: '24px 28px', overflowY: 'auto', display: 'flex', flexDirection: 'column' },
+      heroCard: { padding: '18px 20px', borderRadius: '15px', background: c.accentSoft, border: '1px solid ' + c.border, display: 'flex', flexDirection: 'column', gap: '7px', marginBottom: '18px' },
+      heroLabel: { fontSize: '10.5px', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: c.t3 },
+      heroRow: { display: 'flex', alignItems: 'center', gap: '12px' },
+      activeDotBig: { width: '11px', height: '11px', borderRadius: '50%', background: '#30d158', boxShadow: '0 0 12px #30d15877', flexShrink: 0 },
+      heroName: { fontSize: '22px', fontWeight: 680, color: c.t1, letterSpacing: '-0.02em', flex: 1 },
+      heroMeta: { fontSize: '12px', color: c.t2 },
+      keyHint: { fontSize: '10.5px', fontWeight: 640, color: c.t2, padding: '4px 8px', borderRadius: '7px', background: c.mat2, whiteSpace: 'nowrap' },
+      sectionHeadRow: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' },
+      sectionHead: { fontSize: '15px', fontWeight: 660, color: c.t1, marginBottom: '8px' },
+      sectionHeadFlat: { fontSize: '15px', fontWeight: 660, color: c.t1 },
+      ghostBtn: { ...btn, background: c.mat1, color: c.t1 },
+      appDeviceRow: { display: 'flex', alignItems: 'center', gap: '12px', padding: '12px 14px', borderRadius: '11px', background: c.mat1, marginBottom: '8px', transition: EASE },
+      cardText: { display: 'flex', flexDirection: 'column', gap: '2px', flex: 1, minWidth: 0 },
+      rowName: { fontSize: '13px', fontWeight: 590, color: c.t1 },
+      rowMeta: { fontSize: '11.5px', color: c.t2 },
+      removeBtn: { width: '26px', height: '26px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '11px', color: c.t3, cursor: 'pointer', background: c.mat1, flexShrink: 0 },
+      settingRow: { display: 'flex', alignItems: 'center', gap: '14px', padding: '13px 0', borderBottom: '1px solid ' + c.hairline },
+      keyCard: { padding: '18px 20px', borderRadius: '14px', background: c.mat1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', marginBottom: '14px' },
+      recordBtn: { ...btn, background: c.mat2, color: c.t1, marginTop: '2px' },
+      presetRow: { display: 'flex', gap: '7px', flexWrap: 'wrap', marginBottom: '12px' },
+      dangerBtn: { ...btn, background: c.dangerSoft, color: c.danger, alignSelf: 'flex-start', marginTop: '18px' },
+      toast: { position: 'absolute', top: '18px', left: '50%', transform: 'translateX(-50%)', padding: '9px 16px', borderRadius: '20px', background: c.winGlass, backdropFilter: 'blur(30px)', WebkitBackdropFilter: 'blur(30px)', border: '1px solid ' + c.border, boxShadow: c.shadow, fontSize: '12.5px', fontWeight: 590, color: c.t1, zIndex: 6, animation: 'cd-fade 200ms ease' },
+    };
+
+    const viewOptions = [['menubar', 'Menu Bar'], ['app', 'App Window'], ['onboarding', 'First Launch'], ['platforms', 'All Platforms']].map(([k, label]) => ({
+      label, style: seg(s.view === k), onClick: () => this.setState({ view: k, trayOpen: k === 'menubar' }),
+    }));
+
+    return {
+      st, c, plat,
+      theme: s.theme, platform: s.platform, connState: s.connState, switchKey: s.switchKey, toast: s.toast,
+      isPlatformsView: s.view === 'platforms',
+      isSingleView: s.view !== 'platforms',
+      isApp: s.view === 'app', isOnboarding: s.view === 'onboarding',
+      showPopover: s.view === 'menubar' && s.trayOpen,
+      isWin: plat.controls === 'win', isGnome: plat.controls === 'gnome', isMac: plat.controls === 'mac',
+      barLeftLabel: plat.barLeft, barClockText: plat.clock,
+      barIcons: [1, 2, 3],
+      platformFrames,
+      viewOptions,
+      stateOptions: Object.keys(STATE_LABELS).map((k) => ({ label: STATE_LABELS[k], style: seg(s.connState === k), onClick: () => this.setState({ connState: k }) })),
+      platformOptions: [['macos', 'macOS'], ['windows', 'Windows'], ['linux', 'Linux']].map(([k, label]) => ({ label, style: seg(s.platform === k), onClick: () => this.setState({ platform: k }) })),
+      themeOptions: [['dark', 'Dark'], ['light', 'Light']].map(([k, label]) => ({ label, style: seg(s.theme === k), onClick: () => this.setState({ theme: k }) })),
+      trayIconStyle: { padding: '4px', borderRadius: '7px', cursor: 'pointer', transition: EASE, background: s.trayOpen ? c.mat2 : 'transparent' },
+      trayGlyphStyle: { width: '15px', height: '15px', borderRadius: '5px', background: s.connState === 'connected' ? c.t1 : c.accent, transition: EASE },
+      toggleTray: () => this.setState((x) => ({ trayOpen: !x.trayOpen, view: 'menubar' })),
+      devices, activeName: active.name, statusLabel: STATE_LABELS[s.connState],
+      appTitle: s.appSection === 'dashboard' ? 'Cross Device' : 'Settings',
+      secDashboard: s.appSection === 'dashboard', secGeneral: s.appSection === 'general',
+      secDevices: s.appSection === 'devices', secInput: s.appSection === 'input', secAdvanced: s.appSection === 'advanced',
+      navPrimary: [['dashboard', 'Dashboard']].map(([k, label]) => ({ label, onClick: () => this.setState({ appSection: k }), style: { padding: '8px 11px', borderRadius: '9px', fontSize: '12.5px', fontWeight: 590, cursor: 'pointer', transition: EASE, background: s.appSection === k ? c.mat2 : 'transparent', color: s.appSection === k ? c.t1 : c.t2 } })),
+      navSettings: [['general', 'General'], ['devices', 'Devices'], ['input', 'Input'], ['advanced', 'Advanced']].map(([k, label]) => ({ label, onClick: () => this.setState({ appSection: k }), style: { padding: '8px 11px', borderRadius: '9px', fontSize: '12.5px', fontWeight: 590, cursor: 'pointer', transition: EASE, background: s.appSection === k ? c.mat2 : 'transparent', color: s.appSection === k ? c.t1 : c.t2 } })),
+      openTrayPairing: () => { this.setState({ view: 'menubar', trayOpen: true }); this.toast('Pairing lives in the menu bar'); },
+      openDashboard: () => this.setState({ view: 'app', appSection: 'dashboard', trayOpen: false }),
+      openSettings: () => this.setState({ view: 'app', appSection: 'general', trayOpen: false }),
+      recover: () => { this.setState({ connState: 'connected' }); this.toast('Reconnected'); },
+      obIsWelcome: s.onboardStep === 0, obIsPermission: s.onboardStep === 1, obIsPair: s.onboardStep === 2, obIsDone: s.onboardStep === 3,
+      obPairSearching: s.obPairStep === 'searching', obPairFound: s.obPairStep === 'found', obPairRequesting: s.obPairStep === 'requesting',
+      obDots: [0, 1, 2, 3].map((i) => ({ style: { width: '5px', height: '5px', borderRadius: '50%', background: i === s.onboardStep ? c.accent : c.mat3, transition: EASE } })),
+      obNext: () => {
+        this.setState((x) => ({ onboardStep: Math.min(3, x.onboardStep + 1) }));
+        if (s.onboardStep === 1) this.later(() => this.setState({ obPairStep: 'found' }), 1300);
+      },
+      obPair: () => { this.setState({ obPairStep: 'requesting' }); this.later(() => this.setState({ onboardStep: 3, obPairStep: 'found' }), 1500); },
+      finishOnboarding: () => this.setState({ view: 'menubar', trayOpen: true, onboardStep: 0, obPairStep: 'searching' }),
+      permStatusText: s.permGranted ? 'Granted' : 'Not granted yet',
+      permBtnLabel: s.permGranted ? 'Granted' : 'Allow',
+      permBtnStyle: { ...btn, background: s.permGranted ? c.mat2 : c.accent, color: s.permGranted ? c.t2 : c.accentText },
+      grantPermission: () => this.setState({ permGranted: true }),
+      obContinueStyle: { padding: '9px 20px', borderRadius: '9px', background: s.permGranted ? c.accent : c.mat2, color: s.permGranted ? c.accentText : c.t3, fontSize: '13px', fontWeight: 620, cursor: s.permGranted ? 'pointer' : 'default', transition: EASE, marginTop: '4px' },
+      generalToggles: [mkToggle('launchAtLogin', 'Launch at login', 'Start quietly when this computer boots.'), mkToggle('showTray', plat.controls === 'win' ? 'Show in system tray' : 'Show in menu bar', 'Keep the icon visible.')],
+      connectionToggles: [mkToggle('autoReconnect', 'Reconnect automatically', 'Recover on its own after a drop.'), mkToggle('autoConnect', 'Connect paired devices', 'Reconnect trusted computers on launch.')],
+      inputToggles: [mkToggle('shareKeyboard', 'Share keyboard', 'Send typing to the active computer.'), mkToggle('shareMouse', 'Share mouse', 'Send pointer and scroll to the active computer.')],
+      debugToggle: mkToggle('debugLogging', 'Detailed logging', 'Keep a log for support requests.'),
+      sensitivityOptions: ['Low', 'Normal', 'High'].map((l) => ({ label: l, style: seg(s.sensitivity === l.toLowerCase()), onClick: () => this.setState({ sensitivity: l.toLowerCase() }) })),
+      presets: PRESETS.map((p) => ({ label: p, style: { padding: '7px 12px', borderRadius: '9px', fontSize: '12px', fontWeight: 590, cursor: 'pointer', transition: EASE, background: s.switchKey === p ? c.accent : c.mat1, color: s.switchKey === p ? c.accentText : c.t2 }, onClick: () => this.setState({ switchKey: p, recording: false }) })),
+      keyDisplayText: s.recording ? 'Press any key\u2026' : s.switchKey,
+      keyDisplayStyle: { fontSize: '20px', fontWeight: 660, color: s.recording ? c.accent : c.t1, animation: s.recording ? 'cd-breathe 1.3s ease-in-out infinite' : 'none' },
+      recordBtnLabel: s.recording ? 'Cancel' : 'Record shortcut',
+      toggleRecording: () => this.setState((x) => ({ recording: !x.recording })),
+      resetAll: () => { this.setState({ toggles: { launchAtLogin: true, showTray: true, autoReconnect: true, autoConnect: true, shareKeyboard: true, shareMouse: true, debugLogging: false }, sensitivity: 'normal', switchKey: 'Scroll Lock' }); this.toast('Settings reset'); },
+    };
+  }
+}
+
+</script>
+</body>
+</html>

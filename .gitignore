@@ -10,5 +10,6 @@ flutter/**/generated_plugin_registrant.dart
 .vscode/
 .idea/
 
-# Claude Design export (reference only, not project source)
+# Claude Design export (reference only, not project source) — tracked
+# only on the product/design branch, ignored everywhere else.
 /design/claude-design-export/
