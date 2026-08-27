@@ -16,12 +16,21 @@ class PermissionStep extends StatelessWidget {
     this.isRequesting = false,
     this.errorMessage,
     this.connectionError = false,
+    this.allowSkip = false,
   });
 
   final FlowPalette palette;
   final PermissionStatus permission;
   final VoidCallback onGrant;
   final VoidCallback onContinue;
+
+  /// True in local development (`--dart-define=FLOW_ENV=development`, see
+  /// `state/app_env.dart`) — lets "Continue" proceed without the
+  /// permission actually granted. macOS only grants Accessibility to a
+  /// stable, installed app bundle, so a `flutter run` build can never
+  /// satisfy this gate no matter what the user clicks; blocking onboarding
+  /// on it there would make the rest of the app unreachable in dev.
+  final bool allowSkip;
 
   /// True while the daemon command triggered by "Allow" is in flight —
   /// shows a spinner and disables the button instead of leaving it looking
@@ -43,6 +52,7 @@ class PermissionStep extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = palette;
     final granted = permission.granted;
+    final canContinue = granted || allowSkip;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -128,14 +138,24 @@ class PermissionStep extends StatelessWidget {
               textAlign: TextAlign.center,
             ),
           ),
+        if (allowSkip && !granted)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              "Development build — Continue won't wait on this permission "
+              "since macOS can't grant it until the app is installed.",
+              style: FlowType.meta(c.text3),
+              textAlign: TextAlign.center,
+            ),
+          ),
         const SizedBox(height: 4),
         FlowButton(
           label: 'Continue',
           kind: FlowButtonKind.primary,
-          background: granted ? c.accent : c.mat2,
-          foreground: granted ? c.accentText : c.text3,
+          background: canContinue ? c.accent : c.mat2,
+          foreground: canContinue ? c.accentText : c.text3,
           large: true,
-          onPressed: granted ? onContinue : null,
+          onPressed: canContinue ? onContinue : null,
         ),
       ],
     );

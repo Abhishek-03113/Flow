@@ -21,6 +21,14 @@ On macOS, `flutter run` (Debug/Profile) builds with App Sandbox off (`macos/Runn
 
 Pairing note: the daemon only accepts an incoming pairing request while *its* user also has pairing open (`daemon/README.md`, "Pairing consent window"), so pairing two machines means pressing "Pair a device" on both, not just the initiating one.
 
+Onboarding's permission step normally blocks "Continue" until the OS Accessibility/input permission is granted — but macOS ties that grant to a stable, installed app bundle path, so a `flutter run` build sitting in `build/macos/Build/Products/Debug/` structurally cannot get it no matter what you click. Pass `--dart-define=FLOW_ENV=development` (`lib/state/app_env.dart`) to stop that step from blocking so the rest of the app stays reachable while developing:
+
+```sh
+flutter run -d macos --dart-define=FLOW_ENV=development
+```
+
+Unset (the default, and what `flutter test` always gets), onboarding behaves exactly as it does for a real user.
+
 The window keeps its native OS title bar/frame for now, not the design mockups' fully frameless glass look — `WindowChrome` (`lib/core/widgets/window_chrome.dart`) is still purely decorative (its traffic-light/win/gnome buttons don't do anything, and there's no custom drag region), and the window is a single fixed size shared by onboarding and the dashboard rather than resizing to fit each. A custom frameless shell is a reasonable follow-up, deliberately not attempted alongside this pass to avoid layering an untested drag-gesture region over the dashboard/popover's existing interactive controls.
 
 ## Running without a daemon
