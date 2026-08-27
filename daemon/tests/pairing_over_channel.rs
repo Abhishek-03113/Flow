@@ -31,7 +31,10 @@ struct TestDaemon {
 
 async fn service() -> TestDaemon {
     let storage = Storage::open_in_memory().await.expect("open in-memory db");
-    let service = DaemonService::new(storage.clone()).await;
+    // The mock-parity fixture, deliberately: this test's own name-collision
+    // assertion below relies on both sides' local device sharing the seed's
+    // hardcoded "MacBook" name.
+    let service = DaemonService::new_seeded_for_test(storage.clone()).await;
     TestDaemon { service, storage }
 }
 

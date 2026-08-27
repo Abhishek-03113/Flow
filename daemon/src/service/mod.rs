@@ -1,9 +1,12 @@
 //! The in-memory service state a `DaemonService` (track B2) wraps in
-//! watch channels. `load_or_seed` is the load-or-bootstrap step: a fresh
-//! (empty) database looks identical to `MockDaemonRepository`'s seed data
-//! (`daemon/todos.json` `sharedContractConstants.mockParitySeedData`) —
-//! after that first run, whatever was actually persisted comes back
-//! instead.
+//! watch channels. `ServiceState::from_storage` is the real
+//! load-or-bootstrap step a production `flow-daemon` process uses: a
+//! fresh (empty) database gets only this machine's own real device
+//! record, never fake remote devices or candidates — after the first
+//! run, whatever was actually persisted comes back instead.
+//! `ServiceState::seeded_for_test` is the mock-parity fixture
+//! (`daemon/todos.json` `sharedContractConstants.mockParitySeedData`)
+//! tests opt into explicitly instead.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -100,10 +103,16 @@ pub struct ServiceState {
 }
 
 impl ServiceState {
-    /// Loads devices and settings from `storage`, seeding the exact
-    /// mock-parity 3-device/2-candidate data only when the database is
-    /// empty (first run).
-    pub async fn load_or_seed(storage: &Storage) -> Self {
+    /// Production entry point (`DaemonService::new`'s only caller,
+    /// `main.rs`): loads devices and settings from `storage`, seeding
+    /// only this machine's own real device record when the database is
+    /// empty (first run) — never fake remote devices, never fake pairing
+    /// candidates. `link_state` starts `Disconnected`: nothing here has
+    /// proven a real peer connection yet, so nothing should claim one.
+    /// `main.rs`'s `run_peer_pipeline` is the only place that later calls
+    /// `DaemonService::set_link_state(Connected)`, once a real handshake
+    /// actually completes.
+    pub async fn from_storage(storage: &Storage) -> Self {
         let settings_repo = SettingsRepo::new(storage.clone());
         let device_repo = DeviceRepo::new(storage.clone());
 
@@ -111,7 +120,57 @@ impl ServiceState {
 
         let existing = device_repo.list().await;
         let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
-            let seed = seed_device_records();
+            let local = real_local_device_record();
+            device_repo.upsert(local.clone()).await;
+            HashMap::from([(local.device.id.clone(), local.device)])
+        } else {
+            existing
+                .into_iter()
+                .map(|record| (record.device.id.clone(), record.device))
+                .collect()
+        };
+        restore_local_device_active(&mut devices);
+
+        Self {
+            devices,
+            link_state: DaemonLinkState::Disconnected,
+            pairing_session: PairingSession::idle(),
+            settings,
+            permission: PermissionStatus {
+                name: "Accessibility access".to_string(),
+                granted: false,
+            },
+            candidates_pool: Vec::new(),
+            discovered_candidates: HashMap::new(),
+        }
+    }
+
+    /// Test-only fixture: the exact mock-parity 3-device/2-candidate seed
+    /// data `MockDaemonRepository` also ships, plus a `Connected` initial
+    /// link state — every daemon test predating this split was written
+    /// against exactly this fixture and asserts on its specific device
+    /// ids/candidates/local device name, so tests opt into it explicitly
+    /// here rather than a real `flow-daemon` process ever seeding it
+    /// implicitly. [`Self::from_storage`] above is what production
+    /// actually uses.
+    ///
+    /// Deliberately plain `pub`, not `#[cfg(test)]`: `daemon/tests/*.rs`
+    /// integration tests link this crate as a normal dependency, without
+    /// `cfg(test)`, so a `cfg(test)`-gated item would be invisible to
+    /// them. The name and doc comment are the guardrail instead — no
+    /// production code calls this, and
+    /// `production_init_never_seeds_mock_parity_data` (below) fails loudly
+    /// if that ever changes.
+    #[doc(hidden)]
+    pub async fn seeded_for_test(storage: &Storage) -> Self {
+        let settings_repo = SettingsRepo::new(storage.clone());
+        let device_repo = DeviceRepo::new(storage.clone());
+
+        let settings = settings_repo.load().await;
+
+        let existing = device_repo.list().await;
+        let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
+            let seed = mock_parity_device_records();
             for record in &seed {
                 device_repo.upsert(record.clone()).await;
             }
@@ -135,7 +194,7 @@ impl ServiceState {
                 name: "Accessibility access".to_string(),
                 granted: false,
             },
-            candidates_pool: candidate_seeds(),
+            candidates_pool: mock_parity_candidates(),
             discovered_candidates: HashMap::new(),
         }
     }
@@ -236,8 +295,28 @@ pub struct DaemonService {
 }
 
 impl DaemonService {
+    /// Production entry point — `main.rs`'s only constructor call. Real
+    /// device/settings state via [`ServiceState::from_storage`]; no
+    /// seeded mock data.
     pub async fn new(storage: Storage) -> Self {
-        let state = ServiceState::load_or_seed(&storage).await;
+        let state = ServiceState::from_storage(&storage).await;
+        Self::from_state(storage, state).await
+    }
+
+    /// Test-only entry point — the mock-parity fixture every daemon test
+    /// predating this split was written against. See
+    /// [`ServiceState::seeded_for_test`] for why this is a separate,
+    /// explicitly-named constructor rather than something `new` falls
+    /// into implicitly.
+    #[doc(hidden)]
+    pub async fn new_seeded_for_test(storage: Storage) -> Self {
+        let state = ServiceState::seeded_for_test(&storage).await;
+        Self::from_state(storage, state).await
+    }
+
+    /// Shared tail of both constructors above: wraps an already-loaded
+    /// [`ServiceState`] in its watch channels.
+    async fn from_state(storage: Storage, state: ServiceState) -> Self {
         let identity = DeviceIdentity::load_or_generate(storage.clone()).await;
 
         let (devices_tx, _) = watch::channel(devices_list(&state));
@@ -272,8 +351,9 @@ impl DaemonService {
     /// caller, since that's the one place that knows whether a paired
     /// device is actually streaming input right now. Before any
     /// daemon-to-daemon wiring existed, `link_state` was only ever the
-    /// static `Connected` value `ServiceState::load_or_seed` sets once
-    /// at startup; this is what makes it reflect
+    /// static `Connected` value `ServiceState::load_or_seed` (now
+    /// `from_storage`/`seeded_for_test`) set once at startup; this is
+    /// what makes it reflect
     /// `docs/contracts/daemon-ipc.md`'s transition table for real
     /// connections instead.
     pub fn set_link_state(&self, state: DaemonLinkState) {
@@ -692,7 +772,8 @@ impl DaemonService {
     /// [`LOCAL_DEVICE_ID`] — used to fill out an outgoing
     /// `PairingRequest`. Falls back to a generic name if the local
     /// device record is ever missing, which shouldn't happen in
-    /// practice since `load_or_seed` always seeds it.
+    /// practice since `ServiceState::from_storage`/`seeded_for_test`
+    /// always seeds it.
     async fn local_device_identity_inner(&self) -> (String, HostOs) {
         let state = self.state.read().await;
         state
@@ -1133,7 +1214,51 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn seed_device_records() -> Vec<DeviceRecord> {
+/// This daemon's own OS, as compiled — the binary only ever runs on the
+/// platform it was built for, so a compile-time constant is exactly as
+/// accurate as any runtime check would be, with no extra dependency.
+fn current_host_os() -> HostOs {
+    match std::env::consts::OS {
+        "macos" => HostOs::Macos,
+        "windows" => HostOs::Windows,
+        _ => HostOs::Linux,
+    }
+}
+
+/// This machine's real hostname, for the local device's display name —
+/// falls back to a generic label if the OS ever refuses to report one
+/// (rare, and not worth failing daemon startup over a display string).
+fn local_hostname() -> String {
+    hostname::get()
+        .ok()
+        .and_then(|name| name.into_string().ok())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "This device".to_string())
+}
+
+/// The real local device record [`ServiceState::from_storage`] seeds on
+/// a fresh (empty) database: this machine's own real hostname and OS,
+/// active, never removable — the one device every fresh install
+/// legitimately has, as opposed to the fake remote devices
+/// `mock_parity_device_records` seeds for tests.
+fn real_local_device_record() -> DeviceRecord {
+    DeviceRecord {
+        device: Device {
+            id: DeviceId(LOCAL_DEVICE_ID.to_string()),
+            name: local_hostname(),
+            os: current_host_os(),
+            state: DeviceState::Active,
+            last_seen: Utc::now(),
+        },
+        public_key: None,
+        removable: false,
+    }
+}
+
+/// The exact mock-parity 3-device seed data `MockDaemonRepository` also
+/// ships — used only by [`ServiceState::seeded_for_test`], never by
+/// production's [`ServiceState::from_storage`].
+fn mock_parity_device_records() -> Vec<DeviceRecord> {
     let now = Utc::now();
     vec![
         DeviceRecord {
@@ -1172,7 +1297,12 @@ fn seed_device_records() -> Vec<DeviceRecord> {
     ]
 }
 
-fn candidate_seeds() -> Vec<PairingCandidate> {
+/// The exact mock-parity pairing-candidate seed data
+/// `MockDaemonRepository` also ships — used only by
+/// [`ServiceState::seeded_for_test`], never by production's
+/// [`ServiceState::from_storage`] (whose `candidates_pool` starts empty;
+/// real candidates only ever come from `note_discovered_peer`).
+fn mock_parity_candidates() -> Vec<PairingCandidate> {
     vec![
         PairingCandidate {
             id: "cand-office-mini".to_string(),
@@ -1194,7 +1324,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_database_seeds_the_mock_parity_devices() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::load_or_seed(&storage).await;
+        let state = ServiceState::seeded_for_test(&storage).await;
 
         assert_eq!(state.devices.len(), 3);
         let local = &state.devices[&DeviceId(LOCAL_DEVICE_ID.to_string())];
@@ -1236,7 +1366,10 @@ mod tests {
             })
             .await;
 
-        let state = ServiceState::load_or_seed(&storage).await;
+        // The real (production) loader — proves the anti-reseed guarantee
+        // that actually matters: a non-empty database is never seeded
+        // over, mock or real.
+        let state = ServiceState::from_storage(&storage).await;
 
         assert_eq!(state.devices.len(), 1);
         assert!(state
@@ -1244,10 +1377,224 @@ mod tests {
             .contains_key(&DeviceId("only-device".to_string())));
     }
 
+    // --- Real (production) fresh-state behavior: the actual subject of
+    // this task, "remove mock runtime data from Flow" — a fresh install
+    // must show exactly the real local device, no fake remotes, no fake
+    // pairing candidates, and no claimed connection until one really
+    // exists. Every test above/below this block that uses
+    // `DaemonService::new_seeded_for_test`/`ServiceState::seeded_for_test`
+    // is deliberately still exercising the mock-parity fixture instead —
+    // these are the ones that exercise what a real `flow-daemon` process
+    // (`DaemonService::new`/`ServiceState::from_storage`, `main.rs`'s only
+    // call site) actually does.
+
+    #[tokio::test]
+    async fn fresh_real_state_has_only_the_local_device_no_fake_remotes() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let state = ServiceState::from_storage(&storage).await;
+
+        assert_eq!(
+            state.devices.len(),
+            1,
+            "a fresh real install must have exactly the local device, no \
+             seeded fake remotes: {:?}",
+            state.devices.values().map(|d| &d.name).collect::<Vec<_>>()
+        );
+        let local = &state.devices[&DeviceId(LOCAL_DEVICE_ID.to_string())];
+        assert_eq!(local.state, DeviceState::Active);
+        // The real machine's own identity, not the mock fixture's
+        // hardcoded "MacBook"/macOS.
+        assert_eq!(local.name, local_hostname());
+        assert_eq!(local.os, current_host_os());
+
+        let device_repo = DeviceRepo::new(storage);
+        let local_record = device_repo
+            .find_by_id(DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .await
+            .expect("local device persisted");
+        assert!(!local_record.removable);
+    }
+
+    #[tokio::test]
+    async fn fresh_real_state_starts_disconnected_with_no_seeded_candidates() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let state = ServiceState::from_storage(&storage).await;
+
+        assert_eq!(
+            state.link_state,
+            DaemonLinkState::Disconnected,
+            "a fresh daemon has proven no real peer connection yet, so it \
+             must not claim Connected"
+        );
+        assert!(
+            state.candidates_pool.is_empty(),
+            "production must never seed fake pairing candidates: {:?}",
+            state.candidates_pool
+        );
+        assert_eq!(state.pairing_session, PairingSession::idle());
+    }
+
+    #[tokio::test]
+    async fn starting_pairing_on_a_real_daemon_finds_no_candidates_without_real_discovery() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let mut sessions = service.watch_pairing_session();
+        let _ = sessions.borrow_and_update();
+
+        service.start_pairing().await.expect("start pairing");
+        sessions.changed().await.expect("searching update");
+        assert_eq!(sessions.borrow_and_update().stage, PairingStage::Searching);
+
+        sessions.changed().await.expect("found update");
+        let found = sessions.borrow_and_update().clone();
+        assert_eq!(found.stage, PairingStage::Found);
+        assert!(
+            found.candidates.is_empty(),
+            "with no real peer ever discovered, Pair New Device must offer \
+             nothing — not the mock's Office Mac Mini/Studio Linux: {:?}",
+            found.candidates
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_discovered_peer_is_the_only_pairing_candidate_offered() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let mut sessions = service.watch_pairing_session();
+        let _ = sessions.borrow_and_update();
+
+        service.start_pairing().await.expect("start pairing");
+        sessions.changed().await.expect("searching update");
+
+        let peer = DiscoveredPeer {
+            name: "Real Linux Box".to_string(),
+            os: HostOs::Linux,
+            address: ChannelAddress::Tcp("127.0.0.1:9".parse().unwrap()),
+        };
+        service.note_discovered_peer(peer.clone()).await;
+
+        sessions.changed().await.expect("found update");
+        let found = sessions.borrow_and_update().clone();
+        assert_eq!(found.stage, PairingStage::Found);
+        assert_eq!(
+            found.candidates.iter().map(|c| &c.name).collect::<Vec<_>>(),
+            vec![&peer.name],
+            "only the real discovered peer should be offered, no mock \
+             candidates mixed in: {:?}",
+            found.candidates
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_paired_device_survives_a_restart() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage.clone()).await;
+
+        let device_repo = DeviceRepo::new(storage.clone());
+        device_repo
+            .upsert(DeviceRecord {
+                device: Device {
+                    id: DeviceId("pk:real-peer".to_string()),
+                    name: "Real Windows PC".to_string(),
+                    os: HostOs::Windows,
+                    state: DeviceState::Connected,
+                    last_seen: Utc::now(),
+                },
+                public_key: Some(vec![7; 32]),
+                removable: true,
+            })
+            .await;
+
+        // Simulate a restart against the same database — the real
+        // production path, not the mock fixture.
+        drop(service);
+        let reloaded = ServiceState::from_storage(&storage).await;
+
+        assert_eq!(
+            reloaded.devices.len(),
+            2,
+            "local device + the real paired one"
+        );
+        assert!(reloaded
+            .devices
+            .contains_key(&DeviceId("pk:real-peer".to_string())));
+    }
+
+    #[tokio::test]
+    async fn removing_a_real_device_persists_across_a_restart() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage.clone()).await;
+
+        let device_repo = DeviceRepo::new(storage.clone());
+        device_repo
+            .upsert(DeviceRecord {
+                device: Device {
+                    id: DeviceId("pk:removable-peer".to_string()),
+                    name: "Removable Peer".to_string(),
+                    os: HostOs::Linux,
+                    state: DeviceState::Connected,
+                    last_seen: Utc::now(),
+                },
+                public_key: Some(vec![9; 32]),
+                removable: true,
+            })
+            .await;
+        // Reload so the service's in-memory state actually sees the device
+        // just inserted directly through the repo above.
+        drop(service);
+        let service = DaemonService::new(storage.clone()).await;
+
+        service
+            .remove_device("pk:removable-peer")
+            .await
+            .expect("remove the real peer");
+
+        drop(service);
+        let reloaded = ServiceState::from_storage(&storage).await;
+        assert!(
+            !reloaded
+                .devices
+                .contains_key(&DeviceId("pk:removable-peer".to_string())),
+            "a removed device must never reappear on restart, real or not"
+        );
+    }
+
+    /// The guard the task explicitly asked for: this must fail if
+    /// production's `DaemonService::new`/`ServiceState::from_storage` are
+    /// ever pointed back at the mock-parity fixture
+    /// (`seeded_for_test`/`mock_parity_device_records`/
+    /// `mock_parity_candidates`). If someone "fixes a bug" by swapping
+    /// `from_storage` for `seeded_for_test` inside `DaemonService::new`,
+    /// this is what catches it.
+    #[tokio::test]
+    async fn production_init_never_seeds_mock_parity_data() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        let devices = service.watch_devices().borrow().clone();
+        assert_eq!(
+            devices.len(),
+            1,
+            "production seeded more than the real local device: {devices:?}"
+        );
+        assert!(
+            !devices
+                .iter()
+                .any(|d| d.name == "Work Laptop" || d.name == "Desktop"),
+            "production must never seed the mock-parity fake remote devices: {devices:?}"
+        );
+
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Disconnected,
+            "production must never claim Connected before a real peer link exists"
+        );
+    }
+
     #[tokio::test]
     async fn a_subscriber_immediately_sees_the_seeded_state_with_no_prior_emit() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         // No emit has happened yet — a fresh subscriber must still see the
         // seeded value, proving late-subscribe replay (the exact bug class
@@ -1272,7 +1619,7 @@ mod tests {
     #[tokio::test]
     async fn each_subscriber_gets_its_own_receiver_all_seeing_the_same_replayed_value() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         let a = service.watch_devices();
         let b = service.watch_devices();
@@ -1282,7 +1629,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn switching_to_a_missing_or_active_device_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert_eq!(
             service.switch_active_device("no-such-device").await,
@@ -1302,7 +1649,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn switching_moves_exactly_one_device_active_and_the_prior_one_inactive() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         let mut watch = service.watch_devices();
         let _ = watch.borrow_and_update(); // consume the initial replay
 
@@ -1328,7 +1675,7 @@ mod tests {
     #[tokio::test]
     async fn switch_active_device_local_cycles_through_switchable_devices_and_back() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         // Seed: d1 active, d2 inactive, d3 disconnected.
 
         service.switch_active_device_local().await;
@@ -1350,7 +1697,7 @@ mod tests {
     #[tokio::test]
     async fn switch_active_device_local_with_nothing_else_switchable_does_nothing() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         service.remove_device("d2").await.expect("remove d2");
         // Only d1 (active) and d3 (disconnected) remain — nothing eligible.
 
@@ -1372,10 +1719,10 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
 
         // First boot seeds and persists the device list.
-        let _ = DaemonService::new(storage.clone()).await;
+        let _ = DaemonService::new_seeded_for_test(storage.clone()).await;
 
         // Second boot against the same database.
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         let devices = service.watch_devices().borrow().clone();
         let local = devices
             .iter()
@@ -1394,7 +1741,7 @@ mod tests {
     #[tokio::test]
     async fn removing_the_local_device_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert_eq!(
             service.remove_device(LOCAL_DEVICE_ID).await,
@@ -1407,7 +1754,7 @@ mod tests {
     #[tokio::test]
     async fn removing_an_unknown_device_returns_not_found() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert_eq!(
             service.remove_device("no-such-device").await,
@@ -1420,21 +1767,21 @@ mod tests {
     #[tokio::test]
     async fn removing_a_device_persists_across_a_reload() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
 
         service.remove_device("d3").await.expect("remove d3");
         let devices = service.watch_devices().borrow().clone();
         assert!(!devices.iter().any(|d| d.id.0 == "d3"));
 
         // Simulate a restart against the same database.
-        let reloaded = ServiceState::load_or_seed(&storage).await;
+        let reloaded = ServiceState::seeded_for_test(&storage).await;
         assert!(!reloaded.devices.contains_key(&DeviceId("d3".to_string())));
     }
 
     #[tokio::test]
     async fn start_pairing_while_already_pairing_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         service.start_pairing().await.expect("first start_pairing");
         assert_eq!(
@@ -1446,7 +1793,7 @@ mod tests {
     #[tokio::test]
     async fn pair_with_candidate_before_found_or_with_unknown_id_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert_eq!(
             service.pair_with_candidate("cand-office-mini").await,
@@ -1457,7 +1804,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn pair_with_candidate_with_an_unknown_id_once_found_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         let mut sessions = service.watch_pairing_session();
         let _ = sessions.borrow_and_update();
 
@@ -1477,7 +1824,7 @@ mod tests {
     #[tokio::test]
     async fn cancel_pairing_when_idle_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert_eq!(
             service.cancel_pairing().await,
@@ -1488,7 +1835,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn full_pairing_flow_reaches_paired_then_returns_to_idle() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         let mut sessions = service.watch_pairing_session();
         let mut devices = service.watch_devices();
         let _ = sessions.borrow_and_update();
@@ -1536,7 +1883,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn cancelling_mid_timer_leaves_no_orphaned_mutation() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         let mut sessions = service.watch_pairing_session();
         let _ = sessions.borrow_and_update();
 
@@ -1557,7 +1904,7 @@ mod tests {
     #[tokio::test]
     async fn set_switch_key_with_empty_keys_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         let empty = SwitchKeyBinding {
             label: "Nothing".to_string(),
@@ -1572,7 +1919,7 @@ mod tests {
     #[tokio::test]
     async fn set_switch_key_updates_only_the_switch_key_field() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         let binding = SwitchKeyBinding {
             label: "Pause".to_string(),
@@ -1591,7 +1938,7 @@ mod tests {
     #[tokio::test]
     async fn update_settings_merges_only_the_given_field() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         service
             .update_settings(SettingsPatch {
@@ -1610,7 +1957,7 @@ mod tests {
     #[tokio::test]
     async fn update_settings_persists_across_a_reload() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
 
         service
             .update_settings(SettingsPatch {
@@ -1627,7 +1974,7 @@ mod tests {
     #[tokio::test]
     async fn reset_settings_restores_defaults_exactly() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         service
             .update_settings(SettingsPatch {
@@ -1646,7 +1993,7 @@ mod tests {
     #[tokio::test]
     async fn request_permission_grants_when_not_yet_granted() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert!(!service.watch_permission().borrow().granted);
         service
@@ -1659,7 +2006,7 @@ mod tests {
     #[tokio::test]
     async fn request_permission_when_already_granted_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         service
             .request_permission()
@@ -1674,7 +2021,7 @@ mod tests {
     #[tokio::test]
     async fn retry_connection_moves_disconnected_to_connecting() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         service.set_link_state(DaemonLinkState::Disconnected);
 
         service.retry_connection().await.expect("retry accepted");
@@ -1688,7 +2035,7 @@ mod tests {
     #[tokio::test]
     async fn retry_connection_moves_error_to_connecting() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         service.set_link_state(DaemonLinkState::Error);
 
         service.retry_connection().await.expect("retry accepted");
@@ -1702,7 +2049,7 @@ mod tests {
     #[tokio::test]
     async fn retry_connection_when_already_connected_is_rejected() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         assert_eq!(
             service.retry_connection().await,
@@ -1768,7 +2115,7 @@ mod tests {
     #[tokio::test]
     async fn an_incoming_pairing_request_is_rejected_when_no_pairing_window_is_open() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
         assert!(!service.is_pairing_window_open().await);
 
         let decision = attempt_incoming_pairing(&service).await;
@@ -1787,7 +2134,7 @@ mod tests {
     #[tokio::test]
     async fn an_incoming_pairing_request_is_accepted_while_a_pairing_window_is_open() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         service.start_pairing().await.expect("start pairing");
         assert!(service.is_pairing_window_open().await);
@@ -1805,7 +2152,7 @@ mod tests {
         use tokio::net::TcpListener;
 
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
 
         let peer_identity_storage = Storage::open_in_memory().await.expect("open peer db");
         let peer_identity = DeviceIdentity::load_or_generate(peer_identity_storage).await;
@@ -1859,7 +2206,7 @@ mod tests {
         use tokio::net::TcpListener;
 
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");

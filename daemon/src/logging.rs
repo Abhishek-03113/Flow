@@ -141,7 +141,7 @@ mod tests {
 
         let (handle, _subscriber) = a_handle_with_a_kept_alive_layer(LevelFilter::INFO);
         let storage = Storage::open_in_memory().await.expect("open in-memory db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new_seeded_for_test(storage).await;
 
         // `debug_logging` defaults to `false` (`FlowSettings::defaults`),
         // so spawning the toggle should leave the filter at `INFO`.

@@ -81,10 +81,7 @@ async fn handle(
             .request_permission()
             .await
             .map_err(ErrorPayload::from),
-        "retry_connection" => service
-            .retry_connection()
-            .await
-            .map_err(ErrorPayload::from),
+        "retry_connection" => service.retry_connection().await.map_err(ErrorPayload::from),
         other => Err(unknown_command(other)),
     }
 }
@@ -127,7 +124,7 @@ mod tests {
 
     async fn service() -> DaemonService {
         let storage = Storage::open_in_memory().await.expect("open db");
-        DaemonService::new(storage).await
+        DaemonService::new_seeded_for_test(storage).await
     }
 
     #[tokio::test(start_paused = true)]

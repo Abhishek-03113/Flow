@@ -8,8 +8,8 @@
 //! Drives a [`DaemonLinkState`] watch channel through the real
 //! `daemon-ipc.md` transition table (`Connecting`/`Reconnecting` ->
 //! `Connected`, or `Disconnected` once given up) as connection events
-//! actually happen, rather than that value only ever being the static
-//! `Connected` default it is anywhere upstream of this module today.
+//! actually happen — matching `ServiceState::from_storage`'s own
+//! `Disconnected` starting point, not a static `Connected` default.
 
 use std::time::Duration;
 

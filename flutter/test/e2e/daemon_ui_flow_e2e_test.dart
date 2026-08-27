@@ -177,6 +177,12 @@ void main() {
         'XDG_CONFIG_HOME': '${homeDir.path}/.config',
         'XDG_CACHE_HOME': '${homeDir.path}/.cache',
         'RUST_LOG': 'info',
+        // This suite's own assertions are written against the
+        // mock-parity fixture (MacBook/Work Laptop/Desktop, non-empty
+        // pairing candidates) — a real flow-daemon process never seeds
+        // that by default (`daemon/README.md` "Removing mock runtime
+        // data"), so this is the explicit opt-in a test needs.
+        'FLOW_DAEMON_SEED_MOCK_PARITY': '1',
       },
       workingDirectory: repoRoot.path,
     );
