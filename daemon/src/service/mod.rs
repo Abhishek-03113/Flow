@@ -1094,6 +1094,29 @@ impl DaemonService {
         self.permission_tx.send_replace(permission);
         Ok(())
     }
+
+    /// Reissues a connection attempt after the link has been given up on
+    /// — `docs/contracts/daemon-ipc.md`'s `disconnected --(user
+    /// retries)--> connecting` and `error --(user retries)--> connecting`
+    /// transitions. Only moves the state to `Connecting`, never straight
+    /// to `Connected`: an ordinary trusted-peer reconnect is discovered
+    /// and dialed automatically the same way the original connection
+    /// was (`main.rs`'s discovery loop calls `dial_if_trusted` on every
+    /// announce, independent of this command), so this command's job is
+    /// only to give the user an honest "trying again" signal rather than
+    /// one that claims the link is already back before it is.
+    #[tracing::instrument(skip(self))]
+    pub async fn retry_connection(&self) -> Result<(), FlowError> {
+        let current = *self.link_state_tx.borrow();
+        if !matches!(
+            current,
+            DaemonLinkState::Disconnected | DaemonLinkState::Error
+        ) {
+            return Err(FlowError::LinkNotRecoverable(current));
+        }
+        self.link_state_tx.send_replace(DaemonLinkState::Connecting);
+        Ok(())
+    }
 }
 
 /// A real paired device's stable identity: derived from its proven `H1`
@@ -1645,6 +1668,50 @@ mod tests {
         assert_eq!(
             service.request_permission().await,
             Err(FlowError::PermissionAlreadyGranted)
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_connection_moves_disconnected_to_connecting() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        service.set_link_state(DaemonLinkState::Disconnected);
+
+        service.retry_connection().await.expect("retry accepted");
+
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Connecting
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_connection_moves_error_to_connecting() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        service.set_link_state(DaemonLinkState::Error);
+
+        service.retry_connection().await.expect("retry accepted");
+
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Connecting
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_connection_when_already_connected_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        assert_eq!(
+            service.retry_connection().await,
+            Err(FlowError::LinkNotRecoverable(DaemonLinkState::Connected))
+        );
+        // Rejected, so the state must not have moved.
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Connected
         );
     }
 

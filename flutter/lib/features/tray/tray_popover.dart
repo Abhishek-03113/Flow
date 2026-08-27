@@ -64,7 +64,14 @@ class _TrayPopoverState extends ConsumerState<TrayPopover> {
         break;
       case DaemonLinkState.disconnected:
       case DaemonLinkState.error:
-        ref.read(toastProvider.notifier).show('Reconnected');
+        // Actually asks the daemon to try again — watchLinkState is what
+        // reports whether it worked, never a toast asserting success
+        // before the daemon has done anything.
+        try {
+          await repo.retryConnection();
+        } on DaemonCommandException catch (e) {
+          ref.read(toastProvider.notifier).show(e.message);
+        }
         break;
       case DaemonLinkState.connected:
       case DaemonLinkState.connecting:

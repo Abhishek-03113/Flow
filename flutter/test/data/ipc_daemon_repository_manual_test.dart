@@ -10,7 +10,7 @@ import 'package:flow_ui/domain/switch_key_binding.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 /// Cross-language contract test (`daemon/todos.json` task D5): the same
-/// 13 scenarios `mock_daemon_repository_test.dart` proves against
+/// 14 scenarios `mock_daemon_repository_test.dart` proves against
 /// [MockDaemonRepository] run here against [IpcDaemonRepository]
 /// connected to a **real** `flow-daemon` process — confirming the two
 /// independently-built implementations are externally indistinguishable,
@@ -250,6 +250,28 @@ void main() {
           (e) => e.code,
           'code',
           'permission_already_granted',
+        ),
+      ),
+    );
+  });
+
+  // `retryConnection`'s success path (disconnected/error -> connecting)
+  // needs the real daemon's link state actually off `connected`, which
+  // requires a second paired daemon dropping its link — outside this
+  // single-process, freshly-seeded scenario. Only the precondition
+  // rejection is exercised here; `mock_daemon_repository_test.dart`
+  // covers the success path via `debugSetLinkState`, and
+  // `daemon/tests/service_parity.rs` covers it directly against
+  // `DaemonService`.
+  test('retryConnection rejects when the link is already connected', () async {
+    expect(await repo.watchLinkState().first, DaemonLinkState.connected);
+    await expectLater(
+      repo.retryConnection(),
+      throwsA(
+        isA<DaemonCommandException>().having(
+          (e) => e.code,
+          'code',
+          'link_not_recoverable',
         ),
       ),
     );

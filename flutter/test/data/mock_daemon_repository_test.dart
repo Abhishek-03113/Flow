@@ -184,4 +184,34 @@ void main() {
       ),
     );
   });
+
+  test(
+    'retryConnection rejects when the link is not disconnected or error',
+    () async {
+      expect(await repo.watchLinkState().first, DaemonLinkState.connected);
+      await expectLater(
+        repo.retryConnection(),
+        throwsA(
+          isA<DaemonCommandException>().having(
+            (e) => e.code,
+            'code',
+            'link_not_recoverable',
+          ),
+        ),
+      );
+    },
+  );
+
+  test(
+    'retryConnection moves a disconnected link through connecting to connected',
+    () async {
+      repo.debugSetLinkState(DaemonLinkState.disconnected);
+      final next = repo.watchLinkState().skip(1).first;
+      await repo.retryConnection();
+      expect(await next, DaemonLinkState.connecting);
+
+      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      expect(await repo.watchLinkState().first, DaemonLinkState.connected);
+    },
+  );
 }

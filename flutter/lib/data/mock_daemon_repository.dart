@@ -52,6 +52,7 @@ class MockDaemonRepository implements DaemonRepository {
   static const _pairRequestDuration = Duration(milliseconds: 1500);
   static const _pairedAutoIdleDuration = Duration(milliseconds: 1600);
   static const _switchDebounce = Duration(milliseconds: 400);
+  static const _retryConnectDuration = Duration(milliseconds: 900);
 
   late final ReplayChannel<List<Device>> _devices;
   late final ReplayChannel<DaemonLinkState> _linkState;
@@ -254,6 +255,23 @@ class MockDaemonRepository implements DaemonRepository {
       );
     }
     _permission.emit(_permission.value.copyWith(granted: true));
+  }
+
+  @override
+  Future<void> retryConnection() async {
+    final current = _linkState.value;
+    if (current != DaemonLinkState.disconnected &&
+        current != DaemonLinkState.error) {
+      throw DaemonCommandException(
+        'link_not_recoverable',
+        'link state is ${current.name}, not disconnected or error',
+      );
+    }
+    _linkState.emit(DaemonLinkState.connecting);
+    _later(_retryConnectDuration, () {
+      if (_linkState.value != DaemonLinkState.connecting) return;
+      _linkState.emit(DaemonLinkState.connected);
+    });
   }
 
   Device _deviceOrThrow(String deviceId) {

@@ -296,6 +296,9 @@ class IpcDaemonRepository implements DaemonRepository {
   @override
   Future<void> requestPermission() => _sendCommand('request_permission', null);
 
+  @override
+  Future<void> retryConnection() => _sendCommand('retry_connection', null);
+
   /// Sends one `IpcRequest` with a fresh id and returns a `Future` that
   /// resolves on its ack or throws [DaemonCommandException] on its err —
   /// [_handleReply] is what actually completes it, keyed by that id.

@@ -2,7 +2,7 @@
 
 This directory is the single source of truth for the boundary between the Flutter control-plane UI and the Rust daemon (`docs/product/vision.md` §9, Communication Between Flutter and Daemon). It exists because the two sides are being built out of order: the UI is being built first against a **mock data source** (`flutter/lib/data/mock_daemon_repository.dart`), and the daemon does not exist yet. These documents are the spec the mock already satisfies and the spec the real daemon must satisfy when its turn comes — not documentation written after the fact.
 
-**Status: implemented.** Contract version `0.1.0` (transport decided in `0.1.1`) is realized by both `MockDaemonRepository` (Flutter-side stand-in) and `flow-daemon` (`daemon/src/ipc/{dispatch,server}.rs`, over the WebSocket transport documented in `daemon-ipc.md`), which must agree with each other on every JSON shape below.
+**Status: implemented.** Contract version `0.1.0` (transport decided in `0.1.1`, `retry_connection` added in `0.1.2`) is realized by both `MockDaemonRepository` (Flutter-side stand-in) and `flow-daemon` (`daemon/src/ipc/{dispatch,server}.rs`, over the WebSocket transport documented in `daemon-ipc.md`), which must agree with each other on every JSON shape below.
 
 ## Documents
 
