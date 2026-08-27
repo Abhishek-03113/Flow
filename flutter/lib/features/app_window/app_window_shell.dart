@@ -18,18 +18,30 @@ import 'sections/input_section.dart';
 enum AppSection { dashboard, general, devices, input, advanced }
 
 /// The 720x470 window opened from the tray's Dashboard/Settings rows:
-/// `WindowChrome` + a 176px sidebar + a content area that swaps sections.
+/// a title bar + a 176px sidebar + a content area that swaps sections.
 /// Direct implementation of the `isApp` branch in `Cross-Device UI v2.
 /// dc.html`.
+///
+/// [standalone] switches the title bar the same way
+/// `OnboardingFlow.standalone` does (see that class's doc comment for the
+/// full rationale): `false` (the dev harness, which places this on top of
+/// a mock desktop wallpaper with no real OS window backing it) keeps the
+/// decorative `WindowChrome` with its own fake traffic lights/title bar;
+/// `true` (the shipped app's `_RealApp`, which already hosts this inside
+/// a real OS window with its own real title bar) swaps it for a plain
+/// text header instead, so the Dashboard/Settings window stops rendering
+/// a second, fake window chrome nested inside the real one.
 class AppWindowShell extends ConsumerStatefulWidget {
   const AppWindowShell({
     super.key,
     required this.platform,
     this.initialSection = AppSection.dashboard,
+    this.standalone = false,
   });
 
   final HostOs platform;
   final AppSection initialSection;
+  final bool standalone;
 
   @override
   ConsumerState<AppWindowShell> createState() => _AppWindowShellState();
@@ -42,6 +54,9 @@ class _AppWindowShellState extends ConsumerState<AppWindowShell> {
   Widget build(BuildContext context) {
     final c = FlowColors.of(context);
     final chrome = PlatformChrome.of(widget.platform);
+    final title = _section == AppSection.dashboard
+        ? 'Cross Device'
+        : 'Settings';
 
     return GlassSurface(
       color: c.winGlass,
@@ -55,16 +70,16 @@ class _AppWindowShellState extends ConsumerState<AppWindowShell> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            WindowChrome(
-              controls: chrome.controls,
-              title: _section == AppSection.dashboard
-                  ? 'Cross Device'
-                  : 'Settings',
-              background: c.chromeBg,
-              border: c.border,
-              textColor: c.text1,
-              textSecondary: c.text2,
-            ),
+            widget.standalone
+                ? _StandaloneTitleHeader(palette: c, title: title)
+                : WindowChrome(
+                    controls: chrome.controls,
+                    title: title,
+                    background: c.chromeBg,
+                    border: c.border,
+                    textColor: c.text1,
+                    textSecondary: c.text2,
+                  ),
             Expanded(
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -96,6 +111,35 @@ class _AppWindowShellState extends ConsumerState<AppWindowShell> {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// [AppWindowShell.standalone]'s title bar: a plain text header replacing
+/// [WindowChrome] so the panel stops drawing a second, fake title bar
+/// (with its own fake traffic lights) inside `_RealApp`'s real OS window
+/// — the same fix `OnboardingFlow`'s own `_StandaloneHeader` applies for
+/// onboarding (see that class's doc comment).
+class _StandaloneTitleHeader extends StatelessWidget {
+  const _StandaloneTitleHeader({required this.palette, required this.title});
+
+  final FlowPalette palette;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = palette;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 12),
+      decoration: BoxDecoration(
+        border: Border(bottom: BorderSide(color: c.hairline)),
+      ),
+      child: Text(
+        title,
+        style: FlowType.body(c.text1, weight: FontWeight.w700).copyWith(
+          fontSize: 15,
         ),
       ),
     );

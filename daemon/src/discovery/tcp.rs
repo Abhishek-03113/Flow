@@ -89,10 +89,57 @@ impl DiscoveryService {
         self.socket.local_addr().map(|addr| addr.port())
     }
 
-    /// The subnet broadcast address every real daemon announces to:
-    /// `255.255.255.255:DISCOVERY_PORT`.
+    /// The limited broadcast address: `255.255.255.255:DISCOVERY_PORT`.
+    /// Kept as the fallback [`broadcast_destinations`] always includes,
+    /// but not relied on alone in real use — see that function's doc
+    /// comment for why.
     pub fn broadcast_destination() -> SocketAddr {
         SocketAddr::new(Ipv4Addr::BROADCAST.into(), DISCOVERY_PORT)
+    }
+
+    /// Every destination this daemon's periodic announce should be sent
+    /// to: each active IPv4 interface's own subnet-directed broadcast
+    /// address (e.g. `192.168.1.255` for a host on `192.168.1.0/24`),
+    /// plus the limited broadcast [`broadcast_destination`] as a
+    /// fallback.
+    ///
+    /// A single send to `255.255.255.255` is not enough on a real,
+    /// multi-homed machine — exactly the case of two daemons "each
+    /// running and listening but never seeing each other" that this
+    /// function exists to fix. Sending to the limited broadcast address
+    /// from a socket bound to `0.0.0.0` leaves the OS to pick *one*
+    /// outgoing interface via the routing table, same as any other
+    /// destination; on a dev machine with a VPN client, Docker Desktop,
+    /// or Hyper-V/WSL installed (all of which add their own virtual
+    /// adapter with a route of their own) that's frequently not the real
+    /// LAN adapter the other daemon is actually reachable on, so the
+    /// announce silently never reaches the LAN segment the peer is on —
+    /// no error, no log, both sides just never discover each other.
+    /// Sending each interface's own subnet broadcast instead forces the
+    /// packet out over every real link explicitly, sidestepping the
+    /// routing-table guess entirely. Interface enumeration failing (or
+    /// finding nothing) still leaves the limited-broadcast fallback in
+    /// the list, so single-NIC hosts and any environment enumeration
+    /// doesn't work in are unaffected.
+    pub fn broadcast_destinations() -> Vec<SocketAddr> {
+        let mut destinations = Vec::new();
+        if let Ok(interfaces) = if_addrs::get_if_addrs() {
+            for interface in interfaces {
+                if interface.is_loopback() {
+                    continue;
+                }
+                if let if_addrs::IfAddr::V4(v4) = interface.addr {
+                    if let Some(broadcast) = v4.broadcast {
+                        destinations.push(SocketAddr::new(broadcast.into(), DISCOVERY_PORT));
+                    }
+                }
+            }
+        }
+        let fallback = Self::broadcast_destination();
+        if !destinations.contains(&fallback) {
+            destinations.push(fallback);
+        }
+        destinations
     }
 
     /// Sends one announce packet to `destination`. Real use always
@@ -162,6 +209,18 @@ impl DiscoveryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `broadcast_destinations` must never come back empty — even on a
+    /// host where interface enumeration fails or finds nothing routable,
+    /// the limited-broadcast fallback keeps single-NIC hosts working, and
+    /// it must always be present regardless of what real interfaces this
+    /// test-running machine happens to have.
+    #[test]
+    fn broadcast_destinations_always_includes_the_limited_broadcast_fallback() {
+        let destinations = DiscoveryService::broadcast_destinations();
+        assert!(!destinations.is_empty());
+        assert!(destinations.contains(&DiscoveryService::broadcast_destination()));
+    }
 
     /// A loopback-only send target for a service bound with `bind(0, ...)`
     /// — `local_addr()` on a `0.0.0.0`-bound socket reports `0.0.0.0`

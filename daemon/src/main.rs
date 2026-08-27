@@ -178,13 +178,17 @@ async fn spawn_discovery(
             }
         };
     tracing::info!("flow-daemon discovery listening on 0.0.0.0:{DISCOVERY_PORT}");
+    let destinations = DiscoveryService::broadcast_destinations();
+    tracing::info!("flow-daemon announcing to {destinations:?} every 5s");
 
     tokio::spawn(async move {
         let mut announce_interval = tokio::time::interval(Duration::from_secs(5));
         loop {
             tokio::select! {
                 _ = announce_interval.tick() => {
-                    let _ = discovery.announce_to(DiscoveryService::broadcast_destination()).await;
+                    for destination in &destinations {
+                        let _ = discovery.announce_to(*destination).await;
+                    }
                 }
                 received = discovery.recv_one() => {
                     match received {
