@@ -47,7 +47,7 @@ async fn main() {
     let storage = Storage::open(db_path())
         .await
         .expect("failed to open flow-daemon database");
-    let service = Arc::new(DaemonService::new(storage.clone()).await);
+    let service = Arc::new(daemon_service(storage.clone()).await);
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
     let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
@@ -473,6 +473,30 @@ fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
     match ready_rx.recv() {
         Ok(true) => Some(InjectorHandle { events: events_tx }),
         _ => None,
+    }
+}
+
+/// Real production state (`DaemonService::new`/`ServiceState::from_storage`)
+/// unless `FLOW_DAEMON_SEED_MOCK_PARITY` is set in the environment, in
+/// which case this seeds the exact mock-parity fixture
+/// (`DaemonService::new_seeded_for_test`/`ServiceState::seeded_for_test`)
+/// instead. This exists purely so
+/// `flutter/test/data/ipc_daemon_repository_manual_test.dart` — a
+/// cross-language contract test that asserts on the mock's specific
+/// seeded devices/candidates — has a real `flow-daemon` process to run
+/// against without a real daemon ever seeding fake data by default. A
+/// real deployment must never set this; nothing in this codebase sets it
+/// automatically.
+async fn daemon_service(storage: Storage) -> DaemonService {
+    if std::env::var_os("FLOW_DAEMON_SEED_MOCK_PARITY").is_some() {
+        tracing::warn!(
+            "FLOW_DAEMON_SEED_MOCK_PARITY is set — seeding the mock-parity \
+             test fixture instead of real state. Never set this for a real \
+             deployment."
+        );
+        DaemonService::new_seeded_for_test(storage).await
+    } else {
+        DaemonService::new(storage).await
     }
 }
 

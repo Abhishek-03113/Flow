@@ -35,7 +35,10 @@ use flow_daemon::storage::Storage;
 
 async fn service() -> DaemonService {
     let storage = Storage::open_in_memory().await.expect("open in-memory db");
-    DaemonService::new(storage).await
+    // The mock-parity fixture: this whole file mirrors
+    // mock_daemon_repository_test.dart's case list, so it needs the same
+    // seeded devices/candidates/Connected link state that mock ships.
+    DaemonService::new_seeded_for_test(storage).await
 }
 
 #[tokio::test]
@@ -229,7 +232,10 @@ async fn request_permission_grants_and_then_rejects_a_second_request() {
 #[tokio::test]
 async fn retry_connection_rejects_when_the_link_is_not_disconnected_or_error() {
     let service = service().await;
-    assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Connected);
+    assert_eq!(
+        *service.watch_link_state().borrow(),
+        DaemonLinkState::Connected
+    );
 
     assert_eq!(
         service.retry_connection().await,

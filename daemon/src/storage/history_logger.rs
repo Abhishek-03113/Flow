@@ -163,7 +163,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn switching_the_active_device_produces_exactly_one_history_row() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
         let _logger = spawn(&service, storage.clone());
 
         service
@@ -179,7 +179,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_completed_pairing_produces_a_paired_row() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
         let mut sessions = service.watch_pairing_session();
         let _ = sessions.borrow_and_update();
         let _logger = spawn(&service, storage.clone());
@@ -205,7 +205,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn removing_a_device_produces_a_removed_row() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
         let _logger = spawn(&service, storage.clone());
 
         service.remove_device("d3").await.expect("remove d3");

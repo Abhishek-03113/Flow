@@ -19,13 +19,14 @@ import 'package:flutter_test/flutter_test.dart';
 /// ## Running it
 ///
 /// Requires `flow-daemon` already running on `127.0.0.1:47823`, started
-/// against a *fresh* database so it seeds the mock-parity 3-device data
-/// this file assumes (a scratch `HOME` guarantees that without touching
-/// your real one):
+/// against a *fresh* database with `FLOW_DAEMON_SEED_MOCK_PARITY` set so
+/// it seeds the mock-parity 3-device data this file assumes — a real
+/// `flow-daemon` process never seeds that by default (a scratch `HOME`
+/// guarantees the fresh database too, without touching your real one):
 ///
 /// ```sh
 /// # terminal 1, from the repo root
-/// HOME=$(mktemp -d) cargo run -p flow-daemon
+/// HOME=$(mktemp -d) FLOW_DAEMON_SEED_MOCK_PARITY=1 cargo run -p flow-daemon
 ///
 /// # terminal 2
 /// cd flutter

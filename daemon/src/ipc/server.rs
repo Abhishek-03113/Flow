@@ -259,7 +259,7 @@ mod tests {
 
     async fn spawn_test_server() -> std::net::SocketAddr {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = Arc::new(DaemonService::new(storage).await);
+        let service = Arc::new(DaemonService::new_seeded_for_test(storage).await);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let token: Arc<str> = Arc::from(TEST_TOKEN);
