@@ -18,13 +18,24 @@ import 'ipc_codec.dart';
 import 'ipc_constants.dart';
 import 'replay_channel.dart';
 
+/// How long to wait after a dropped/failed connection before dialing
+/// `flow-daemon` again. `flutter run` reaches its first connection
+/// attempt in well under a second; `cargo run -p flow-daemon` from a
+/// clean build can take 10-20+ seconds to compile — a real, common race
+/// on a fresh checkout, not an edge case. Without a retry, that race
+/// permanently strands every screen that depends on daemon state in
+/// whatever error the first attempt produced, even though the daemon
+/// comes up and stays up moments later.
+const _reconnectDelay = Duration(seconds: 1);
+
 /// [DaemonRepository] backed by a real `flow-daemon` process over the
 /// local WebSocket IPC contract (`docs/contracts/daemon-ipc.md`). A
 /// drop-in replacement for [MockDaemonRepository] behind the same
 /// interface — see `docs/contracts/README.md` ground rule 2. The UI never
 /// imports this class directly, only through `daemonRepositoryProvider`.
 ///
-/// Connects on construction; [dispose] closes the socket.
+/// Connects on construction and automatically redials on disconnect
+/// (see [_reconnectDelay]); [dispose] stops that and closes the socket.
 class IpcDaemonRepository implements DaemonRepository {
   /// Connects to `flow-daemon` at [uri] (defaults to
   /// [flowDaemonIpcUri]), presenting [loadIpcToken]'s value as the
@@ -34,51 +45,31 @@ class IpcDaemonRepository implements DaemonRepository {
   /// daemon has never run, so it hasn't generated one yet) is passed
   /// through as no protocols at all, which the daemon likewise rejects —
   /// the same "can't connect" failure shape as the daemon simply not
-  /// being up.
-  factory IpcDaemonRepository({Uri? uri}) {
-    final token = loadIpcToken();
-    return IpcDaemonRepository.withChannel(
-      WebSocketChannel.connect(
-        uri ?? flowDaemonIpcUri(),
-        protocols: token == null ? null : [token],
-      ),
-    );
+  /// being up. Reconnects on its own thereafter — see [_scheduleReconnect].
+  IpcDaemonRepository({Uri? uri}) : _uri = uri ?? flowDaemonIpcUri() {
+    _connect();
   }
 
   /// Drives the repository over an already-constructed channel instead of
   /// a real WebSocket — e.g. an in-memory `StreamChannelController` pair
   /// in tests, so the event-parsing/replay logic can be exercised without
-  /// a live `flow-daemon` process.
+  /// a live `flow-daemon` process. Never reconnects: a fixed test channel
+  /// has no URI to redial, and every existing test drives exactly one
+  /// channel's lifecycle on its own terms.
   @visibleForTesting
-  IpcDaemonRepository.withChannel(this._channel) {
-    _subscription = _channel.stream.listen(
-      _handleMessage,
-      onError: _handleTransportError,
-      onDone: _handleDone,
-    );
-    // `WebSocketChannel.connect` fails asynchronously via two separate
-    // paths: the stream error above, and `WebSocketChannel.ready`
-    // completing with the same error. Nothing else in this class ever
-    // reads `ready`, so without a handler here a connection failure (e.g.
-    // no `flow-daemon` process listening yet) surfaces as an *unhandled*
-    // isolate error that takes the whole app down instead of landing in
-    // `_handleTransportError` — this is what turns "the daemon isn't
-    // running" into a hard crash. The test-only `withChannel` constructor
-    // is sometimes driven by a plain `StreamChannel` (an in-memory
-    // controller pair) that has no `ready` future at all, hence the type
-    // check rather than assuming `WebSocketChannel`.
-    final channel = _channel;
-    if (channel is WebSocketChannel) {
-      unawaited(
-        channel.ready.catchError((Object error, StackTrace stackTrace) {
-          _handleTransportError(error, stackTrace);
-        }),
-      );
-    }
+  IpcDaemonRepository.withChannel(StreamChannel<dynamic> channel)
+    : _uri = null {
+    _bind(channel);
   }
 
-  final StreamChannel<dynamic> _channel;
-  late final StreamSubscription<dynamic> _subscription;
+  /// `null` only for [withChannel] — the signal that [_handleDone] should
+  /// never schedule a reconnect.
+  final Uri? _uri;
+
+  StreamChannel<dynamic>? _channel;
+  StreamSubscription<dynamic>? _subscription;
+  Timer? _reconnectTimer;
+  bool _disposed = false;
 
   /// Pending command replies, keyed by request id — resolved by
   /// [_handleMessage] when the matching ack/err frame arrives (track D3).
@@ -91,6 +82,43 @@ class IpcDaemonRepository implements DaemonRepository {
   final _permission = ReplayChannel<PermissionStatus>();
 
   int _nextRequestId = 0;
+
+  void _connect() {
+    final token = loadIpcToken();
+    _bind(
+      WebSocketChannel.connect(
+        _uri!,
+        protocols: token == null ? null : [token],
+      ),
+    );
+  }
+
+  void _bind(StreamChannel<dynamic> channel) {
+    _channel = channel;
+    _subscription = channel.stream.listen(
+      _handleMessage,
+      onError: _handleTransportError,
+      onDone: _handleDone,
+    );
+    // `WebSocketChannel.connect` fails asynchronously via two separate
+    // paths: the stream error above, and `WebSocketChannel.ready`
+    // completing with the same error. Nothing else in this class ever
+    // reads `ready`, so without a handler here a connection failure (e.g.
+    // no `flow-daemon` process listening yet) surfaces as an *unhandled*
+    // isolate error that takes the whole app down instead of landing in
+    // `_handleTransportError` — this is what turns "the daemon isn't
+    // running" into a hard crash. [withChannel] is sometimes driven by a
+    // plain `StreamChannel` (an in-memory controller pair) that has no
+    // `ready` future at all, hence the type check rather than assuming
+    // `WebSocketChannel`.
+    if (channel is WebSocketChannel) {
+      unawaited(
+        channel.ready.catchError((Object error, StackTrace stackTrace) {
+          _handleTransportError(error, stackTrace);
+        }),
+      );
+    }
+  }
 
   void _handleMessage(dynamic data) {
     final json = jsonDecode(data as String) as Map<String, dynamic>;
@@ -149,14 +177,15 @@ class IpcDaemonRepository implements DaemonRepository {
   void _handleTransportError(Object error, StackTrace stackTrace) {
     debugPrint('flow-daemon connection error: $error');
     // A transport-level error precedes the socket closing; _handleDone
-    // is what resolves any still-pending commands. What's missing without
-    // this is any signal to the UI at all: every `watch*` stream just sits
-    // in `AsyncLoading` forever when `flow-daemon` was never reachable
-    // (onboarding's permission step, for one, has no way to distinguish
-    // "still connecting" from "never going to connect"). Only channels
-    // that never got a real value are pushed into `AsyncError` — one that
-    // already has state from a working connection keeps showing it rather
-    // than being clobbered by a transient drop.
+    // is what resolves any still-pending commands and schedules a
+    // reconnect. What's missing without this is any signal to the UI at
+    // all: every `watch*` stream just sits in `AsyncLoading` forever when
+    // `flow-daemon` isn't reachable yet (onboarding's permission step, for
+    // one, has no way to distinguish "still connecting" from "never going
+    // to connect"). Only channels that never got a real value are pushed
+    // into `AsyncError` — one that already has state from a working
+    // connection keeps showing it rather than being clobbered by a
+    // transient drop.
     _failChannelsAwaitingFirstValue(error, stackTrace);
   }
 
@@ -173,6 +202,13 @@ class IpcDaemonRepository implements DaemonRepository {
   }
 
   void _handleDone() {
+    // Drop the dead channel immediately rather than leaving `_sendCommand`
+    // writing into a closed sink (which either throws or, worse, just
+    // silently swallows the write and leaves that command's `Future`
+    // hanging forever) during the gap before `_scheduleReconnect` dials
+    // again.
+    _channel = null;
+    _subscription = null;
     final pending = List<Completer<void>>.of(_pending.values);
     _pending.clear();
     for (final completer in pending) {
@@ -196,6 +232,21 @@ class IpcDaemonRepository implements DaemonRepository {
       ),
       StackTrace.current,
     );
+    _scheduleReconnect();
+  }
+
+  /// Redials `flow-daemon` after [_reconnectDelay] — covers both a dead
+  /// connection dropping later and, just as commonly during local dev, the
+  /// very first attempt losing a startup race against a `flow-daemon`
+  /// that's still compiling. A no-op for [withChannel] (`_uri == null`)
+  /// and after [dispose].
+  void _scheduleReconnect() {
+    if (_uri == null || _disposed) return;
+    _reconnectTimer?.cancel();
+    _reconnectTimer = Timer(_reconnectDelay, () {
+      if (_disposed) return;
+      _connect();
+    });
   }
 
   @override
@@ -248,25 +299,40 @@ class IpcDaemonRepository implements DaemonRepository {
   /// Sends one `IpcRequest` with a fresh id and returns a `Future` that
   /// resolves on its ack or throws [DaemonCommandException] on its err —
   /// [_handleReply] is what actually completes it, keyed by that id.
+  /// Rejects immediately, without touching the (possibly absent) channel,
+  /// while a reconnect is in flight — there's nothing to send it on.
   Future<void> _sendCommand(String command, dynamic payload) {
+    final channel = _channel;
+    if (channel == null) {
+      return Future.error(
+        const DaemonCommandException(
+          'daemon_disconnected',
+          "not connected to flow-daemon — it's either not running yet or "
+              'was just restarted; retrying automatically',
+        ),
+      );
+    }
     final id = 'req-${_nextRequestId++}';
     final completer = Completer<void>();
     _pending[id] = completer;
-    _channel.sink.add(
+    channel.sink.add(
       jsonEncode({'id': id, 'command': command, 'payload': payload}),
     );
     return completer.future;
   }
 
-  /// Releases resources — closes the socket and its subscription. Not
-  /// part of [DaemonRepository]; mirrors [MockDaemonRepository.dispose].
+  /// Releases resources — stops reconnecting and closes the socket and
+  /// its subscription. Not part of [DaemonRepository]; mirrors
+  /// [MockDaemonRepository.dispose].
   Future<void> dispose() async {
-    await _subscription.cancel();
+    _disposed = true;
+    _reconnectTimer?.cancel();
+    await _subscription?.cancel();
     _devices.close();
     _linkState.close();
     _pairingSession.close();
     _settings.close();
     _permission.close();
-    await _channel.sink.close();
+    await _channel?.sink.close();
   }
 }
