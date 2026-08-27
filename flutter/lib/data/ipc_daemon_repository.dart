@@ -85,6 +85,13 @@ class IpcDaemonRepository implements DaemonRepository {
 
   void _connect() {
     final token = loadIpcToken();
+    debugPrint(
+      token == null
+          ? 'flow-daemon: connecting to $_uri (no IPC token found at '
+                '${ipcTokenPath()} yet — flow-daemon may not have run '
+                'before, or hasn\'t started)'
+          : 'flow-daemon: connecting to $_uri',
+    );
     _bind(
       WebSocketChannel.connect(
         _uri!,
@@ -113,9 +120,21 @@ class IpcDaemonRepository implements DaemonRepository {
     // `WebSocketChannel`.
     if (channel is WebSocketChannel) {
       unawaited(
-        channel.ready.catchError((Object error, StackTrace stackTrace) {
-          _handleTransportError(error, stackTrace);
-        }),
+        channel.ready
+            .then((_) {
+              // The only positive, visible signal in `flutter run`'s own
+              // terminal that this build is actually talking to a real
+              // `flow-daemon` rather than stuck retrying (or, if someone
+              // reads this while suspecting the mock backend, that IPC
+              // mode was even selected in the first place) —
+              // `_handleTransportError` below already covers the failure
+              // side, but a successful connect previously logged nothing
+              // at all.
+              debugPrint('flow-daemon: connected to $_uri');
+            })
+            .catchError((Object error, StackTrace stackTrace) {
+              _handleTransportError(error, stackTrace);
+            }),
       );
     }
   }

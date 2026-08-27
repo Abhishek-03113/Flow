@@ -12,6 +12,7 @@ import 'domain/device.dart';
 import 'features/app_window/app_window_shell.dart';
 import 'features/harness/dev_harness.dart';
 import 'features/onboarding/onboarding_flow.dart';
+import 'state/app_env.dart';
 import 'state/ui_mode.dart';
 import 'state/ui_providers.dart';
 
@@ -110,7 +111,24 @@ class _RealAppState extends ConsumerState<_RealApp>
   /// the app down with it, the same "degrade gracefully, not fatally"
   /// contract the daemon's own hotkey runner already uses for a missing
   /// capture device.
+  ///
+  /// Skips `setPreventClose` entirely under `isDevelopmentEnv`
+  /// (`--dart-define=FLOW_ENV=development`): with it set, the window's
+  /// real close button just hides the app (see [_hideInsteadOfClosing]),
+  /// by design, so the tray keeps working — but every `flutter run`
+  /// during local iteration then launches a *new* process while the
+  /// previous one is still alive in the background, hidden. macOS's own
+  /// Launch Services then can't foreground the freshly built app (a real,
+  /// reproduced symptom: `flutter run` logging "Failed to foreground app;
+  /// open returned 1"), and whoever is testing ends up looking at
+  /// whichever stale instance still has focus/the tray icon instead of
+  /// the one that just launched — easy to mistake for "the daemon
+  /// connection is broken" when it's actually a leftover process. A dev
+  /// build's close button quitting for real, like any other desktop app
+  /// in development, avoids that trap; the shipped app's hide-to-tray
+  /// behavior is untouched.
   Future<void> _initWindow() async {
+    if (isDevelopmentEnv) return;
     try {
       await windowManager.setPreventClose(true);
     } catch (_) {
