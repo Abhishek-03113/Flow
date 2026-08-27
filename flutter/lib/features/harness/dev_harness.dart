@@ -29,11 +29,13 @@ const _linkStateLabels = {
 /// Dev-only manual QA harness: the control strip from the Claude Design
 /// canvas (View / Connection / Platform / Theme) driving the exact same
 /// providers every real screen reads, so every combination of state,
-/// platform, and theme is reachable without a real daemon or OS tray
-/// integration. Not part of the shipped surfaces (tray/onboarding/app
-/// window) — those are reachable independently once a real daemon and
-/// window-docking integration exist (`todos.json` S1's note on why real
-/// tray docking is out of scope for now).
+/// platform, and theme is reachable in one window without a real daemon
+/// or a real OS tray. Not the shipped app's home anymore — a real daemon
+/// and real tray/window docking now exist (`app.dart`'s `_RealApp`) — but
+/// still reachable on demand via `--dart-define=FLOW_UI_MODE=harness`
+/// (`state/ui_mode.dart`), since simulating every platform/state
+/// combination side by side is still useful for manual QA that a single
+/// real window and a single real daemon connection can't offer.
 class DevHarness extends ConsumerStatefulWidget {
   const DevHarness({super.key});
 

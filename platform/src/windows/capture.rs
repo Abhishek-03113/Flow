@@ -46,6 +46,17 @@ pub enum WindowsCaptureError {
     /// The capture thread panicked; its state (and its hooks) is
     /// unrecoverable.
     ThreadPanicked,
+    /// `InputCapture::set_suppress_local` isn't implemented on Windows
+    /// yet. A `WH_KEYBOARD_LL`/`WH_MOUSE_LL` hook *can* swallow an event
+    /// by returning 1 instead of chaining to `CallNextHookEx`, so unlike
+    /// macOS this needs no different API — but the hook procedures here
+    /// are plain `extern "system"` functions reading their state from
+    /// thread-local storage, so the suppression flag has to reach them
+    /// through that same TLS, and no one has been able to build and test
+    /// that against real Windows hardware in this project yet. Reported
+    /// rather than silently ignored, so a caller knows local input is
+    /// still reaching this machine's own apps.
+    SuppressionUnsupported,
 }
 
 impl fmt::Display for WindowsCaptureError {
@@ -53,6 +64,10 @@ impl fmt::Display for WindowsCaptureError {
         match self {
             Self::HookInstallFailed => write!(f, "SetWindowsHookExW failed"),
             Self::ThreadPanicked => write!(f, "the input capture thread panicked"),
+            Self::SuppressionUnsupported => write!(
+                f,
+                "suppressing local input is not implemented on Windows yet"
+            ),
         }
     }
 }
@@ -120,6 +135,17 @@ impl InputCapture for WindowsInputCapture {
                 .map_err(|_| WindowsCaptureError::ThreadPanicked)?;
         }
         Ok(())
+    }
+
+    /// Always reports [`WindowsCaptureError::SuppressionUnsupported`] —
+    /// see that variant's own doc comment for why, and
+    /// `daemon/README.md`'s "Local input suppression" section for what
+    /// that means in practice (forwarded input still reaches this PC's
+    /// own applications). Returning an error rather than `Ok(())` is
+    /// deliberate: a silent no-op here would look like working
+    /// suppression to the daemon.
+    fn set_suppress_local(&mut self, _suppress: bool) -> Result<(), Self::Error> {
+        Err(WindowsCaptureError::SuppressionUnsupported)
     }
 }
 

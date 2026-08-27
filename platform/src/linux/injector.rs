@@ -36,7 +36,7 @@ impl LinuxInputInjector {
         relative_axes.insert(RelativeAxisCode::REL_HWHEEL);
 
         let device = VirtualDevice::builder()?
-            .name("Flow Virtual Input")
+            .name(super::discovery::VIRTUAL_DEVICE_NAME)
             .with_keys(&keys)?
             .with_relative_axes(&relative_axes)?
             .build()?;

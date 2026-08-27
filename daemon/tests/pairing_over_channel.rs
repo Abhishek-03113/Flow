@@ -61,6 +61,16 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
         .expect("bind b's listener");
     let b_addr = listener.local_addr().expect("local addr");
 
+    // The responder only accepts while its own user has pairing open
+    // (`DaemonService::is_pairing_window_open`) — an unattended daemon
+    // refuses, which is what stops any host on the network from pairing
+    // itself in uninvited. In the real product both people press "Pair a
+    // device"; this is that second press.
+    service_b
+        .start_pairing()
+        .await
+        .expect("device B opens its own pairing window");
+
     let responder = {
         let service_b = service_b.clone();
         tokio::spawn(async move {

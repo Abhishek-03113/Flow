@@ -12,20 +12,27 @@ import '../domain/permission_status.dart';
 import '../domain/settings.dart';
 
 /// Selects the daemon backend at build time via
-/// `--dart-define=FLOW_DAEMON_MODE=ipc` (see `flutter/README.md`).
-/// Defaults to `mock` — unset, `flutter run` behaves exactly as before,
-/// so this is not a regression for UI-only development.
+/// `--dart-define=FLOW_DAEMON_MODE=mock` (see `flutter/README.md`).
+/// Defaults to `ipc`: the shipped app now expects a real `flow-daemon`
+/// process at `127.0.0.1:47823`, matching the shipped app's real tray/
+/// window (`app.dart`) rather than the dev harness's simulated
+/// platforms/connection states. UI-only development without a daemon
+/// still works — pass `FLOW_DAEMON_MODE=mock` explicitly (this is also
+/// what the dev harness, `--dart-define=FLOW_UI_MODE=harness`, is for).
+/// `flutter test` never depends on this default either way: every widget
+/// test overrides `daemonRepositoryProvider` explicitly with a
+/// `MockDaemonRepository` instance rather than reading this constant.
 const _daemonMode = String.fromEnvironment(
   'FLOW_DAEMON_MODE',
-  defaultValue: 'mock',
+  defaultValue: 'ipc',
 );
 
 /// The single source of daemon state for the whole app. Every screen
 /// reads through this provider (or the `watch*Provider`s below) and
 /// nothing constructs [MockDaemonRepository] or [IpcDaemonRepository]
-/// itself — the mock stays the default for UI-only development;
-/// `FLOW_DAEMON_MODE=ipc` opts into a real `flow-daemon` process at
-/// `127.0.0.1:47823` for daemon-integration testing.
+/// itself — `IpcDaemonRepository` (a real `flow-daemon` process over
+/// local IPC) is the default; `FLOW_DAEMON_MODE=mock` opts into the mock
+/// for UI-only development or demoing without a daemon running.
 final daemonRepositoryProvider = Provider<DaemonRepository>((ref) {
   if (_daemonMode == 'ipc') {
     final repository = IpcDaemonRepository();

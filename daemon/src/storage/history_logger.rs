@@ -133,6 +133,33 @@ async fn log_pairing_transition(
 mod tests {
     use super::*;
 
+    /// Waits for the background logger task to actually write the row
+    /// these tests are asserting on.
+    ///
+    /// A single `yield_now()` used to stand in for this, which passes
+    /// almost always but is a real race: the logger observes its watch
+    /// channel and then does an async SQLite write, and there's no
+    /// guarantee one yield is enough for both to complete — under a
+    /// loaded test runner (the whole workspace's binaries in parallel)
+    /// it intermittently isn't, which is exactly how this surfaced.
+    /// Polling for the expected row instead is deterministic in the
+    /// passing case and still fails fast, rather than trading a flake
+    /// for a fixed sleep.
+    async fn wait_for_history(
+        repo: &ConnectionHistoryRepo,
+        device_id: &str,
+        expected: usize,
+    ) -> Vec<crate::storage::connection_history_repo::ConnectionHistoryEntry> {
+        for _ in 0..1_000 {
+            let rows = repo.recent(device_id, 10).await;
+            if rows.len() >= expected {
+                return rows;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("timed out waiting for {expected} history row(s) for {device_id}");
+    }
+
     #[tokio::test(start_paused = true)]
     async fn switching_the_active_device_produces_exactly_one_history_row() {
         let storage = Storage::open_in_memory().await.expect("open db");
@@ -143,10 +170,8 @@ mod tests {
             .switch_active_device("d2")
             .await
             .expect("switch to d2");
-        tokio::task::yield_now().await;
-
         let repo = ConnectionHistoryRepo::new(storage);
-        let history = repo.recent("d2", 10).await;
+        let history = wait_for_history(&repo, "d2", 1).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].event_type, "device_activated");
     }
@@ -171,10 +196,8 @@ mod tests {
             .expect("pair with candidate");
         sessions.changed().await.expect("requesting");
         sessions.changed().await.expect("paired");
-        tokio::task::yield_now().await;
-
         let repo = ConnectionHistoryRepo::new(storage);
-        let history = repo.recent(&candidate.id, 10).await;
+        let history = wait_for_history(&repo, &candidate.id, 1).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].event_type, "paired");
     }
@@ -186,10 +209,8 @@ mod tests {
         let _logger = spawn(&service, storage.clone());
 
         service.remove_device("d3").await.expect("remove d3");
-        tokio::task::yield_now().await;
-
         let repo = ConnectionHistoryRepo::new(storage);
-        let history = repo.recent("d3", 10).await;
+        let history = wait_for_history(&repo, "d3", 1).await;
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].event_type, "device_removed");
     }

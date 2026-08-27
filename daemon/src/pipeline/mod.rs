@@ -1,8 +1,8 @@
 //! The end-to-end input streaming pipeline (`daemon/todos.json` G8):
-//! capture (E1) -> switch-aware gate (only while this device is
-//! `Active`, per F2/F3's local switch state) -> `Channel::send` on the
-//! sending side; `Channel::recv` -> injector (E2) on the receiving
-//! side. Coded entirely against `flow_core::channel::Channel` and
+//! capture (E1) -> switch-aware gate (only while the *peer* is the
+//! active device, per F2/F3's switch state — see
+//! [`is_peer_receiving_input`]) -> `Channel::send` on the sending side;
+//! `Channel::recv` -> injector (E2) on the receiving side. Coded entirely against `flow_core::channel::Channel` and
 //! `flow_core::input::{InputCapture, InputInjector}` — never a concrete
 //! medium or platform type — so the gating logic here is exactly what
 //! this module's own tests exercise without real hardware or a real
@@ -23,16 +23,25 @@ use flow_core::input::InputInjector;
 use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
 use tokio::sync::{mpsc, watch};
 
-use crate::service::LOCAL_DEVICE_ID;
-
-/// Whether the local device (`LOCAL_DEVICE_ID`) is currently `Active` —
-/// the same eligibility flag `devices_list`'s callers already read off
-/// `DaemonService::watch_devices()`, factored out as a pure function so
-/// the gate below is unit-testable without spinning up a whole service.
-fn is_local_device_active(devices: &[Device]) -> bool {
+/// Whether `peer_id` is the device currently receiving input — i.e.
+/// whether input captured here should be forwarded to it.
+///
+/// **`Active` means the device input is being sent *to*, not the one
+/// it's captured on.** `docs/product/vision.md` §22 states it directly
+/// ("Only the active device should receive input"), and the tray UI
+/// agrees: it lists the active device under a "Using" heading, meaning
+/// the machine you're currently driving. So the machine with the
+/// physical keyboard forwards only while some *other* device is active,
+/// and keeps its own input to itself while it is the active one.
+///
+/// Gating on the specific peer this connection serves — rather than
+/// simply "the local device isn't active" — is what keeps a third
+/// device out of it: with A, B and C paired and B active, A must send to
+/// B alone, not blast every captured event down C's connection too.
+fn is_peer_receiving_input(devices: &[Device], peer_id: &DeviceId) -> bool {
     devices
         .iter()
-        .find(|device| device.id == DeviceId(LOCAL_DEVICE_ID.to_string()))
+        .find(|device| &device.id == peer_id)
         .is_some_and(|device| device.state == DeviceState::Active)
 }
 
@@ -40,22 +49,29 @@ fn is_local_device_active(devices: &[Device]) -> bool {
 /// `ChannelMessage::Input`, tagged with a per-connection sequence number
 /// (`daemon/todos.json` H4, revised — see `ChannelMessage::Input`'s own
 /// doc comment for why this replaced a timestamp-based check), but only
-/// while the local device is `Active` per `devices` — an event captured
-/// while `Inactive` (this machine isn't the one currently "driving") is
-/// silently dropped, not queued for later, and does *not* consume a
-/// sequence number. Returns once `capture_events` closes (capture
-/// stopped) or `channel.send` fails (peer gone).
+/// while `peer_id` is the active (receiving) device per `devices` — an
+/// event captured while this machine is the active one is silently
+/// dropped, not queued for later, and does *not* consume a sequence
+/// number. Returns once `capture_events` closes (capture stopped) or
+/// `channel.send` fails (peer gone).
+///
+/// One-directional, so only useful where this side is known to be the
+/// sender for the connection's whole lifetime (`daemon/examples/`, and
+/// this module's own tests). The daemon itself runs
+/// [`run_paired_connection`] instead, since either end of a real peer
+/// connection can become the active device at any point.
 pub async fn send_while_active(
     mut capture_events: mpsc::UnboundedReceiver<InputEvent>,
     mut devices: watch::Receiver<Vec<Device>>,
     mut channel: Box<dyn Channel>,
+    peer_id: DeviceId,
 ) {
     let mut sequence: u64 = 0;
     loop {
         tokio::select! {
             event = capture_events.recv() => {
                 let Some(event) = event else { break; };
-                if is_local_device_active(&devices.borrow_and_update()) {
+                if is_peer_receiving_input(&devices.borrow_and_update(), &peer_id) {
                     sequence += 1;
                     if channel.send(ChannelMessage::Input { sequence, event }).await.is_err() {
                         break;
@@ -190,6 +206,105 @@ impl HeldInputTracker {
     }
 }
 
+/// The full-duplex counterpart to [`send_while_active`]/[`receive_and_inject`]
+/// for a single already-authenticated connection to the paired peer
+/// `peer_id`, where either side may become the active device at
+/// different points over that connection's lifetime — so this daemon
+/// must be able to both send (while the peer is active) and
+/// receive-and-inject (while this machine is) over the *same*
+/// connection, not two separate ones.
+///
+/// `Channel::send`/`::recv` both take `&mut self`, and nothing in this
+/// codebase splits a `Channel` into independent read/write halves (see
+/// `channel::noise::NoiseChannel`'s single shared `TransportState`, used
+/// for both directions — splitting it safely would need real redesign,
+/// not just here). So rather than run `send_while_active` and
+/// `receive_and_inject` concurrently on two tasks sharing one channel,
+/// this single task interleaves both directions itself with
+/// `tokio::select!` — the same technique `send_while_active` already
+/// uses to race its `capture_events`/`devices` inputs against each
+/// other, just extended to a third branch reading off `channel` too.
+///
+/// `suppress_local` is called whenever the active device changes, with
+/// `true` while input is being forwarded away from this machine. Without
+/// it, capture is purely passive on every platform and a forwarded
+/// keystroke would land on *both* machines — see
+/// `flow_core::input::InputCapture::set_suppress_local`. It's passed as
+/// a closure rather than an `InputCapture` handle because the capture
+/// object lives on the caller's side of a thread boundary; the caller
+/// decides how to reach it, and reports failures (a platform that can't
+/// suppress) however it sees fit.
+pub async fn run_paired_connection<I, S>(
+    mut channel: Box<dyn Channel>,
+    mut capture_events: mpsc::UnboundedReceiver<InputEvent>,
+    mut devices: watch::Receiver<Vec<Device>>,
+    mut injector: I,
+    peer_id: DeviceId,
+    mut suppress_local: S,
+) where
+    I: InputInjector,
+    I::Error: std::fmt::Debug,
+    S: FnMut(bool),
+{
+    let mut send_sequence: u64 = 0;
+    let mut last_received_sequence: Option<u64> = None;
+    let mut held = HeldInputTracker::default();
+
+    // Apply the current state up front rather than waiting for the first
+    // change: this connection may well be established while the peer is
+    // already the active device.
+    let mut suppressing = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
+    suppress_local(suppressing);
+
+    loop {
+        tokio::select! {
+            event = capture_events.recv() => {
+                let Some(event) = event else { break; };
+                if is_peer_receiving_input(&devices.borrow_and_update(), &peer_id) {
+                    send_sequence += 1;
+                    if channel.send(ChannelMessage::Input { sequence: send_sequence, event }).await.is_err() {
+                        break;
+                    }
+                }
+            }
+            changed = devices.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let should_suppress =
+                    is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
+                if should_suppress != suppressing {
+                    suppressing = should_suppress;
+                    suppress_local(suppressing);
+                }
+            }
+            received = channel.recv() => {
+                match received {
+                    Ok(ChannelMessage::Input { sequence, event }) => {
+                        if last_received_sequence.is_some_and(|last| sequence <= last) {
+                            continue;
+                        }
+                        last_received_sequence = Some(sequence);
+                        match injector.inject(&event) {
+                            Ok(()) => held.observe(&event),
+                            Err(err) => tracing::warn!("input injection failed: {err:?}"),
+                        }
+                    }
+                    Ok(_) => continue,
+                    Err(_) => break,
+                }
+            }
+        }
+    }
+    held.release_all(&mut injector);
+    // Never leave this machine's own input suppressed once the
+    // connection it was being forwarded over is gone — otherwise a
+    // dropped link would take the user's keyboard with it.
+    if suppressing {
+        suppress_local(false);
+    }
+}
+
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -201,6 +316,7 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
     use crate::channel::tcp::TcpChannel;
+    use crate::service::LOCAL_DEVICE_ID;
     use flow_core::device::HostOs;
     use flow_core::protocol::{InputEvent, KeyboardEvent};
     use tokio::net::TcpListener;
@@ -223,6 +339,45 @@ mod tests {
         }
     }
 
+    /// The remote device each pipeline test is connected to.
+    const PEER_ID: &str = "peer-1";
+
+    fn peer_id() -> DeviceId {
+        DeviceId(PEER_ID.to_string())
+    }
+
+    fn peer_device(state: DeviceState) -> Device {
+        Device {
+            id: peer_id(),
+            name: "Peer".to_string(),
+            os: HostOs::Linux,
+            state,
+            last_seen: chrono::Utc::now(),
+        }
+    }
+
+    /// The two-device world every streaming test runs in: exactly one of
+    /// the pair is `Active`, matching the real invariant
+    /// `DaemonService::switch_active_device` maintains.
+    fn devices_with_active_peer() -> Vec<Device> {
+        vec![
+            local_device(DeviceState::Inactive),
+            peer_device(DeviceState::Active),
+        ]
+    }
+
+    fn devices_with_active_local() -> Vec<Device> {
+        vec![
+            local_device(DeviceState::Active),
+            peer_device(DeviceState::Inactive),
+        ]
+    }
+
+    /// A `suppress_local` sink for tests that don't assert on it.
+    fn ignore_suppression() -> impl FnMut(bool) {
+        |_| {}
+    }
+
     async fn connected_pair() -> (Box<dyn Channel>, Box<dyn Channel>) {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -237,22 +392,59 @@ mod tests {
         (Box::new(client), Box::new(server))
     }
 
+    /// The direction that matters, and the one this pipeline previously
+    /// had backwards: input is forwarded to a peer exactly when *that
+    /// peer* is the active device (`vision.md` §22, "only the active
+    /// device should receive input") — never when this machine is the
+    /// active one, which is the case where input should stay put.
     #[test]
-    fn the_local_device_is_reported_active_only_when_its_own_state_is_active() {
-        assert!(is_local_device_active(&[local_device(DeviceState::Active)]));
-        assert!(!is_local_device_active(&[local_device(
-            DeviceState::Inactive
-        )]));
-        assert!(!is_local_device_active(&[]));
+    fn input_is_forwarded_only_while_the_peer_is_the_active_device() {
+        assert!(is_peer_receiving_input(
+            &devices_with_active_peer(),
+            &peer_id()
+        ));
+        assert!(!is_peer_receiving_input(
+            &devices_with_active_local(),
+            &peer_id()
+        ));
+        assert!(!is_peer_receiving_input(&[], &peer_id()));
+    }
+
+    /// With three devices paired and a third one active, this
+    /// connection's peer is *not* the destination — so nothing goes down
+    /// this channel, rather than every peer receiving a copy.
+    #[test]
+    fn input_is_not_forwarded_to_a_peer_when_a_different_device_is_active() {
+        let devices = vec![
+            local_device(DeviceState::Inactive),
+            peer_device(DeviceState::Inactive),
+            Device {
+                id: DeviceId("other-peer".to_string()),
+                name: "Third Machine".to_string(),
+                os: HostOs::Linux,
+                state: DeviceState::Active,
+                last_seen: chrono::Utc::now(),
+            },
+        ];
+        assert!(!is_peer_receiving_input(&devices, &peer_id()));
+        assert!(is_peer_receiving_input(
+            &devices,
+            &DeviceId("other-peer".to_string())
+        ));
     }
 
     #[tokio::test]
     async fn an_event_captured_while_active_is_streamed_to_the_peer() {
         let (sender_side, mut receiver_side) = connected_pair().await;
-        let (devices_tx, devices_rx) = watch::channel(vec![local_device(DeviceState::Active)]);
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
         let (capture_tx, capture_rx) = mpsc::unbounded_channel();
 
-        let pipeline = tokio::spawn(send_while_active(capture_rx, devices_rx, sender_side));
+        let pipeline = tokio::spawn(send_while_active(
+            capture_rx,
+            devices_rx,
+            sender_side,
+            peer_id(),
+        ));
 
         let event = a_key_event("A");
         capture_tx.send(event.clone()).expect("send captured event");
@@ -267,14 +459,19 @@ mod tests {
     #[tokio::test]
     async fn an_event_captured_while_inactive_is_dropped_not_streamed() {
         let (sender_side, mut receiver_side) = connected_pair().await;
-        let (devices_tx, devices_rx) = watch::channel(vec![local_device(DeviceState::Inactive)]);
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
         let (capture_tx, capture_rx) = mpsc::unbounded_channel();
 
-        let pipeline = tokio::spawn(send_while_active(capture_rx, devices_rx, sender_side));
+        let pipeline = tokio::spawn(send_while_active(
+            capture_rx,
+            devices_rx,
+            sender_side,
+            peer_id(),
+        ));
 
         capture_tx
             .send(a_key_event("dropped"))
-            .expect("send captured event while inactive");
+            .expect("send captured event while this machine is the active one");
         // Closing the capture channel (rather than racing a state flip
         // against an unsynchronized second send) is what makes this
         // deterministic: `send_while_active`'s loop drains every queued
@@ -474,10 +671,15 @@ mod tests {
     #[tokio::test]
     async fn send_while_active_assigns_strictly_increasing_sequence_numbers() {
         let (sender_side, mut receiver_side) = connected_pair().await;
-        let (devices_tx, devices_rx) = watch::channel(vec![local_device(DeviceState::Active)]);
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
         let (capture_tx, capture_rx) = mpsc::unbounded_channel();
 
-        let pipeline = tokio::spawn(send_while_active(capture_rx, devices_rx, sender_side));
+        let pipeline = tokio::spawn(send_while_active(
+            capture_rx,
+            devices_rx,
+            sender_side,
+            peer_id(),
+        ));
 
         capture_tx.send(a_key_event("one")).expect("send 1");
         capture_tx.send(a_key_event("two")).expect("send 2");
@@ -668,6 +870,171 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect()
+        );
+    }
+
+    #[tokio::test]
+    async fn run_paired_connection_handles_both_directions_over_one_connection() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+        ));
+
+        // The peer is the active device, so captured input is forwarded
+        // to it rather than staying on this machine.
+        let outgoing = a_key_event("A");
+        capture_tx
+            .send(outgoing.clone())
+            .expect("send captured event");
+        let received_by_peer = peer_side.recv().await.expect("recv");
+        assert_eq!(
+            received_by_peer,
+            ChannelMessage::Input {
+                sequence: 1,
+                event: outgoing
+            }
+        );
+
+        // The peer sends something back (as if it just became active
+        // itself) — our side must inject it, over this same connection,
+        // proving both directions share one `run_paired_connection` task
+        // rather than needing two separate channels.
+        let incoming = a_key_event("Z");
+        peer_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: incoming.clone(),
+            })
+            .await
+            .expect("send");
+        let injected = rx.recv().await.expect("injector received the event");
+        assert_eq!(injected, incoming);
+
+        drop(capture_tx);
+        drop(devices_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+    }
+
+    #[tokio::test]
+    async fn run_paired_connection_releases_held_input_when_the_connection_drops() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (_devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (_capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+        ));
+
+        peer_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: key_down("A"),
+            })
+            .await
+            .expect("send keydown");
+        assert_eq!(rx.recv().await.expect("keydown injected"), key_down("A"));
+
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        expect_next_is_key_up(&mut rx, "A").await;
+    }
+
+    /// Local input must be suppressed exactly while it's being forwarded
+    /// away, and released again when the connection ends — otherwise a
+    /// dropped link would leave the user's own keyboard grabbed.
+    #[tokio::test]
+    async fn local_input_is_suppressed_while_forwarding_and_released_on_disconnect() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
+        let (_capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let (suppress_tx, mut suppress_rx) = mpsc::unbounded_channel();
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            move |suppress| {
+                let _ = suppress_tx.send(suppress);
+            },
+        ));
+
+        // The peer is already active when the connection opens, so
+        // suppression is applied immediately rather than only on the
+        // next switch.
+        assert_eq!(suppress_rx.recv().await, Some(true));
+
+        // Switching back to this machine releases it: input is no longer
+        // being forwarded, so it must reach local applications again.
+        devices_tx.send_replace(devices_with_active_local());
+        assert_eq!(suppress_rx.recv().await, Some(false));
+
+        // ...and switching away re-applies it.
+        devices_tx.send_replace(devices_with_active_peer());
+        assert_eq!(suppress_rx.recv().await, Some(true));
+
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        // The connection ended while suppressing — the final call must
+        // hand local input back.
+        assert_eq!(suppress_rx.recv().await, Some(false));
+    }
+
+    /// The complement: a connection that never suppressed anything
+    /// shouldn't emit a spurious release on the way out.
+    #[tokio::test]
+    async fn a_connection_that_never_suppressed_does_not_release_on_disconnect() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (_devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (_capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: tx };
+
+        let (suppress_tx, mut suppress_rx) = mpsc::unbounded_channel();
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            move |suppress| {
+                let _ = suppress_tx.send(suppress);
+            },
+        ));
+
+        // One initial `false` for the starting state, then nothing.
+        assert_eq!(suppress_rx.recv().await, Some(false));
+
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        assert_eq!(
+            suppress_rx.recv().await,
+            None,
+            "no further suppression calls once the channel's sender drops"
         );
     }
 }

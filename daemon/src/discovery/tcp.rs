@@ -32,6 +32,15 @@ struct Announce {
     /// The port this peer's own `TcpChannel` listener is bound to —
     /// separate from `DISCOVERY_PORT`, which only ever carries announces.
     channel_port: u16,
+    /// Who sent this, so a receiver can recognize its own announce
+    /// echoing back. A real broadcast to `255.255.255.255` is delivered
+    /// to the sending host too, so without this every daemon
+    /// "discovers" itself and starts handshaking against its own peer
+    /// listener every announce interval. Not a security boundary —
+    /// anything on the network can put any id here; it exists purely to
+    /// filter a loopback echo, and is never used to decide trust (that
+    /// stays with the Noise-proven identity key).
+    instance_id: String,
 }
 
 /// Broadcasts this daemon's presence and listens for others' announces.
@@ -40,6 +49,7 @@ pub struct DiscoveryService {
     name: String,
     os: HostOs,
     channel_port: u16,
+    instance_id: String,
 }
 
 impl DiscoveryService {
@@ -48,11 +58,18 @@ impl DiscoveryService {
     /// per-instance ports since two same-host instances can't share
     /// one). Binds `0.0.0.0` so a broadcast arriving on any interface is
     /// received regardless of which one it came in on.
+    /// `instance_id` identifies this daemon process for the sole purpose
+    /// of ignoring its own broadcast echo — see [`Announce::instance_id`].
+    /// Callers should pass something stable for the process's lifetime
+    /// and distinct per daemon; `main.rs` uses this daemon's own
+    /// identity public key, which it already has and which is unique by
+    /// construction.
     pub async fn bind(
         listen_port: u16,
         name: String,
         os: HostOs,
         channel_port: u16,
+        instance_id: String,
     ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(("0.0.0.0", listen_port)).await?;
         socket.set_broadcast(true)?;
@@ -61,6 +78,7 @@ impl DiscoveryService {
             name,
             os,
             channel_port,
+            instance_id,
         })
     }
 
@@ -86,6 +104,7 @@ impl DiscoveryService {
             name: self.name.clone(),
             os: self.os,
             channel_port: self.channel_port,
+            instance_id: self.instance_id.clone(),
         };
         let bytes = serde_json::to_vec(&packet).expect("serialize announce");
         self.socket.send_to(&bytes, destination).await?;
@@ -95,15 +114,19 @@ impl DiscoveryService {
     /// Receives and parses one announce, pairing the sender's IP with
     /// the advertised `channel_port` to build its reachable
     /// `ChannelAddress`. A malformed or foreign packet (this UDP port
-    /// could receive traffic that isn't a Flow announce at all) yields
-    /// `Ok(None)` rather than an error — the caller just waits for the
-    /// next packet.
+    /// could receive traffic that isn't a Flow announce at all), or this
+    /// daemon's own announce echoing back off the broadcast address,
+    /// yields `Ok(None)` rather than an error — the caller just waits
+    /// for the next packet.
     pub async fn recv_one(&self) -> std::io::Result<Option<DiscoveredPeer>> {
         let mut buf = [0u8; 512];
         let (len, sender) = self.socket.recv_from(&mut buf).await?;
         let Ok(announce) = serde_json::from_slice::<Announce>(&buf[..len]) else {
             return Ok(None);
         };
+        if announce.instance_id == self.instance_id {
+            return Ok(None);
+        }
         let tcp_addr = SocketAddr::new(sender.ip(), announce.channel_port);
         Ok(Some(DiscoveredPeer {
             name: announce.name,
@@ -150,12 +173,24 @@ mod tests {
 
     #[tokio::test]
     async fn two_instances_discover_each_other_via_loopback_announces() {
-        let a = DiscoveryService::bind(0, "Device A".to_string(), HostOs::Linux, 47900)
-            .await
-            .expect("bind a");
-        let b = DiscoveryService::bind(0, "Device B".to_string(), HostOs::Macos, 47901)
-            .await
-            .expect("bind b");
+        let a = DiscoveryService::bind(
+            0,
+            "Device A".to_string(),
+            HostOs::Linux,
+            47900,
+            "id-a".to_string(),
+        )
+        .await
+        .expect("bind a");
+        let b = DiscoveryService::bind(
+            0,
+            "Device B".to_string(),
+            HostOs::Macos,
+            47901,
+            "id-b".to_string(),
+        )
+        .await
+        .expect("bind b");
         let (a_addr, b_addr) = (loopback(&a), loopback(&b));
 
         a.announce_to(b_addr).await.expect("a announces to b");
@@ -180,12 +215,24 @@ mod tests {
 
     #[tokio::test]
     async fn spawn_listener_forwards_announces_on_its_channel() {
-        let a = DiscoveryService::bind(0, "Device A".to_string(), HostOs::Linux, 47900)
-            .await
-            .expect("bind a");
-        let b = DiscoveryService::bind(0, "Device B".to_string(), HostOs::Windows, 47901)
-            .await
-            .expect("bind b");
+        let a = DiscoveryService::bind(
+            0,
+            "Device A".to_string(),
+            HostOs::Linux,
+            47900,
+            "id-a".to_string(),
+        )
+        .await
+        .expect("bind a");
+        let b = DiscoveryService::bind(
+            0,
+            "Device B".to_string(),
+            HostOs::Windows,
+            47901,
+            "id-b".to_string(),
+        )
+        .await
+        .expect("bind b");
         let (a_addr, b_addr) = (loopback(&a), loopback(&b));
 
         let mut discoveries = b.spawn_listener();
@@ -201,9 +248,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_non_announce_udp_packet_is_skipped_not_treated_as_an_error() {
-        let listener = DiscoveryService::bind(0, "Device A".to_string(), HostOs::Linux, 47900)
-            .await
-            .expect("bind listener");
+        let listener = DiscoveryService::bind(
+            0,
+            "Device A".to_string(),
+            HostOs::Linux,
+            47900,
+            "id-a".to_string(),
+        )
+        .await
+        .expect("bind listener");
         let listener_addr = loopback(&listener);
 
         let sender = UdpSocket::bind("127.0.0.1:0").await.expect("bind sender");
@@ -213,5 +266,65 @@ mod tests {
             .expect("send garbage");
 
         assert_eq!(listener.recv_one().await.expect("recv"), None);
+    }
+
+    /// A real broadcast to `255.255.255.255` is delivered back to the
+    /// sending host, so a daemon receives its own announce. It must not
+    /// treat itself as a discovered peer — otherwise it registers a
+    /// pairing candidate for itself and dials its own peer listener on
+    /// every announce interval.
+    #[tokio::test]
+    async fn a_daemons_own_announce_echoing_back_is_not_reported_as_a_peer() {
+        let service = DiscoveryService::bind(
+            0,
+            "Device A".to_string(),
+            HostOs::Linux,
+            47900,
+            "id-a".to_string(),
+        )
+        .await
+        .expect("bind service");
+        let own_addr = loopback(&service);
+
+        service
+            .announce_to(own_addr)
+            .await
+            .expect("announce to itself, as a broadcast echo would");
+
+        assert_eq!(service.recv_one().await.expect("recv"), None);
+    }
+
+    /// The negative control for the check above: an announce carrying a
+    /// *different* instance id is still reported, proving the filter
+    /// keys on identity rather than suppressing loopback traffic
+    /// wholesale (every test in this module talks over loopback).
+    #[tokio::test]
+    async fn an_announce_from_a_different_instance_over_loopback_is_still_reported() {
+        let listener = DiscoveryService::bind(
+            0,
+            "Device A".to_string(),
+            HostOs::Linux,
+            47900,
+            "id-a".to_string(),
+        )
+        .await
+        .expect("bind listener");
+        let sender = DiscoveryService::bind(
+            0,
+            "Device B".to_string(),
+            HostOs::Linux,
+            47901,
+            "id-b".to_string(),
+        )
+        .await
+        .expect("bind sender");
+
+        sender
+            .announce_to(loopback(&listener))
+            .await
+            .expect("announce");
+
+        let discovered = listener.recv_one().await.expect("recv").expect("parsed");
+        assert_eq!(discovered.name, "Device B");
     }
 }
