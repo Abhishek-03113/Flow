@@ -28,9 +28,24 @@ class ReplayChannel<T> {
   /// arrives — it only ever [emit]s and [watch]es.
   T get value => _value as T;
 
+  /// Whether a value has ever been [emit]ted — lets a caller tell "still
+  /// waiting for the first value" apart from "already have one", e.g. to
+  /// decide whether a transport failure should surface as a hard error
+  /// (nothing to show yet) or be swallowed (stale-but-still-useful state
+  /// already on screen).
+  bool get hasValue => _value != null;
+
   void emit(T value) {
     _value = value;
     _controller.add(value);
+  }
+
+  /// Forwards a transport-level failure (e.g. `flow-daemon` unreachable) to
+  /// every current/future [watch] subscriber as an error, rather than
+  /// leaving them stuck in an unresolved `AsyncLoading` forever with no way
+  /// to tell "still connecting" apart from "never going to connect".
+  void emitError(Object error, [StackTrace? stackTrace]) {
+    _controller.addError(error, stackTrace);
   }
 
   Stream<T> watch() {

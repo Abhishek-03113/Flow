@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/foundation.dart' show debugPrint, visibleForTesting;
 import 'package:stream_channel/stream_channel.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -56,6 +56,25 @@ class IpcDaemonRepository implements DaemonRepository {
       onError: _handleTransportError,
       onDone: _handleDone,
     );
+    // `WebSocketChannel.connect` fails asynchronously via two separate
+    // paths: the stream error above, and `WebSocketChannel.ready`
+    // completing with the same error. Nothing else in this class ever
+    // reads `ready`, so without a handler here a connection failure (e.g.
+    // no `flow-daemon` process listening yet) surfaces as an *unhandled*
+    // isolate error that takes the whole app down instead of landing in
+    // `_handleTransportError` — this is what turns "the daemon isn't
+    // running" into a hard crash. The test-only `withChannel` constructor
+    // is sometimes driven by a plain `StreamChannel` (an in-memory
+    // controller pair) that has no `ready` future at all, hence the type
+    // check rather than assuming `WebSocketChannel`.
+    final channel = _channel;
+    if (channel is WebSocketChannel) {
+      unawaited(
+        channel.ready.catchError((Object error, StackTrace stackTrace) {
+          _handleTransportError(error, stackTrace);
+        }),
+      );
+    }
   }
 
   final StreamChannel<dynamic> _channel;
@@ -128,9 +147,29 @@ class IpcDaemonRepository implements DaemonRepository {
   }
 
   void _handleTransportError(Object error, StackTrace stackTrace) {
+    debugPrint('flow-daemon connection error: $error');
     // A transport-level error precedes the socket closing; _handleDone
-    // is what actually resolves any still-pending commands, so there is
-    // nothing else to do here yet.
+    // is what resolves any still-pending commands. What's missing without
+    // this is any signal to the UI at all: every `watch*` stream just sits
+    // in `AsyncLoading` forever when `flow-daemon` was never reachable
+    // (onboarding's permission step, for one, has no way to distinguish
+    // "still connecting" from "never going to connect"). Only channels
+    // that never got a real value are pushed into `AsyncError` — one that
+    // already has state from a working connection keeps showing it rather
+    // than being clobbered by a transient drop.
+    _failChannelsAwaitingFirstValue(error, stackTrace);
+  }
+
+  void _failChannelsAwaitingFirstValue(Object error, StackTrace stackTrace) {
+    for (final channel in [
+      _devices,
+      _linkState,
+      _pairingSession,
+      _settings,
+      _permission,
+    ]) {
+      if (!channel.hasValue) channel.emitError(error, stackTrace);
+    }
   }
 
   void _handleDone() {
@@ -146,6 +185,17 @@ class IpcDaemonRepository implements DaemonRepository {
         );
       }
     }
+    // The socket can close without ever raising a transport error first
+    // (e.g. the daemon refuses the handshake outright) — same "never
+    // resolve" trap as `_handleTransportError` if a channel still hasn't
+    // seen its first value.
+    _failChannelsAwaitingFirstValue(
+      const DaemonCommandException(
+        'daemon_disconnected',
+        'lost connection to flow-daemon',
+      ),
+      StackTrace.current,
+    );
   }
 
   @override

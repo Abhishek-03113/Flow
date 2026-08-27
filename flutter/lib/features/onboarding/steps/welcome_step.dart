@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/theme/tokens.dart';
+import '../../../core/widgets/app_logo.dart';
 import '../../../core/widgets/primitives.dart';
 
 /// Step 0 — first thing the user sees.
@@ -20,21 +21,7 @@ class WelcomeStep extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          width: 58,
-          height: 58,
-          decoration: BoxDecoration(
-            color: c.accent,
-            borderRadius: BorderRadius.circular(17),
-            boxShadow: const [
-              BoxShadow(
-                color: Color(0x59283CDC),
-                blurRadius: 24,
-                offset: Offset(0, 8),
-              ),
-            ],
-          ),
-        ),
+        AppLogo(accent: c.accent),
         const SizedBox(height: 14),
         Text(
           'One keyboard. Every computer.',

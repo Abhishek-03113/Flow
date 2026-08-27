@@ -13,12 +13,31 @@ class PermissionStep extends StatelessWidget {
     required this.permission,
     required this.onGrant,
     required this.onContinue,
+    this.isRequesting = false,
+    this.errorMessage,
+    this.connectionError = false,
   });
 
   final FlowPalette palette;
   final PermissionStatus permission;
   final VoidCallback onGrant;
   final VoidCallback onContinue;
+
+  /// True while the daemon command triggered by "Allow" is in flight —
+  /// shows a spinner and disables the button instead of leaving it looking
+  /// clickable with nothing visibly happening.
+  final bool isRequesting;
+
+  /// Set after a failed request. Shown inline so getting stuck here has an
+  /// actual explanation instead of just a button that appears to do
+  /// nothing.
+  final String? errorMessage;
+
+  /// True when [permission] is still unknown because `flow-daemon` itself
+  /// couldn't be reached at all (as opposed to "reachable, just not
+  /// granted yet") — a distinct, more actionable message than the generic
+  /// "Not granted yet" copy.
+  final bool connectionError;
 
   @override
   Widget build(BuildContext context) {
@@ -35,12 +54,30 @@ class PermissionStep extends StatelessWidget {
         SizedBox(
           width: 350,
           child: Text(
-            '${permission.name} needs your permission before Cross Device can pass keystrokes between computers.',
+            '${permission.name} needs your permission before Cross Device '
+            "can pass keystrokes between computers. Allow opens your "
+            "system's privacy settings — flip the switch there, then come "
+            'back here.',
             style: FlowType.body(c.text2).copyWith(fontSize: 13, height: 1.5),
             textAlign: TextAlign.center,
           ),
         ),
         const SizedBox(height: 10),
+        if (connectionError)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: c.dangerSoft,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              "Can't reach Flow's background service. Make sure it's "
+              'running, then tap Allow to try again.',
+              style: FlowType.meta(c.danger),
+            ),
+          ),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
@@ -66,16 +103,31 @@ class PermissionStep extends StatelessWidget {
                   ],
                 ),
               ),
-              FlowButton(
-                label: granted ? 'Granted' : 'Allow',
-                kind: FlowButtonKind.primary,
-                background: granted ? c.mat2 : c.accent,
-                foreground: granted ? c.text2 : c.accentText,
-                onPressed: granted ? null : onGrant,
-              ),
+              if (isRequesting)
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: FlowSpinner(color: c.accent, trackColor: c.mat2),
+                )
+              else
+                FlowButton(
+                  label: granted ? 'Granted' : 'Allow',
+                  kind: FlowButtonKind.primary,
+                  background: granted ? c.mat2 : c.accent,
+                  foreground: granted ? c.text2 : c.accentText,
+                  onPressed: granted ? null : onGrant,
+                ),
             ],
           ),
         ),
+        if (errorMessage != null)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              errorMessage!,
+              style: FlowType.meta(c.danger),
+              textAlign: TextAlign.center,
+            ),
+          ),
         const SizedBox(height: 4),
         FlowButton(
           label: 'Continue',
