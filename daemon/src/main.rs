@@ -12,9 +12,10 @@ use std::time::Duration;
 
 use flow_core::channel::Channel;
 use flow_core::device::DeviceId;
-use flow_core::input::InputCapture;
+use flow_core::input::{InputCapture, InputInjector};
 use flow_core::ipc::IPC_PORT;
 use flow_core::link::DaemonLinkState;
+use flow_core::protocol::InputEvent;
 use flow_daemon::channel::tcp::TcpChannel;
 use flow_daemon::discovery::tcp::{DiscoveryService, DISCOVERY_PORT};
 use flow_daemon::discovery::DiscoveredPeer;
@@ -339,21 +340,15 @@ async fn run_peer_pipeline(
         }
     });
 
-    // `new_default_input_injector`'s error is `Box<dyn std::error::Error>`
-    // — not `Send` — and this whole function runs inside `tokio::spawn`,
-    // which requires every value live across an `.await` to be `Send`.
-    // Logging and discarding it inside this synchronous closure (never
-    // itself crossing an `.await`) keeps the non-`Send` error out of the
-    // async state machine entirely, rather than trying to keep it alive
-    // only until a `drop()` right before the next `.await`.
-    let injector = new_default_input_injector()
-        .map_err(|err| {
-            tracing::warn!(
-                "peer pipeline for {device_id:?} not started: input injection failed: {err:?}"
-            );
-        })
-        .ok();
-    let Some(injector) = injector else {
+    // The real injector (e.g. `MacosInputInjector`, wrapping a
+    // `CGEventSource`) can be platform-thread-affine — its Core
+    // Foundation pointer type isn't `Send` — and this whole function
+    // runs inside `tokio::spawn`, which requires every value held across
+    // an `.await` to be `Send`. `spawn_injector` keeps the real injector
+    // confined to its own dedicated OS thread and hands back a `Send`,
+    // channel-backed [`InjectorHandle`] instead, so the non-`Send` type
+    // never enters this async function's state machine at all.
+    let Some(injector) = spawn_injector(device_id.clone()) else {
         let _ = capture.stop();
         connected_peers.lock().await.remove(&device_id);
         return;
@@ -410,6 +405,70 @@ async fn run_peer_pipeline(
         } else {
             DaemonLinkState::Disconnected
         });
+    }
+}
+
+/// A `Send`, channel-backed [`InputInjector`] that stands in for the
+/// platform's real injector inside `run_peer_pipeline`'s `tokio::spawn`ed
+/// task. The real injector can be platform-thread-affine (on macOS,
+/// `MacosInputInjector` wraps a `CGEventSource`, whose Core Foundation
+/// pointer type isn't `Send`), so it's never held here — `inject` just
+/// forwards the event down a channel to the dedicated OS thread
+/// [`spawn_injector`] started, which owns the real injector and is the
+/// only thing that ever touches it. The same OS-thread bridging already
+/// used for `capture_rx`/`bridge_tx` in `run_peer_pipeline`, just in the
+/// injection direction.
+struct InjectorHandle {
+    events: std::sync::mpsc::Sender<InputEvent>,
+}
+
+impl InputInjector for InjectorHandle {
+    type Error = std::sync::mpsc::SendError<InputEvent>;
+
+    fn inject(&mut self, event: &InputEvent) -> Result<(), Self::Error> {
+        self.events.send(event.clone())
+    }
+}
+
+/// Starts the platform's real input injector (`new_default_input_injector`)
+/// on a dedicated OS thread — so its possibly non-`Send` type never has to
+/// cross an `.await` — and returns a [`InjectorHandle`] to it. `None`
+/// (logging a warning, not panicking) if the platform adapter can't
+/// start, the same "degrade gracefully" contract every other
+/// platform-adapter construction in this file has. Blocks briefly on
+/// `ready_rx.recv()` to learn whether construction succeeded before
+/// returning, mirroring `MacosInputCapture::start()`'s own
+/// ready-channel handshake for its capture thread.
+fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (events_tx, events_rx) = std::sync::mpsc::channel::<InputEvent>();
+
+    std::thread::spawn(move || {
+        let mut injector = match new_default_input_injector() {
+            Ok(injector) => injector,
+            Err(err) => {
+                tracing::warn!(
+                    "peer pipeline for {device_id:?} not started: input injection failed: {err:?}"
+                );
+                let _ = ready_tx.send(false);
+                return;
+            }
+        };
+        if ready_tx.send(true).is_err() {
+            // `spawn_injector`'s caller gave up waiting — nothing left
+            // to inject for.
+            return;
+        }
+        for event in events_rx {
+            if let Err(err) = injector.inject(&event) {
+                tracing::warn!("input injection failed for peer {device_id:?}: {err:?}");
+            }
+        }
+    });
+
+    match ready_rx.recv() {
+        Ok(true) => Some(InjectorHandle { events: events_tx }),
+        _ => None,
     }
 }
 
