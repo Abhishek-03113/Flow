@@ -14,6 +14,7 @@ import '../../domain/daemon_command_exception.dart';
 import '../../domain/device.dart';
 import '../../domain/pairing.dart';
 import '../../domain/permission_status.dart';
+import '../../state/app_env.dart';
 import '../../state/repository_providers.dart';
 import 'steps/done_step.dart';
 import 'steps/pair_step.dart';
@@ -209,6 +210,7 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
                           errorMessage: _permissionError,
                           connectionError:
                               permission == null && permissionState.hasError,
+                          allowSkip: isDevelopmentEnv,
                           onGrant: () => unawaited(_handleGrant()),
                           onContinue: () => _goTo(2),
                         ),
