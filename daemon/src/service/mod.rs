@@ -223,6 +223,19 @@ impl DaemonService {
         self.link_state_tx.subscribe()
     }
 
+    /// Updates the daemon's real link-health state — `main.rs`'s peer
+    /// connection lifecycle (`run_peer_pipeline`) is the only real
+    /// caller, since that's the one place that knows whether a paired
+    /// device is actually streaming input right now. Before any
+    /// daemon-to-daemon wiring existed, `link_state` was only ever the
+    /// static `Connected` value `ServiceState::load_or_seed` sets once
+    /// at startup; this is what makes it reflect
+    /// `docs/contracts/daemon-ipc.md`'s transition table for real
+    /// connections instead.
+    pub fn set_link_state(&self, state: DaemonLinkState) {
+        self.link_state_tx.send_replace(state);
+    }
+
     pub fn watch_pairing_session(&self) -> watch::Receiver<PairingSession> {
         self.pairing_session_tx.subscribe()
     }

@@ -14,6 +14,7 @@ use flow_core::channel::Channel;
 use flow_core::device::DeviceId;
 use flow_core::input::InputCapture;
 use flow_core::ipc::IPC_PORT;
+use flow_core::link::DaemonLinkState;
 use flow_daemon::channel::tcp::TcpChannel;
 use flow_daemon::discovery::tcp::{DiscoveryService, DISCOVERY_PORT};
 use flow_daemon::discovery::DiscoveredPeer;
@@ -324,10 +325,24 @@ async fn run_peer_pipeline(
         return;
     };
 
+    service.set_link_state(DaemonLinkState::Connected);
     pipeline::run_paired_connection(channel, bridge_rx, devices_rx, injector).await;
     drop(capture);
     tracing::info!("streaming pipeline ended for peer {device_id:?}");
-    connected_peers.lock().await.remove(&device_id);
+
+    let no_peers_left = {
+        let mut connected = connected_peers.lock().await;
+        connected.remove(&device_id);
+        connected.is_empty()
+    };
+    // Only downgrade link health once nothing else is still streaming —
+    // another paired device's connection may well still be live.
+    // "Connecting" (not "Disconnected") because discovery keeps
+    // listening/re-announcing in the background and will reconnect this
+    // peer, or any other, without any user action.
+    if no_peers_left {
+        service.set_link_state(DaemonLinkState::Connecting);
+    }
 }
 
 /// The database file lives under the platform data directory (via the
