@@ -6,8 +6,10 @@ import '../../../core/widgets/primitives.dart';
 import '../../../domain/daemon_command_exception.dart';
 import '../../../domain/daemon_link_state.dart';
 import '../../../domain/device.dart';
+import '../../../domain/pairing.dart';
 import '../../../state/repository_providers.dart';
 import '../../../state/ui_providers.dart';
+import '../../tray/tray_pairing_view.dart';
 
 const _linkLabels = {
   DaemonLinkState.connected: 'Connected',
@@ -37,6 +39,16 @@ class DashboardSection extends ConsumerWidget {
     final active = devices
         .where((d) => d.state == DeviceState.active)
         .firstOrNull;
+    final pairing =
+        ref.watch(pairingSessionProvider).valueOrNull ?? PairingSession.idle;
+
+    if (pairing.stage != PairingStage.idle) {
+      return TrayPairingView(
+        session: pairing,
+        palette: c,
+        switchKeyLabel: switchKeyLabel,
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -104,9 +116,8 @@ class DashboardSection extends ConsumerWidget {
               kind: FlowButtonKind.ghost,
               background: c.mat1,
               foreground: c.text1,
-              onPressed: () => ref
-                  .read(toastProvider.notifier)
-                  .show('Pairing lives in the menu bar'),
+              onPressed: () =>
+                  ref.read(daemonRepositoryProvider).startPairing(),
             ),
           ],
         ),

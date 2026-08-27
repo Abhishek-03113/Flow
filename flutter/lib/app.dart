@@ -232,7 +232,9 @@ class _RealAppState extends ConsumerState<_RealApp>
       // dashboard for someone who never onboarded at all.
       error: (_, _) => onboarding(),
       data: (complete) =>
-          complete ? AppWindowShell(platform: platform) : onboarding(),
+          complete
+              ? AppWindowShell(platform: platform, standalone: true)
+              : onboarding(),
     );
 
     // The onboarding/dashboard content already carries its own glass
