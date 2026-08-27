@@ -1,12 +1,30 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!--
+  network.client + the token read exception below are both required for
+  IpcDaemonRepository (lib/data/ipc_daemon_repository.dart) to reach
+  flow-daemon at all under App Sandbox: without network.client, the
+  WebSocket connect() to 127.0.0.1:47823 is denied outright by the
+  sandbox (macOS reports this as `SocketException: Operation not
+  permitted`, not "connection refused" — it looks exactly like the
+  daemon isn't running even when it is); without the file exception,
+  reading ~/.flow/ipc.token (lib/data/ipc_auth.dart) — a path outside
+  this app's sandbox container — silently returns nothing, so the
+  handshake never carries the auth token the daemon requires.
+-->
 <dict>
 	<key>com.apple.security.app-sandbox</key>
 	<true/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
+	<key>com.apple.security.network.client</key>
+	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>
+	<array>
+		<string>/.flow/ipc.token</string>
+	</array>
 </dict>
 </plist>
