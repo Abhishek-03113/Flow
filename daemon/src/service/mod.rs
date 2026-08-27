@@ -110,7 +110,7 @@ impl ServiceState {
         let settings = settings_repo.load().await;
 
         let existing = device_repo.list().await;
-        let devices = if existing.is_empty() {
+        let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
             let seed = seed_device_records();
             for record in &seed {
                 device_repo.upsert(record.clone()).await;
@@ -124,6 +124,7 @@ impl ServiceState {
                 .map(|record| (record.device.id.clone(), record.device))
                 .collect()
         };
+        restore_local_device_active(&mut devices);
 
         Self {
             devices,
@@ -137,6 +138,32 @@ impl ServiceState {
             candidates_pool: candidate_seeds(),
             discovered_candidates: HashMap::new(),
         }
+    }
+}
+
+/// Puts this machine back in [`DeviceState::Active`] after a reload.
+///
+/// `DeviceRepo` deliberately never persists [`DeviceState`] — a device
+/// loaded from disk always comes back `Disconnected` until a live
+/// connection re-establishes it, so a stale row can't resurrect a peer as
+/// `Active`. That rule is right for *peers* and wrong for this machine:
+/// nothing ever re-establishes a connection to the computer the daemon is
+/// already running on, so without this every boot after the first left
+/// `LOCAL_DEVICE_ID` `Disconnected` too — with no device in any
+/// switchable state, `switch_active_device` rejected every target with
+/// `device_not_switchable`, the switch key became a permanent no-op, and
+/// the Flutter UI's "Controlling" card had nothing to show, since it
+/// reads straight off `watch_devices`/`watch_link_state` with no
+/// fallback of its own.
+///
+/// `data-model.md`'s `active` row is the contract this restores: "this
+/// machine, 'This device', is `active` by default when nothing else is."
+fn restore_local_device_active(devices: &mut HashMap<DeviceId, Device>) {
+    if devices.values().any(|d| d.state == DeviceState::Active) {
+        return;
+    }
+    if let Some(local) = devices.get_mut(&DeviceId(LOCAL_DEVICE_ID.to_string())) {
+        local.state = DeviceState::Active;
     }
 }
 
@@ -1308,6 +1335,37 @@ mod tests {
         service.switch_active_device_local().await;
         let after = service.watch_devices().borrow().clone();
         assert_eq!(before, after);
+    }
+
+    /// Regression: `DeviceRepo` never persists `DeviceState`, so every
+    /// device — including this machine — used to come back `Disconnected`
+    /// on the second boot against the same database. With nothing in a
+    /// switchable state, `switch_active_device` rejected every target and
+    /// the hotkey became a permanent no-op; the Flutter "Controlling" card
+    /// had nothing to show either, since it reads straight off
+    /// `watch_devices`.
+    #[tokio::test]
+    async fn a_second_boot_still_has_a_switchable_device() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+
+        // First boot seeds and persists the device list.
+        let _ = DaemonService::new(storage.clone()).await;
+
+        // Second boot against the same database.
+        let service = DaemonService::new(storage).await;
+        let devices = service.watch_devices().borrow().clone();
+        let local = devices
+            .iter()
+            .find(|d| d.id.0 == LOCAL_DEVICE_ID)
+            .expect("the local device survives a reload");
+        assert_eq!(local.state, DeviceState::Active);
+
+        service.switch_active_device_local().await;
+        let after = service.watch_devices().borrow().clone();
+        assert!(
+            after.iter().any(|d| d.state == DeviceState::Active),
+            "the switch key must still be able to move the active device"
+        );
     }
 
     #[tokio::test]
