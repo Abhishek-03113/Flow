@@ -2,20 +2,24 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <!--
-  network.client + the token read exception below are both required for
-  IpcDaemonRepository (lib/data/ipc_daemon_repository.dart) to reach
-  flow-daemon at all under App Sandbox: without network.client, the
-  WebSocket connect() to 127.0.0.1:47823 is denied outright by the
-  sandbox (macOS reports this as `SocketException: Operation not
-  permitted`, not "connection refused" — it looks exactly like the
-  daemon isn't running even when it is); without the file exception,
-  reading ~/.flow/ipc.token (lib/data/ipc_auth.dart) — a path outside
-  this app's sandbox container — silently returns nothing, so the
-  handshake never carries the auth token the daemon requires.
+  App Sandbox is off for Debug/Profile builds entirely — this is the
+  local "dev mode" for running the app end to end against a real
+  flow-daemon with zero permission friction. Even with network.client
+  and the token-read exception below granted, the sandbox is still an
+  extra layer of OS-level socket/file denial that adds nothing during
+  development (the daemon is a separate, unsandboxed process either
+  way) and has repeatedly reproduced as `SocketException: Operation
+  not permitted` on 127.0.0.1:47823 even after those entitlements were
+  added — Xcode/Flutter's incremental build doesn't reliably re-sign
+  on an entitlements-only diff, so the safer fix for iteration speed is
+  to not depend on sandbox exceptions being freshly applied at all.
+  `flutter clean` first if you still see stale signing after pulling
+  this change. Release.entitlements is untouched — this does not change
+  anything about how the app ships.
 -->
 <dict>
 	<key>com.apple.security.app-sandbox</key>
-	<true/>
+	<false/>
 	<key>com.apple.security.cs.allow-jit</key>
 	<true/>
 	<key>com.apple.security.network.client</key>
