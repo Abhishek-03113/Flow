@@ -40,7 +40,18 @@ use crate::trust::TrustGate;
 /// input-streaming pipeline over it.
 pub enum IncomingPeerConnection {
     HandledAsPairing,
-    TrustedPeer(Box<dyn Channel>, DeviceId),
+    TrustedPeer(Box<dyn Channel>, DeviceId, ConnectionPrecedence),
+}
+
+/// Whether a connection should win against a competing one to the same
+/// peer — see [`DaemonService::connection_precedence`] for the rule and
+/// why one is needed at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionPrecedence {
+    /// Keep this connection, dropping any competing one.
+    Preferred,
+    /// Drop this connection; the peer's competing one is the keeper.
+    Redundant,
 }
 
 /// "This device" — the machine `flow-daemon` itself is running on. Never
@@ -58,6 +69,12 @@ const PAIRING_SEARCH_TO_FOUND: Duration = Duration::from_millis(1200);
 const PAIRING_REQUEST_TO_PAIRED: Duration = Duration::from_millis(1500);
 /// `sharedContractConstants.mockParityTimings.pairingTerminalToIdleMs`.
 const PAIRING_TERMINAL_TO_IDLE: Duration = Duration::from_millis(1600);
+
+/// How long [`DaemonService::dial_if_trusted`] will spend connecting to
+/// and handshaking with a discovered peer before giving up. Generous
+/// enough for a slow LAN and a Noise `XX` round trip, short enough that
+/// a peer which never answers doesn't hold a caller indefinitely.
+const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct ServiceState {
     pub devices: HashMap<DeviceId, Device>,
@@ -672,13 +689,15 @@ impl DaemonService {
     /// trusted" holds symmetrically for both ends of one handshake, not
     /// just the initiator's.
     ///
-    /// Always accepts for now: the Flutter-facing contract has no
-    /// incoming-pairing-request command/UI yet
+    /// **Only accepts while this daemon's own user has pairing open** —
+    /// see [`Self::is_pairing_window_open`]. The Flutter-facing contract
+    /// still has no incoming-pairing-request command/UI
     /// (`docs/contracts/daemon-ipc.md`'s `PairingSession` only models the
-    /// *initiating* side's view) — a real accept/reject prompt on this
-    /// side is a natural follow-up requiring a new contract command,
-    /// out of this task's scope; flagged honestly here rather than
-    /// silently assumed. See this task's `buildNote`.
+    /// *initiating* side's view), so there's no way to prompt "Device X
+    /// wants to pair, accept?" without a new contract command. The
+    /// pairing window is what stands in for that prompt using state the
+    /// user already drives directly: they pressed "Pair a device," so an
+    /// incoming request in that moment is one they're expecting.
     pub async fn accept_pairing_request(
         &self,
         channel: Box<dyn Channel>,
@@ -687,6 +706,30 @@ impl DaemonService {
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
         self.accept_pairing_over(&mut noise_channel, peer_public_key)
             .await
+    }
+
+    /// Whether this daemon is currently willing to accept an incoming
+    /// pairing request: true only while the local user has a pairing
+    /// session in flight (they pressed "Pair a device" and the session
+    /// hasn't returned to `Idle`).
+    ///
+    /// Without this, the peer listener — bound to `0.0.0.0` and
+    /// advertising its port by broadcast every few seconds — would let
+    /// *any* host on the network pair itself into the trust store with
+    /// no user involvement at all, and then inject arbitrary keyboard
+    /// and mouse input. That's the whole product working against its
+    /// owner, so the default has to be "closed."
+    ///
+    /// Honest about what this is not: within an open window it's still
+    /// first-come-first-served, with no short-authentication-string or
+    /// numeric-comparison step to prove the device that answered is the
+    /// one the user meant. Closing that gap needs a real accept/reject
+    /// prompt (a new contract command and UI). This narrows the exposure
+    /// from "always, unattended" to "a few seconds, while the user is
+    /// deliberately pairing and watching" — a large reduction, not a
+    /// complete fix.
+    pub async fn is_pairing_window_open(&self) -> bool {
+        self.state.read().await.pairing_session.stage != PairingStage::Idle
     }
 
     /// The post-handshake half of [`Self::accept_pairing_request`],
@@ -703,8 +746,25 @@ impl DaemonService {
         channel: &mut dyn Channel,
         peer_public_key: Vec<u8>,
     ) -> Result<(), ChannelError> {
-        let (request, decision) =
-            handshake::respond_to_pairing(channel, |_request| PairingDecision::Accept).await?;
+        // Checked once here, at the moment the request actually arrives,
+        // rather than by the caller before the handshake: the window can
+        // close while the Noise exchange is still in flight, and a
+        // request that lands after the user gave up on pairing is
+        // exactly the unattended case this gate exists to refuse.
+        let window_open = self.is_pairing_window_open().await;
+        if !window_open {
+            tracing::warn!(
+                "refused an incoming pairing request: no pairing session is open on this device"
+            );
+        }
+        let (request, decision) = handshake::respond_to_pairing(channel, |_request| {
+            if window_open {
+                PairingDecision::Accept
+            } else {
+                PairingDecision::Reject
+            }
+        })
+        .await?;
         if decision != PairingDecision::Accept {
             return Ok(());
         }
@@ -740,8 +800,9 @@ impl DaemonService {
     /// device. An already-trusted peer is handed back to the caller as a
     /// live, authenticated [`Channel`] to run the input-streaming
     /// pipeline over; an untrusted peer is treated as a pairing attempt
-    /// and handled in place via [`Self::accept_pairing_over`] — the same
-    /// "always accept" responder behavior `accept_pairing_request` uses.
+    /// and handled in place via [`Self::accept_pairing_over`] — subject
+    /// to [`Self::is_pairing_window_open`], so an unattended daemon
+    /// rejects it rather than silently trusting whoever asked.
     pub async fn accept_incoming_peer_channel(
         &self,
         channel: Box<dyn Channel>,
@@ -755,6 +816,7 @@ impl DaemonService {
             return Ok(IncomingPeerConnection::TrustedPeer(
                 Box::new(noise_channel),
                 device_id,
+                self.connection_precedence(&peer_public_key),
             ));
         }
 
@@ -762,6 +824,32 @@ impl DaemonService {
         self.accept_pairing_over(&mut noise_channel, peer_public_key)
             .await?;
         Ok(IncomingPeerConnection::HandledAsPairing)
+    }
+
+    /// Which of two simultaneously-established connections to the same
+    /// peer both sides should keep.
+    ///
+    /// Two paired daemons starting together both dial each other at once
+    /// (discovery announces immediately on startup), so each ends up
+    /// with two connections to the other: one it opened, one it
+    /// accepted. Without a rule they agree on, each side independently
+    /// keeps "the one I opened" and drops the other's — killing *both*
+    /// connections and leaving the pair unable to talk at all.
+    ///
+    /// The rule: keep the connection opened by whichever side has the
+    /// numerically smaller identity public key. Both ends know both keys
+    /// once the handshake completes, and the comparison is symmetric, so
+    /// they always reach the same verdict — one connection survives,
+    /// exactly one is dropped. Keys are unique per device (H1), so this
+    /// can't tie.
+    fn connection_precedence(&self, peer_public_key: &[u8]) -> ConnectionPrecedence {
+        if self.identity.public_key_bytes().as_slice() < peer_public_key {
+            // We're the designated dialer, so our *outbound* connection
+            // is the one to keep — this inbound one loses.
+            ConnectionPrecedence::Redundant
+        } else {
+            ConnectionPrecedence::Preferred
+        }
     }
 
     /// The outbound counterpart to [`Self::accept_incoming_peer_channel`]:
@@ -774,14 +862,29 @@ impl DaemonService {
     /// is already a paired device, i.e. this is a reconnect to maintain,
     /// not a fresh peer to surface through the pairing flow (that path
     /// stays `note_discovered_peer`'s job, unaffected by this method).
+    /// Bounded by [`DIAL_TIMEOUT`] end to end: a discovery announce is
+    /// unauthenticated, so anything on the network can name an address
+    /// that accepts TCP and then simply never completes the Noise
+    /// handshake. Without a deadline that stalls this call forever, and
+    /// with it a caller that awaits it.
     pub async fn dial_if_trusted(
         &self,
         address: ChannelAddress,
-    ) -> Option<(Box<dyn Channel>, DeviceId)> {
-        let channel = negotiate::connect_best_available(std::slice::from_ref(&address))
-            .await
-            .ok()?;
-        let noise_channel = NoiseChannel::initiate(channel, &self.identity).await.ok()?;
+    ) -> Option<(Box<dyn Channel>, DeviceId, ConnectionPrecedence)> {
+        let dial = async {
+            let channel = negotiate::connect_best_available(std::slice::from_ref(&address))
+                .await
+                .ok()?;
+            NoiseChannel::initiate(channel, &self.identity).await.ok()
+        };
+        let noise_channel = match tokio::time::timeout(DIAL_TIMEOUT, dial).await {
+            Ok(Some(channel)) => channel,
+            Ok(None) => return None,
+            Err(_) => {
+                tracing::debug!("dialing {address:?} timed out before the handshake completed");
+                return None;
+            }
+        };
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
 
         let trust = TrustGate::new(self.storage.clone());
@@ -791,8 +894,31 @@ impl DaemonService {
             return None;
         }
         let device_id = device_id_from_public_key(&peer_public_key);
+        // Inverted relative to the inbound case: `connection_precedence`
+        // answers "should the connection *they* opened win," so for one
+        // we opened ourselves the verdict flips.
+        let precedence = match self.connection_precedence(&peer_public_key) {
+            ConnectionPrecedence::Preferred => ConnectionPrecedence::Redundant,
+            ConnectionPrecedence::Redundant => ConnectionPrecedence::Preferred,
+        };
         let channel: Box<dyn Channel> = Box::new(noise_channel);
-        Some((channel, device_id))
+        Some((channel, device_id, precedence))
+    }
+
+    /// A stable, per-daemon identifier for `main.rs`'s discovery
+    /// announces to tag themselves with, so a broadcast echoing back to
+    /// this same host is recognizable as our own rather than treated as
+    /// a newly discovered peer (see `discovery::tcp`'s `Announce`).
+    ///
+    /// This daemon's `H1` identity public key, hex-encoded: unique by
+    /// construction and already persisted, so no second identifier has
+    /// to be invented or stored. Note this deliberately *publishes* the
+    /// public key on the local network — public keys are not secrets,
+    /// and the peer listener proves possession of the matching private
+    /// key via Noise before anything is trusted, so a copied id buys an
+    /// attacker nothing beyond being ignored by the daemon it copied.
+    pub fn local_instance_id(&self) -> String {
+        hex_encode(&self.identity.public_key_bytes())
     }
 
     /// This device's own name/OS as recorded for [`LOCAL_DEVICE_ID`] —
@@ -1464,13 +1590,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn accept_incoming_peer_channel_treats_an_untrusted_initiator_as_a_pairing_attempt() {
+    /// Drives one incoming pairing attempt against `service` and reports
+    /// the decision the initiator received, so the two tests below differ
+    /// only in whether a pairing window was open.
+    async fn attempt_incoming_pairing(service: &DaemonService) -> PairingDecision {
         use crate::channel::tcp::TcpChannel;
         use tokio::net::TcpListener;
-
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -1506,7 +1631,43 @@ mod tests {
             .expect("accept incoming");
         assert!(matches!(outcome, IncomingPeerConnection::HandledAsPairing));
 
-        let decision = initiator.await.expect("initiator task");
+        initiator.await.expect("initiator task")
+    }
+
+    /// The security-critical default. The peer listener is bound to
+    /// `0.0.0.0` and its port is broadcast every few seconds, so an
+    /// unattended daemon that accepted pairing unconditionally would let
+    /// any host on the network add itself to the trust store and then
+    /// inject input. Nothing may be trusted without the local user
+    /// opening a pairing window first.
+    #[tokio::test]
+    async fn an_incoming_pairing_request_is_rejected_when_no_pairing_window_is_open() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        assert!(!service.is_pairing_window_open().await);
+
+        let decision = attempt_incoming_pairing(&service).await;
+        assert_eq!(decision, PairingDecision::Reject);
+
+        let devices = service.watch_devices().borrow().clone();
+        assert!(
+            !devices.iter().any(|d| d.name == "New Laptop"),
+            "an unattended daemon must not add an uninvited device: {devices:?}"
+        );
+    }
+
+    /// The complement: once the user has actually pressed "Pair a
+    /// device", an incoming request is the one they're expecting, and
+    /// pairing completes as before.
+    #[tokio::test]
+    async fn an_incoming_pairing_request_is_accepted_while_a_pairing_window_is_open() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+
+        service.start_pairing().await.expect("start pairing");
+        assert!(service.is_pairing_window_open().await);
+
+        let decision = attempt_incoming_pairing(&service).await;
         assert_eq!(decision, PairingDecision::Accept);
 
         let devices = service.watch_devices().borrow().clone();
@@ -1557,7 +1718,7 @@ mod tests {
             .await
             .expect("accept incoming");
         match outcome {
-            IncomingPeerConnection::TrustedPeer(_, device_id) => {
+            IncomingPeerConnection::TrustedPeer(_, device_id, _) => {
                 assert_eq!(device_id, device_id_from_public_key(&peer_public_key));
             }
             IncomingPeerConnection::HandledAsPairing => {

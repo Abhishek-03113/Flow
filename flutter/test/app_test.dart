@@ -43,6 +43,11 @@ void main() {
     await tester.pump();
     await tester.pump();
 
+    // Assert the dashboard actually rendered, not merely that onboarding
+    // is absent: the loading state is also free of the onboarding
+    // headline, so checking only for its absence would pass on an empty
+    // window. "Overview" is the app window's own sidebar heading.
+    expect(find.text('Overview'), findsOneWidget);
     expect(find.text('One keyboard. Every computer.'), findsNothing);
   });
 }

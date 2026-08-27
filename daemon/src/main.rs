@@ -22,7 +22,7 @@ use flow_daemon::hotkey;
 use flow_daemon::ipc::auth;
 use flow_daemon::ipc::server::handle_connection;
 use flow_daemon::pipeline;
-use flow_daemon::service::{DaemonService, IncomingPeerConnection};
+use flow_daemon::service::{ConnectionPrecedence, DaemonService, IncomingPeerConnection};
 use flow_daemon::storage::{history_logger, Storage};
 use flow_platform::{new_default_input_injector, DefaultInputCapture};
 use tokio::net::{TcpListener, TcpStream};
@@ -163,14 +163,19 @@ async fn spawn_discovery(
     channel_port: u16,
 ) {
     let (name, os) = service.local_device_identity().await;
+    // Our own identity key doubles as the announce instance id: unique
+    // per daemon by construction, and already known here, so a broadcast
+    // echoing back to this host is recognizable as ours.
+    let instance_id = service.local_instance_id();
 
-    let discovery = match DiscoveryService::bind(DISCOVERY_PORT, name, os, channel_port).await {
-        Ok(discovery) => discovery,
-        Err(err) => {
-            tracing::warn!("discovery service not started: {err}");
-            return;
-        }
-    };
+    let discovery =
+        match DiscoveryService::bind(DISCOVERY_PORT, name, os, channel_port, instance_id).await {
+            Ok(discovery) => discovery,
+            Err(err) => {
+                tracing::warn!("discovery service not started: {err}");
+                return;
+            }
+        };
     tracing::info!("flow-daemon discovery listening on 0.0.0.0:{DISCOVERY_PORT}");
 
     tokio::spawn(async move {
@@ -186,9 +191,13 @@ async fn spawn_discovery(
                             handle_discovered_peer(&service, peer, &connected_peers).await;
                         }
                         Ok(None) => continue,
+                        // A transient receive error (an ICMP
+                        // unreachable landing on the socket, an
+                        // interface going down) must not end discovery
+                        // for the rest of the process's life — the next
+                        // tick just tries again.
                         Err(err) => {
-                            tracing::warn!("discovery listener stopped: {err}");
-                            break;
+                            tracing::warn!("discovery receive failed, continuing: {err}");
                         }
                     }
                 }
@@ -199,6 +208,14 @@ async fn spawn_discovery(
 
 /// One discovered peer, fed to both consumers described in
 /// [`spawn_discovery`]'s doc comment.
+///
+/// Everything past the (cheap, local) `note_discovered_peer` call runs on
+/// its own task rather than inline. The dial does a TCP connect and a
+/// Noise handshake, and the pipeline it hands off to runs for the whole
+/// lifetime of the connection — awaiting any of that inside the
+/// discovery `select!` loop would stop this daemon announcing itself and
+/// reading others' announces for as long as a single peer stayed
+/// connected, so no third device could ever discover it.
 async fn handle_discovered_peer(
     service: &Arc<DaemonService>,
     peer: DiscoveredPeer,
@@ -206,21 +223,42 @@ async fn handle_discovered_peer(
 ) {
     service.note_discovered_peer(peer.clone()).await;
 
-    let Some((channel, device_id)) = service.dial_if_trusted(peer.address).await else {
-        return;
-    };
-    if !try_claim_peer(connected_peers, &device_id).await {
+    let service = Arc::clone(service);
+    let connected_peers = Arc::clone(connected_peers);
+    tokio::spawn(async move {
+        let Some((channel, device_id, precedence)) = service.dial_if_trusted(peer.address).await
+        else {
+            return;
+        };
+        claim_and_run(service, channel, device_id, precedence, connected_peers).await;
+    });
+}
+
+/// Shared tail of both connection paths (outbound dial and inbound
+/// accept): resolve the connection against any competing one to the same
+/// peer, and run the pipeline if this one wins.
+async fn claim_and_run(
+    service: Arc<DaemonService>,
+    channel: Box<dyn Channel>,
+    device_id: DeviceId,
+    precedence: ConnectionPrecedence,
+    connected_peers: ConnectedPeers,
+) {
+    // A `Redundant` verdict means the peer's competing connection is the
+    // designated keeper, so drop this one without even trying to claim.
+    // Both ends compute this identically, so exactly one of the two
+    // survives — see `DaemonService::connection_precedence`.
+    if precedence == ConnectionPrecedence::Redundant {
         let mut channel = channel;
         let _ = channel.close().await;
         return;
     }
-    run_peer_pipeline(
-        Arc::clone(service),
-        channel,
-        device_id,
-        connected_peers.clone(),
-    )
-    .await;
+    if !try_claim_peer(&connected_peers, &device_id).await {
+        let mut channel = channel;
+        let _ = channel.close().await;
+        return;
+    }
+    run_peer_pipeline(service, channel, device_id, connected_peers).await;
 }
 
 /// One incoming daemon-to-daemon connection on the peer channel
@@ -243,13 +281,8 @@ async fn handle_incoming_peer_stream(
     };
     match service.accept_incoming_peer_channel(channel).await {
         Ok(IncomingPeerConnection::HandledAsPairing) => {}
-        Ok(IncomingPeerConnection::TrustedPeer(channel, device_id)) => {
-            if try_claim_peer(&connected_peers, &device_id).await {
-                run_peer_pipeline(service, channel, device_id, connected_peers).await;
-            } else {
-                let mut channel = channel;
-                let _ = channel.close().await;
-            }
+        Ok(IncomingPeerConnection::TrustedPeer(channel, device_id, precedence)) => {
+            claim_and_run(service, channel, device_id, precedence, connected_peers).await;
         }
         Err(err) => {
             tracing::debug!("incoming peer connection rejected: {err}");
@@ -321,13 +354,39 @@ async fn run_peer_pipeline(
         })
         .ok();
     let Some(injector) = injector else {
+        let _ = capture.stop();
         connected_peers.lock().await.remove(&device_id);
         return;
     };
 
+    // Suppression runs on the capture handle, which the pipeline can't
+    // hold itself (it lives here, alongside the thread bridging capture
+    // into async). A failure is logged once per transition rather than
+    // per event, and never aborts the connection: on macOS and Windows
+    // this always fails today (see `InputCapture::set_suppress_local`),
+    // and streaming input to the peer is still useful there even while
+    // it also reaches local applications.
+    let suppression_device_id = device_id.clone();
+    let suppress_local = move |suppress: bool| {
+        if let Err(err) = capture.set_suppress_local(suppress) {
+            tracing::warn!(
+                "could not {} local input for peer {suppression_device_id:?}: {err:?} \
+                 (input will reach this machine's own applications as well)",
+                if suppress { "suppress" } else { "restore" }
+            );
+        }
+    };
+
     service.set_link_state(DaemonLinkState::Connected);
-    pipeline::run_paired_connection(channel, bridge_rx, devices_rx, injector).await;
-    drop(capture);
+    pipeline::run_paired_connection(
+        channel,
+        bridge_rx,
+        devices_rx,
+        injector,
+        device_id.clone(),
+        suppress_local,
+    )
+    .await;
     tracing::info!("streaming pipeline ended for peer {device_id:?}");
 
     let no_peers_left = {
@@ -337,11 +396,20 @@ async fn run_peer_pipeline(
     };
     // Only downgrade link health once nothing else is still streaming —
     // another paired device's connection may well still be live.
-    // "Connecting" (not "Disconnected") because discovery keeps
-    // listening/re-announcing in the background and will reconnect this
-    // peer, or any other, without any user action.
+    // `Reconnecting` rather than `Disconnected` because discovery keeps
+    // listening and re-announcing in the background and will redial this
+    // peer, or any other, with no user action — which is exactly what
+    // `daemon-ipc.md`'s "connected -> (active link drops) -> reconnecting"
+    // transition describes. `Disconnected` ("unreachable and not
+    // retrying") is reserved for auto_reconnect being switched off, the
+    // one case where nothing will retry on its own.
     if no_peers_left {
-        service.set_link_state(DaemonLinkState::Connecting);
+        let auto_reconnect = service.watch_settings().borrow().auto_reconnect;
+        service.set_link_state(if auto_reconnect {
+            DaemonLinkState::Reconnecting
+        } else {
+            DaemonLinkState::Disconnected
+        });
     }
 }
 

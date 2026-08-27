@@ -56,6 +56,17 @@ pub enum MacosCaptureError {
     /// The capture thread panicked; its state (and any resources it
     /// held) is unrecoverable.
     ThreadPanicked,
+    /// `InputCapture::set_suppress_local` isn't implemented on macOS yet.
+    /// The tap this adapter installs is created listen-only
+    /// (`CGEventTapOptions::ListenOnly`), which by definition cannot
+    /// swallow an event — suppression needs a *default* (active) tap
+    /// whose callback returns null for events it consumes, a different
+    /// tap mode with its own permission and re-arming behavior
+    /// (`kCGEventTapDisabledByTimeout`) that no one has been able to
+    /// build and test against real macOS hardware in this project yet.
+    /// Reported rather than silently ignored, so a caller knows local
+    /// input is still reaching this machine's own apps.
+    SuppressionUnsupported,
 }
 
 impl fmt::Display for MacosCaptureError {
@@ -69,6 +80,10 @@ impl fmt::Display for MacosCaptureError {
                 write!(f, "failed to create a run-loop source for the event tap")
             }
             Self::ThreadPanicked => write!(f, "the input capture thread panicked"),
+            Self::SuppressionUnsupported => write!(
+                f,
+                "suppressing local input is not implemented on macOS (the event tap is listen-only)"
+            ),
         }
     }
 }
@@ -132,6 +147,16 @@ impl InputCapture for MacosInputCapture {
                 .map_err(|_| MacosCaptureError::ThreadPanicked)?;
         }
         Ok(())
+    }
+
+    /// Always reports [`MacosCaptureError::SuppressionUnsupported`] — see
+    /// that variant's own doc comment for why, and `daemon/README.md`'s
+    /// "Local input suppression" section for what that means in practice
+    /// (forwarded input still reaches this Mac's own applications).
+    /// Returning an error rather than `Ok(())` is deliberate: a silent
+    /// no-op here would look like working suppression to the daemon.
+    fn set_suppress_local(&mut self, _suppress: bool) -> Result<(), Self::Error> {
+        Err(MacosCaptureError::SuppressionUnsupported)
     }
 }
 

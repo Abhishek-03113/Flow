@@ -17,6 +17,8 @@ This docks a real tray icon (`tray_manager`) and opens a real window (`window_ma
 
 By default this expects a real `flow-daemon` already listening on `127.0.0.1:47823` (`flow_core::ipc::IPC_PORT`) — without one, every provider stays in `AsyncLoading`/errors out. See "Running without a daemon" below to work on the UI alone.
 
+Pairing note: the daemon only accepts an incoming pairing request while *its* user also has pairing open (`daemon/README.md`, "Pairing consent window"), so pairing two machines means pressing "Pair a device" on both, not just the initiating one.
+
 The window keeps its native OS title bar/frame for now, not the design mockups' fully frameless glass look — `WindowChrome` (`lib/core/widgets/window_chrome.dart`) is still purely decorative (its traffic-light/win/gnome buttons don't do anything, and there's no custom drag region), and the window is a single fixed size shared by onboarding and the dashboard rather than resizing to fit each. A custom frameless shell is a reasonable follow-up, deliberately not attempted alongside this pass to avoid layering an untested drag-gesture region over the dashboard/popover's existing interactive controls.
 
 ## Running without a daemon
