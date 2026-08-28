@@ -65,3 +65,62 @@ class PairingSession {
 
   static const idle = PairingSession();
 }
+
+/// The local user's answer to an incoming pairing request.
+enum PairingDecision {
+  accept,
+  reject;
+
+  String get wireName => switch (this) {
+    PairingDecision.accept => 'accept',
+    PairingDecision.reject => 'reject',
+  };
+}
+
+/// An incoming pairing request awaiting this user's Accept/Reject.
+/// Mirrors `docs/contracts/data-model.md`'s `IncomingPairingRequest`.
+class IncomingPairingRequest {
+  const IncomingPairingRequest({
+    required this.requestId,
+    required this.deviceName,
+    required this.deviceOs,
+    required this.fingerprint,
+    required this.address,
+  });
+
+  final String requestId;
+  final String deviceName;
+  final HostOs deviceOs;
+  final String fingerprint;
+  final String address;
+
+  @override
+  bool operator ==(Object other) =>
+      other is IncomingPairingRequest &&
+      other.requestId == requestId &&
+      other.deviceName == deviceName &&
+      other.deviceOs == deviceOs &&
+      other.fingerprint == fingerprint &&
+      other.address == address;
+
+  @override
+  int get hashCode =>
+      Object.hash(requestId, deviceName, deviceOs, fingerprint, address);
+}
+
+/// `null` in ⇒ `null` out (the stream carries `null` when nothing is pending).
+IncomingPairingRequest? incomingPairingRequestFromJson(Object? json) {
+  if (json == null) return null;
+  final map = json as Map<String, dynamic>;
+  return IncomingPairingRequest(
+    requestId: map['request_id'] as String,
+    deviceName: map['device_name'] as String,
+    deviceOs: switch (map['device_os'] as String) {
+      'macos' => HostOs.macos,
+      'windows' => HostOs.windows,
+      _ => HostOs.linux,
+    },
+    fingerprint: map['fingerprint'] as String,
+    address: map['address'] as String? ?? '',
+  );
+}

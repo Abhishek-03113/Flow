@@ -8,11 +8,16 @@ import 'package:window_manager/window_manager.dart';
 
 import 'core/theme/flow_theme.dart';
 import 'data/onboarding_prefs.dart';
+import 'domain/daemon_command_exception.dart';
+import 'domain/daemon_link_state.dart';
 import 'domain/device.dart';
 import 'features/app_window/app_window_shell.dart';
 import 'features/harness/dev_harness.dart';
 import 'features/onboarding/onboarding_flow.dart';
+import 'features/pairing/incoming_pairing_request_listener.dart';
+import 'features/tray/tray_menu.dart';
 import 'state/app_env.dart';
+import 'state/repository_providers.dart';
 import 'state/ui_mode.dart';
 import 'state/ui_providers.dart';
 
@@ -34,6 +39,68 @@ HostOs currentHostOs() {
   if (Platform.isWindows) return HostOs.windows;
   return HostOs.linux;
 }
+
+/// Raises and focuses the real OS window. Top-level so surfaces outside
+/// [_RealApp] — e.g. [IncomingPairingRequestListener] — can pull the
+/// window forward without reaching into [_RealAppState]. Swallows any
+/// failure from these platform-channel calls: there's no native
+/// `window_manager` implementation under `flutter test`, and a raise
+/// failure on a real desktop shouldn't take anything else down.
+Future<void> showMainWindow() async {
+  try {
+    await windowManager.show();
+    await windowManager.focus();
+  } catch (_) {
+    // No window plugin available in this environment.
+  }
+}
+
+/// The side effect a tray menu row's [TrayAction] resolves to, decoupled
+/// from the `tray_manager`/`window_manager` calls that carry it out so
+/// the mapping itself is a pure, unit-testable function
+/// ([resolveTrayAction]). [_RealAppState._runTrayAction] is the only
+/// interpreter.
+sealed class TrayActionEffect {
+  const TrayActionEffect();
+}
+
+/// Ask the daemon to make [deviceId] the active input target. No window
+/// change — switching devices from the tray is meant to be glanceable.
+class SwitchDeviceEffect extends TrayActionEffect {
+  const SwitchDeviceEffect(this.deviceId);
+  final String deviceId;
+}
+
+/// Raise the window and land it on [section].
+class ShowWindowEffect extends TrayActionEffect {
+  const ShowWindowEffect(this.section);
+  final AppSection section;
+}
+
+/// Kick off a pairing session, then raise the window on [section] so the
+/// user can complete it there.
+class StartPairingThenShowEffect extends TrayActionEffect {
+  const StartPairingThenShowEffect(this.section);
+  final AppSection section;
+}
+
+/// Quit the app for real (undo hide-to-tray, close the window).
+class QuitEffect extends TrayActionEffect {
+  const QuitEffect();
+}
+
+/// Pure mapping from a tray menu [TrayAction] to the [TrayActionEffect]
+/// the app should run. Total over [TrayActionKind] — no default arm — so
+/// a new action kind is a compile error here until it's handled.
+TrayActionEffect resolveTrayAction(TrayAction action) => switch (action.kind) {
+  TrayActionKind.switchDevice => SwitchDeviceEffect(action.switchDeviceId!),
+  TrayActionKind.pairNewDevice => const StartPairingThenShowEffect(
+    AppSection.dashboard,
+  ),
+  TrayActionKind.openDashboard => const ShowWindowEffect(AppSection.dashboard),
+  TrayActionKind.openSettings => const ShowWindowEffect(AppSection.general),
+  TrayActionKind.quitApp => const QuitEffect(),
+};
 
 /// App root. `--dart-define=FLOW_UI_MODE=harness` (`state/ui_mode.dart`)
 /// still reaches [DevHarness] — the manual QA surface covering every
@@ -89,6 +156,27 @@ class _RealAppState extends ConsumerState<_RealApp>
   /// work at best.
   bool _trayReady = false;
 
+  /// Which section the window should open on next time it's raised from a
+  /// tray action. Fed into [AppWindowShell.initialSection] (with a
+  /// matching [ValueKey] so a change actually remounts the shell on the
+  /// new section) — the tray's Dashboard/Settings rows are the only
+  /// things that write it.
+  AppSection _pendingSection = AppSection.dashboard;
+
+  /// Bumped every time a tray action targets a section, so the shell
+  /// remounts even when [_pendingSection] is unchanged — e.g. tray→Settings
+  /// while the user has already navigated in-app away from General. Folded
+  /// into [AppWindowShell]'s [ValueKey] alongside [_pendingSection].
+  int _sectionEpoch = 0;
+
+  /// Live subscriptions that keep the native tray menu in step with
+  /// daemon state — the menu lists switchable devices and the link
+  /// status, both of which change without any `build` of this widget.
+  /// Registered once from [build] (after the tray is set up), cancelled
+  /// in [dispose].
+  ProviderSubscription<AsyncValue<List<Device>>>? _devicesSub;
+  ProviderSubscription<AsyncValue<DaemonLinkState>>? _linkSub;
+
   @override
   void initState() {
     super.initState();
@@ -99,6 +187,8 @@ class _RealAppState extends ConsumerState<_RealApp>
 
   @override
   void dispose() {
+    _devicesSub?.close();
+    _linkSub?.close();
     windowManager.removeListener(this);
     trayManager.removeListener(this);
     super.dispose();
@@ -149,32 +239,86 @@ class _RealAppState extends ConsumerState<_RealApp>
         Platform.isWindows ? 'assets/tray_icon.ico' : 'assets/tray_icon.png',
       );
       await trayManager.setToolTip('Flow');
-      await trayManager.setContextMenu(
-        Menu(
-          items: [
-            MenuItem(
-              key: 'open',
-              label: 'Open Flow',
-              onClick: (_) => unawaited(_showWindow()),
-            ),
-            MenuItem.separator(),
-            MenuItem(
-              key: 'quit',
-              label: 'Quit Flow',
-              onClick: (_) => unawaited(_quit()),
-            ),
-          ],
-        ),
-      );
+      await _rebuildTrayMenu();
     } catch (_) {
       // No tray plugin available in this environment.
       _trayReady = false;
     }
   }
 
-  Future<void> _showWindow() async {
-    await windowManager.show();
-    await windowManager.focus();
+  /// Rebuilds the native context menu from current daemon state via the
+  /// pure [buildTrayMenu]. Called on tray setup, whenever the device list
+  /// or link state changes (see [_devicesSub]/[_linkSub]), and right
+  /// before the menu is popped. A no-op until the tray icon is actually
+  /// docked; the `setContextMenu` call is guarded so envs without the
+  /// plugin (e.g. `flutter test`) fall through harmlessly.
+  Future<void> _rebuildTrayMenu() async {
+    if (!_trayReady) return;
+    final link =
+        ref.read(linkStateProvider).valueOrNull ?? DaemonLinkState.connecting;
+    final devices = ref.read(devicesProvider).valueOrNull ?? const <Device>[];
+    final entries = buildTrayMenu(
+      link: link,
+      devices: devices,
+      localDeviceId: 'd1',
+    );
+    try {
+      await trayManager.setContextMenu(
+        Menu(
+          items: [
+            for (final e in entries)
+              if (e.isSeparator)
+                MenuItem.separator()
+              else
+                MenuItem(
+                  key: e.label,
+                  label: e.label,
+                  disabled: !e.enabled,
+                  onClick: e.action == null
+                      ? null
+                      : (_) => unawaited(_runTrayAction(e.action!)),
+                ),
+          ],
+        ),
+      );
+    } catch (_) {
+      // No tray plugin available in this environment.
+    }
+  }
+
+  /// Interprets one tray menu click: maps the [TrayAction] to a
+  /// [TrayActionEffect] via the pure [resolveTrayAction], then carries it
+  /// out against the daemon/window. Daemon rejections surface as a toast
+  /// (switch) or are swallowed (pairing — "already pairing" is fine).
+  Future<void> _runTrayAction(TrayAction action) async {
+    final repo = ref.read(daemonRepositoryProvider);
+    switch (resolveTrayAction(action)) {
+      case SwitchDeviceEffect(:final deviceId):
+        try {
+          await repo.switchActiveDevice(deviceId);
+        } on DaemonCommandException catch (e) {
+          ref.read(toastProvider.notifier).show(e.message);
+        }
+      case ShowWindowEffect(:final section):
+        setState(() {
+          _pendingSection = section;
+          _sectionEpoch++;
+        });
+        await showMainWindow();
+      case StartPairingThenShowEffect(:final section):
+        setState(() {
+          _pendingSection = section;
+          _sectionEpoch++;
+        });
+        try {
+          await repo.startPairing();
+        } on DaemonCommandException {
+          // Already pairing — fine, the window still comes forward.
+        }
+        await showMainWindow();
+      case QuitEffect():
+        await _quit();
+    }
   }
 
   Future<void> _quit() async {
@@ -198,26 +342,28 @@ class _RealAppState extends ConsumerState<_RealApp>
 
   @override
   void onTrayIconMouseDown() {
-    // A stray event from a tray icon that's already been torn down (or,
-    // defensively, one that somehow fires before `_setUpTray` ever ran)
-    // should never reach into `window_manager` — this is the guard that
-    // keeps a tray click from crashing the app during/around onboarding.
+    // Left-click now opens the same native menu as right-click (built
+    // from live daemon state) rather than toggling the window — the tray
+    // is a control surface, not just a show/hide switch. The `_trayReady`
+    // guard keeps a stray event from a torn-down (or not-yet-set-up) icon
+    // from reaching the plugin during/around onboarding.
     if (!_trayReady) return;
-    unawaited(_toggleWindow());
-  }
-
-  Future<void> _toggleWindow() async {
-    if (await windowManager.isVisible()) {
-      await windowManager.hide();
-    } else {
-      await _showWindow();
-    }
+    unawaited(_openTrayMenu());
   }
 
   @override
   void onTrayIconRightMouseDown() {
     if (!_trayReady) return;
-    unawaited(trayManager.popUpContextMenu());
+    unawaited(_openTrayMenu());
+  }
+
+  Future<void> _openTrayMenu() async {
+    await _rebuildTrayMenu();
+    try {
+      await trayManager.popUpContextMenu();
+    } catch (_) {
+      // No tray plugin available in this environment.
+    }
   }
 
   @override
@@ -233,6 +379,18 @@ class _RealAppState extends ConsumerState<_RealApp>
     if (onboardingComplete.valueOrNull == true) {
       unawaited(_setUpTray());
     }
+
+    // Keep the native tray menu in step with daemon state — the device
+    // list and link status both change without rebuilding this widget.
+    // Registered once; cancelled in `dispose`.
+    _devicesSub ??= ref.listenManual(
+      devicesProvider,
+      (_, _) => unawaited(_rebuildTrayMenu()),
+    );
+    _linkSub ??= ref.listenManual(
+      linkStateProvider,
+      (_, _) => unawaited(_rebuildTrayMenu()),
+    );
 
     Widget onboarding() => OnboardingFlow(
       platform: platform,
@@ -250,7 +408,12 @@ class _RealAppState extends ConsumerState<_RealApp>
       // dashboard for someone who never onboarded at all.
       error: (_, _) => onboarding(),
       data: (complete) => complete
-          ? AppWindowShell(platform: platform, standalone: true)
+          ? AppWindowShell(
+              key: ValueKey((_pendingSection, _sectionEpoch)),
+              platform: platform,
+              standalone: true,
+              initialSection: _pendingSection,
+            )
           : onboarding(),
     );
 
@@ -263,7 +426,10 @@ class _RealAppState extends ConsumerState<_RealApp>
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(gradient: c.wallpaper),
-        child: Center(child: content),
+        child: IncomingPairingRequestListener(
+          onShouldSurfaceWindow: () => unawaited(showMainWindow()),
+          child: Center(child: content),
+        ),
       ),
     );
   }

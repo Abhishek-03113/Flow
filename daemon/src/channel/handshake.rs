@@ -34,28 +34,48 @@ pub async fn request_pairing(
     }
 }
 
+/// Responder side, part 1: waits for the peer's `PairingRequest`.
+/// A non-pairing frame received while waiting is ignored (this
+/// connection may carry other traffic once input streaming shares it).
+pub async fn recv_pairing_request(
+    channel: &mut dyn Channel,
+) -> Result<PairingRequest, ChannelError> {
+    loop {
+        if let ChannelMessage::Pairing(PairingWireMessage::Request(request)) =
+            channel.recv().await?
+        {
+            return Ok(request);
+        }
+    }
+}
+
+/// Responder side, part 2: sends the decision back to the initiator.
+pub async fn send_pairing_decision(
+    channel: &mut dyn Channel,
+    decision: PairingDecision,
+) -> Result<(), ChannelError> {
+    channel
+        .send(ChannelMessage::Pairing(PairingWireMessage::Decision(
+            decision,
+        )))
+        .await
+}
+
 /// Responder side (`DaemonService::accept_pairing_request`): waits for
 /// the peer's `PairingRequest`, decides via `decide`, and sends the
 /// corresponding `PairingDecision` back. Returns the request alongside
 /// the decision so the caller can record who asked regardless of the
 /// outcome.
+/// Retained for callers that don't need to await between receiving and
+/// deciding (this module's own tests).
 pub async fn respond_to_pairing(
     channel: &mut dyn Channel,
     decide: impl FnOnce(&PairingRequest) -> PairingDecision,
 ) -> Result<(PairingRequest, PairingDecision), ChannelError> {
-    loop {
-        if let ChannelMessage::Pairing(PairingWireMessage::Request(request)) =
-            channel.recv().await?
-        {
-            let decision = decide(&request);
-            channel
-                .send(ChannelMessage::Pairing(PairingWireMessage::Decision(
-                    decision,
-                )))
-                .await?;
-            return Ok((request, decision));
-        }
-    }
+    let request = recv_pairing_request(channel).await?;
+    let decision = decide(&request);
+    send_pairing_decision(channel, decision).await?;
+    Ok((request, decision))
 }
 
 #[cfg(test)]
@@ -89,6 +109,26 @@ mod tests {
             device_os: HostOs::Linux,
             address: String::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn recv_then_send_halves_round_trip_like_respond_to_pairing() {
+        let (mut initiator, mut responder) = connected_pair().await;
+        let request = a_request();
+
+        let responder_task = tokio::spawn(async move {
+            let got = recv_pairing_request(&mut responder).await.expect("recv");
+            send_pairing_decision(&mut responder, PairingDecision::Accept)
+                .await
+                .expect("send");
+            got
+        });
+
+        let decision = request_pairing(&mut initiator, request.clone())
+            .await
+            .expect("decision");
+        assert_eq!(decision, PairingDecision::Accept);
+        assert_eq!(responder_task.await.expect("task"), request);
     }
 
     #[tokio::test]

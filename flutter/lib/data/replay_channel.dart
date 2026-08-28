@@ -15,9 +15,18 @@ import 'dart:async';
 /// runs synchronously on `.listen()`, so the live subscription is already
 /// in place by the time this call returns — no dropped events.
 class ReplayChannel<T> {
-  ReplayChannel([this._value]);
+  ReplayChannel([this._value]) : _hasEmitted = _value != null;
 
   T? _value;
+
+  /// Whether a value has ever been established — via a non-null constructor
+  /// seed or any [emit], *including `emit(null)`*. Distinct from [hasValue]
+  /// (which stays `false` after `emit(null)`): a `Stream<Foo?>` whose
+  /// "nothing here" state is a meaningful `null` still needs that `null`
+  /// replayed to a new [watch] subscriber, so replay is gated on this, not
+  /// on the value being non-null.
+  bool _hasEmitted;
+
   final _controller = StreamController<T>.broadcast();
 
   /// The current value. Only valid once at least one value exists (set
@@ -37,6 +46,7 @@ class ReplayChannel<T> {
 
   void emit(T value) {
     _value = value;
+    _hasEmitted = true;
     _controller.add(value);
   }
 
@@ -50,8 +60,7 @@ class ReplayChannel<T> {
 
   Stream<T> watch() {
     return Stream<T>.multi((controller) {
-      final current = _value;
-      if (current != null) controller.add(current);
+      if (_hasEmitted) controller.add(_value as T);
       final sub = _controller.stream.listen(
         controller.add,
         onError: controller.addError,

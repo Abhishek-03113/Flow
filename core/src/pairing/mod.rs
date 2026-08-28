@@ -55,6 +55,25 @@ pub struct PairingCandidate {
     pub os: HostOs,
 }
 
+/// An incoming pairing request awaiting the local user's decision,
+/// surfaced to the UI as `incoming_pairing_request_changed`
+/// (`docs/contracts/daemon-ipc.md`). All fields except `request_id` and
+/// `fingerprint` are self-reported by the peer and are display-only;
+/// `fingerprint` is a short hash of the peer's *proven* identity key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct IncomingPairingRequest {
+    /// Opaque, daemon-generated; echoed back in `respond_to_pairing_request`.
+    pub request_id: String,
+    pub device_name: String,
+    pub device_os: HostOs,
+    /// e.g. `"3f2a 91c4 8d10 6b57"` — first 8 bytes of SHA-256 of the
+    /// peer's proven ed25519 public key.
+    pub fingerprint: String,
+    /// Peer source IP, display only; empty when unknown (e.g. Bluetooth).
+    pub address: String,
+}
+
 /// Current state of the pairing flow, mirroring `data-model.md`'s
 /// `PairingSession` class field-for-field.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,5 +111,22 @@ mod tests {
         assert!(session.candidates.is_empty());
         assert_eq!(session.target_name, None);
         assert_eq!(session.error, None);
+    }
+
+    #[test]
+    fn incoming_pairing_request_serializes_snake_case() {
+        let req = IncomingPairingRequest {
+            request_id: "ipr-abc".to_string(),
+            device_name: "Abhishek's Windows".to_string(),
+            device_os: HostOs::Windows,
+            fingerprint: "3f2a 91c4 8d10 6b57".to_string(),
+            address: "192.168.0.103".to_string(),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["request_id"], "ipr-abc");
+        assert_eq!(json["device_os"], "windows");
+        assert_eq!(json["fingerprint"], "3f2a 91c4 8d10 6b57");
+        let round: IncomingPairingRequest = serde_json::from_value(json).unwrap();
+        assert_eq!(round, req);
     }
 }

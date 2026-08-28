@@ -30,6 +30,10 @@ class MockDaemonRepository implements DaemonRepository {
     _permission = ReplayChannel(
       const PermissionStatus(name: 'Accessibility access', granted: false),
     );
+    // `..emit(null)` (not just the `null` seed) so the "nothing pending"
+    // state is replayed to a new `watchIncomingPairingRequest()` subscriber
+    // — a bare null seed is indistinguishable from "no value yet".
+    _incomingRequest = ReplayChannel<IncomingPairingRequest?>(null)..emit(null);
   }
 
   /// The local machine — never removable, never a pairing candidate.
@@ -59,6 +63,9 @@ class MockDaemonRepository implements DaemonRepository {
   late final ReplayChannel<PairingSession> _pairingSession;
   late final ReplayChannel<FlowSettings> _settings;
   late final ReplayChannel<PermissionStatus> _permission;
+  late final ReplayChannel<IncomingPairingRequest?> _incomingRequest;
+
+  int _nextRequestId = 0;
 
   final _timers = <Timer>[];
 
@@ -103,6 +110,10 @@ class MockDaemonRepository implements DaemonRepository {
 
   @override
   Stream<PermissionStatus> watchPermission() => _permission.watch();
+
+  @override
+  Stream<IncomingPairingRequest?> watchIncomingPairingRequest() =>
+      _incomingRequest.watch();
 
   /// Exposed for the dev harness (`todos.json` task S2) to force any
   /// [DaemonLinkState] for visual QA of every banner variant. Not part of
@@ -274,6 +285,54 @@ class MockDaemonRepository implements DaemonRepository {
     });
   }
 
+  @override
+  Future<void> respondToPairingRequest(
+    String requestId,
+    PairingDecision decision,
+  ) async {
+    final pending = _incomingRequest.value;
+    if (pending == null || pending.requestId != requestId) {
+      throw const DaemonCommandException(
+        'pairing_request_not_found',
+        'no pairing request is awaiting a decision for that id',
+      );
+    }
+    _incomingRequest.emit(null);
+    if (decision == PairingDecision.accept) {
+      final now = DateTime.now();
+      _devices.emit([
+        ..._devices.value,
+        Device(
+          id: 'paired-${now.microsecondsSinceEpoch}',
+          name: pending.deviceName,
+          os: pending.deviceOs,
+          state: DeviceState.inactive,
+          lastSeen: now,
+        ),
+      ]);
+    }
+  }
+
+  /// Test/dev-harness only — the mock has no network to receive a real
+  /// request from. Pushes one onto [watchIncomingPairingRequest]. Not part
+  /// of [DaemonRepository].
+  void simulateIncomingPairingRequest({
+    required String deviceName,
+    required HostOs deviceOs,
+    String fingerprint = 'ab12 cd34 ef56 7890',
+    String address = '192.168.1.42',
+  }) {
+    _incomingRequest.emit(
+      IncomingPairingRequest(
+        requestId: 'ipr-${_nextRequestId++}',
+        deviceName: deviceName,
+        deviceOs: deviceOs,
+        fingerprint: fingerprint,
+        address: address,
+      ),
+    );
+  }
+
   Device _deviceOrThrow(String deviceId) {
     final device = _devices.value.where((d) => d.id == deviceId).firstOrNull;
     if (device == null) {
@@ -309,6 +368,7 @@ class MockDaemonRepository implements DaemonRepository {
     _pairingSession.close();
     _settings.close();
     _permission.close();
+    _incomingRequest.close();
   }
 }
 

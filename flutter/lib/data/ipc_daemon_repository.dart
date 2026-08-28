@@ -80,6 +80,11 @@ class IpcDaemonRepository implements DaemonRepository {
   final _pairingSession = ReplayChannel<PairingSession>();
   final _settings = ReplayChannel<FlowSettings>();
   final _permission = ReplayChannel<PermissionStatus>();
+  // Intentionally asymmetric with the channels above: its steady state is
+  // `null`, so `hasValue` stays false and `_failChannelsAwaitingFirstValue`
+  // surfaces a transport error on it on every drop — which is what we want
+  // here (daemon gone ⇒ can't answer ⇒ the prompt is moot anyway).
+  final _incomingRequest = ReplayChannel<IncomingPairingRequest?>();
 
   int _nextRequestId = 0;
 
@@ -190,6 +195,8 @@ class IpcDaemonRepository implements DaemonRepository {
         _permission.emit(
           permissionStatusFromJson(payload as Map<String, dynamic>),
         );
+      case 'incoming_pairing_request_changed':
+        _incomingRequest.emit(incomingPairingRequestFromJson(payload));
     }
   }
 
@@ -215,6 +222,7 @@ class IpcDaemonRepository implements DaemonRepository {
       _pairingSession,
       _settings,
       _permission,
+      _incomingRequest,
     ]) {
       if (!channel.hasValue) channel.emitError(error, stackTrace);
     }
@@ -284,6 +292,10 @@ class IpcDaemonRepository implements DaemonRepository {
   Stream<PermissionStatus> watchPermission() => _permission.watch();
 
   @override
+  Stream<IncomingPairingRequest?> watchIncomingPairingRequest() =>
+      _incomingRequest.watch();
+
+  @override
   Future<void> switchActiveDevice(String deviceId) =>
       _sendCommand('switch_active_device', {'device_id': deviceId});
 
@@ -296,6 +308,15 @@ class IpcDaemonRepository implements DaemonRepository {
 
   @override
   Future<void> cancelPairing() => _sendCommand('cancel_pairing', null);
+
+  @override
+  Future<void> respondToPairingRequest(
+    String requestId,
+    PairingDecision decision,
+  ) => _sendCommand('respond_to_pairing_request', {
+    'request_id': requestId,
+    'decision': decision.wireName,
+  });
 
   @override
   Future<void> pairWithCandidate(String candidateId) =>
@@ -355,6 +376,7 @@ class IpcDaemonRepository implements DaemonRepository {
     _pairingSession.close();
     _settings.close();
     _permission.close();
+    _incomingRequest.close();
     await _channel?.sink.close();
   }
 }

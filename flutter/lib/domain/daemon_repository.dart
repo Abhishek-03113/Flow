@@ -30,6 +30,21 @@ abstract class DaemonRepository {
   Stream<FlowSettings> watchSettings();
   Stream<PermissionStatus> watchPermission();
 
+  /// The pairing request another device has sent *to* this machine and that
+  /// is awaiting the local user's Accept/Reject, or `null` when nothing is
+  /// pending. Only one can be outstanding at a time.
+  Stream<IncomingPairingRequest?> watchIncomingPairingRequest();
+
+  /// Answers the outstanding [IncomingPairingRequest]. [requestId] must
+  /// match the currently pending request, otherwise this throws with code
+  /// `pairing_request_not_found`. On [PairingDecision.accept] the peer
+  /// shows up on [watchDevices]; either way [watchIncomingPairingRequest]
+  /// goes back to `null`.
+  Future<void> respondToPairingRequest(
+    String requestId,
+    PairingDecision decision,
+  );
+
   /// Moves [deviceId] to [DeviceState.active] and demotes the previous
   /// active device to [DeviceState.inactive]. Requires the target device
   /// to currently be [DeviceState.inactive] or [DeviceState.connected].

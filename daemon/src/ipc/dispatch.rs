@@ -55,6 +55,13 @@ async fn handle(
         }
         "start_pairing" => service.start_pairing().await.map_err(ErrorPayload::from),
         "cancel_pairing" => service.cancel_pairing().await.map_err(ErrorPayload::from),
+        "respond_to_pairing_request" => {
+            let args: RespondToPairingRequestPayload = parse_payload(payload)?;
+            service
+                .respond_to_pairing_request(&args.request_id, args.decision)
+                .await
+                .map_err(ErrorPayload::from)
+        }
         "pair_with_candidate" => {
             let args: CandidateIdPayload = parse_payload(payload)?;
             service
@@ -94,6 +101,12 @@ struct DeviceIdPayload {
 #[derive(serde::Deserialize)]
 struct CandidateIdPayload {
     candidate_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RespondToPairingRequestPayload {
+    request_id: String,
+    decision: flow_core::pairing::PairingDecision,
 }
 
 /// Deserializes `payload` into `T`, mapping a shape mismatch to a stable
@@ -266,5 +279,25 @@ mod tests {
                 ok: true
             }
         );
+    }
+
+    #[tokio::test]
+    async fn respond_to_pairing_request_with_unknown_id_errs_with_contract_code() {
+        let service = service().await;
+        let resp = dispatch(
+            &service,
+            IpcRequest {
+                id: "req-1".to_string(),
+                command: "respond_to_pairing_request".to_string(),
+                payload: json!({ "request_id": "ipr-x", "decision": "accept" }),
+            },
+        )
+        .await;
+        match resp {
+            IpcResponse::Err { error, .. } => {
+                assert_eq!(error.code, "pairing_request_not_found");
+            }
+            other => panic!("expected Err, got {other:?}"),
+        }
     }
 }

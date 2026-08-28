@@ -39,7 +39,7 @@ type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 const TOKEN_HEADER: &str = "sec-websocket-protocol";
 
 /// Handles one client connection end to end: an authenticated WebSocket
-/// handshake, the five initial state-push events, then forwarding
+/// handshake, the six initial state-push events, then forwarding
 /// further watch-channel updates as events while dispatching incoming
 /// commands — until the client disconnects. Never panics on a client
 /// error; a bad frame or a dropped socket just ends this task, leaving
@@ -110,6 +110,7 @@ pub async fn handle_connection(
         }
     };
     tracing::debug!("ipc connection established");
+    let _client_guard = service.register_ipc_client();
     let (mut sink, mut source) = ws_stream.split();
 
     let mut devices_rx = service.watch_devices();
@@ -117,6 +118,7 @@ pub async fn handle_connection(
     let mut pairing_session_rx = service.watch_pairing_session();
     let mut settings_rx = service.watch_settings();
     let mut permission_rx = service.watch_permission();
+    let mut incoming_request_rx = service.watch_incoming_request();
 
     // "Connecting to the channel and subscribing IS the initial fetch"
     // (daemon-ipc.md) — one Event per watch* stream's current value,
@@ -157,6 +159,17 @@ pub async fn handle_connection(
     if send_event(&mut sink, "permission_changed", &permission)
         .await
         .is_err()
+    {
+        return;
+    }
+    let incoming_request = incoming_request_rx.borrow_and_update().clone();
+    if send_event(
+        &mut sink,
+        "incoming_pairing_request_changed",
+        &incoming_request,
+    )
+    .await
+    .is_err()
     {
         return;
     }
@@ -205,6 +218,15 @@ pub async fn handle_connection(
                 }
                 let value = permission_rx.borrow_and_update().clone();
                 if send_event(&mut sink, "permission_changed", &value).await.is_err() {
+                    break;
+                }
+            }
+            changed = incoming_request_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let value = incoming_request_rx.borrow_and_update().clone();
+                if send_event(&mut sink, "incoming_pairing_request_changed", &value).await.is_err() {
                     break;
                 }
             }
@@ -300,7 +322,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_connection_receives_exactly_five_initial_events_in_order() {
+    async fn a_live_connection_is_counted_and_uncounted_on_drop() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = Arc::new(DaemonService::new_seeded_for_test(storage).await);
+        assert_eq!(service.connected_client_count(), 0);
+        {
+            let _guard = service.register_ipc_client();
+            assert_eq!(service.connected_client_count(), 1);
+        }
+        assert_eq!(service.connected_client_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_new_connection_receives_exactly_six_initial_events_in_order() {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
 
@@ -310,6 +344,7 @@ mod tests {
             "pairing_session_changed",
             "settings_changed",
             "permission_changed",
+            "incoming_pairing_request_changed",
         ];
 
         for expected_event in expected_order {
@@ -325,8 +360,8 @@ mod tests {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
 
-        // Drain the 5 initial events.
-        for _ in 0..5 {
+        // Drain the 6 initial events.
+        for _ in 0..6 {
             ws.next().await.expect("frame").expect("ok frame");
         }
 
@@ -400,7 +435,7 @@ mod tests {
         });
 
         let mut ws = connect(real_addr).await;
-        for _ in 0..5 {
+        for _ in 0..6 {
             let msg = ws.next().await.expect("frame").expect("ok frame");
             let text = msg.into_text().expect("text frame");
             let value: serde_json::Value = serde_json::from_str(&text).expect("valid json");
@@ -447,7 +482,7 @@ mod tests {
         // `connect` already sends TEST_TOKEN; success here (no panic) is
         // the assertion — a fresh connection reaching the point of
         // receiving its first initial event is proven by the existing
-        // `a_new_connection_receives_exactly_five_initial_events_in_order`
+        // `a_new_connection_receives_exactly_six_initial_events_in_order`
         // test, which uses this same helper.
         let mut ws = connect(addr).await;
         let msg = ws.next().await.expect("frame").expect("ok frame");
@@ -463,7 +498,7 @@ mod tests {
     async fn an_oversized_frame_ends_the_connection_instead_of_being_processed() {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
-        for _ in 0..5 {
+        for _ in 0..6 {
             ws.next().await.expect("frame").expect("initial event");
         }
 

@@ -214,4 +214,52 @@ void main() {
       expect(await repo.watchLinkState().first, DaemonLinkState.connected);
     },
   );
+
+  test('simulate + accept adds a device and clears the stream', () async {
+    final repo = MockDaemonRepository();
+    addTearDown(repo.dispose);
+
+    final seen = <IncomingPairingRequest?>[];
+    final sub = repo.watchIncomingPairingRequest().listen(seen.add);
+    await Future<void>.delayed(Duration.zero);
+    expect(seen.last, isNull);
+
+    repo.simulateIncomingPairingRequest(
+      deviceName: 'Studio Linux',
+      deviceOs: HostOs.linux,
+    );
+    await Future<void>.delayed(Duration.zero);
+    final pending = seen.last;
+    expect(pending, isNotNull);
+
+    await repo.respondToPairingRequest(
+      pending!.requestId,
+      PairingDecision.accept,
+    );
+    await Future<void>.delayed(Duration.zero);
+    expect(seen.last, isNull);
+
+    final devices = await repo.watchDevices().first;
+    expect(devices.any((d) => d.name == 'Studio Linux'), isTrue);
+
+    await sub.cancel();
+  });
+
+  test(
+    'respondToPairingRequest with unknown id throws pairing_request_not_found',
+    () async {
+      final repo = MockDaemonRepository();
+      addTearDown(repo.dispose);
+      expect(
+        () => repo.respondToPairingRequest('ipr-nope', PairingDecision.reject),
+        throwsA(
+          isA<DaemonCommandException>().having(
+            (e) => e.code,
+            'code',
+            'pairing_request_not_found',
+          ),
+        ),
+      );
+    },
+  );
 }

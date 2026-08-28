@@ -2,7 +2,7 @@
 //! the real `flow-daemon` service and WebSocket listener, spawned
 //! in-process (not a subprocess), driven by a raw `tokio-tungstenite`
 //! client asserting the exact JSON shape of a full session — connect,
-//! the 5 initial events, one of each of the 9 commands, and at least 2
+//! the 6 initial events, one of each of the 11 commands, and at least 2
 //! error-code paths. The Rust-side equivalent of what track D proves
 //! from the Dart side against a real daemon.
 
@@ -99,7 +99,7 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
     let addr = spawn_daemon().await;
     let mut ws = connect(addr).await;
 
-    // 1. Connect -> exactly 5 initial events, in the fixed order, before
+    // 1. Connect -> exactly 6 initial events, in the fixed order, before
     // anything else — "connecting... is the initial fetch".
     let expected_initial_events = [
         "devices_changed",
@@ -107,11 +107,26 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
         "pairing_session_changed",
         "settings_changed",
         "permission_changed",
+        "incoming_pairing_request_changed",
     ];
     for expected in expected_initial_events {
         let value = recv_json(&mut ws).await;
         assert_eq!(value["event"], expected);
     }
+
+    // 1b. respond_to_pairing_request for an id with no pending request ->
+    // error path: the contract's `pairing_request_not_found` code.
+    send_command(
+        &mut ws,
+        "req-x",
+        "respond_to_pairing_request",
+        json!({ "request_id": "ipr-none", "decision": "reject" }),
+    )
+    .await;
+    let (err, _events) = recv_frames(&mut ws, "req-x", 1).await;
+    assert_eq!(err["id"], "req-x");
+    assert_eq!(err["ok"], false);
+    assert_eq!(err["error"]["code"], "pairing_request_not_found");
 
     // 2. switch_active_device -> ack + devices_changed reflecting it.
     send_command(

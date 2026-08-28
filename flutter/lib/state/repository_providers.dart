@@ -65,6 +65,12 @@ final pairingSessionProvider = StreamProvider<PairingSession>((ref) {
   return ref.watch(daemonRepositoryProvider).watchPairingSession();
 });
 
+final incomingPairingRequestProvider = StreamProvider<IncomingPairingRequest?>((
+  ref,
+) {
+  return ref.watch(daemonRepositoryProvider).watchIncomingPairingRequest();
+});
+
 final settingsProvider = StreamProvider<FlowSettings>((ref) {
   return ref.watch(daemonRepositoryProvider).watchSettings();
 });
