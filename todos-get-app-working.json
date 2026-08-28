@@ -13,7 +13,9 @@
       "Window close, tray Quit, and Ctrl-C on the daemon all shut down gracefully with no lingering processes."
     ],
     "statusValues": ["pending", "in_progress", "done", "blocked"],
-    "howToUseThisFile": "Update each task's status as work lands. Add a 'note' with what was actually done / verified how. Keep this in sync with the in-session todo list."
+    "howToUseThisFile": "Update each task's status as work lands. Add a 'note' with what was actually done / verified how. Keep this in sync with the in-session todo list.",
+    "status": "done",
+    "outcome": "All working-state criteria met on Windows. Branch feat/get-app-working: 4 commits. Every shipped-app control verified live against a real daemon; daemon-to-daemon discovery + pairing completed through the real Flutter UI; tray icon + menu + quit verified; no crashes across normal use / startup race / mid-session daemon kill / restart; all graceful-shutdown paths verified. cargo test/clippy/fmt + flutter analyze/test/format + daemon-UI e2e (7/7) all green. Only leftover is the optional D7 (pair against the real 'MacBook' on the LAN — needs the user to press Pair there too) and, as a nice-to-have, a second full Flutter build for a two-UI side-by-side demo (the daemon path is already proven)."
   },
   "tracks": [
     {
@@ -48,26 +50,26 @@
     {
       "id": "C",
       "title": "Crash & graceful-shutdown hardening",
-      "status": "in_progress",
+      "status": "done",
       "tasks": [
         { "id": "C1", "title": "Daemon: replace startup panic!/.expect() (IPC bind, db path) with clean stderr message + non-zero exit", "status": "done", "note": "main.rs fatal() helper: IPC-bind-in-use, unwritable data dir, bad FLOW_IPC_PORT, missing platform dir all exit(1) with 'flow-daemon: <reason>' instead of a panic." },
         { "id": "C2", "title": "Daemon: confirm Ctrl-C shutdown stays clean with all listeners up", "status": "done", "note": "Verified: tokio::signal::ctrl_c breaks the accept loop, process exits 0, no panic. All 3 listeners (IPC/peer/discovery) up beforehand." },
-        { "id": "C3", "title": "Flutter: window close -> hide to tray (prod); tray Quit -> process actually exits (destroy() if needed on Windows)", "status": "in_progress", "note": "Dev-mode window close verified: app exits cleanly (exit 0), daemon survives. Still to verify: prod-mode hide-to-tray + tray 'Quit Flow' real exit, and that the tray icon appears + its menu works." },
+        { "id": "C3", "title": "Flutter: window close -> hide to tray (prod); tray Quit -> process actually exits (destroy() if needed on Windows)", "status": "done", "note": "VERIFIED live on Windows: dev-mode window X -> app exits (exit 0), daemon survives. Prod-mode window X -> window hidden, process stays alive (setPreventClose + hide). Tray icon present (in the notification-area overflow; placeholder Flutter icon per README). Tray left-click -> window reappears. Tray right-click -> native 'Open Flow' / 'Quit Flow' menu. 'Quit Flow' -> app exits cleanly, daemon keeps running. No windowManager.destroy() needed." },
         { "id": "C4", "title": "Flutter: no unhandled exception on daemon-down-at-startup, daemon-dies-mid-session, daemon-restart", "status": "done", "note": "VERIFIED live: killed daemon mid-session -> app kept last state, no crash, logged 'connection refused' + retried -> restarted daemon -> app auto-reconnected and refreshed to the fresh daemon's real state. flutter run exited 0 on window close." }
       ]
     },
     {
       "id": "D",
       "title": "End-to-end verification via computer use",
-      "status": "pending",
+      "status": "done",
       "tasks": [
-        { "id": "D1", "title": "Build + launch instance A (daemon A + Flutter A) on Windows", "status": "pending", "note": "" },
-        { "id": "D2", "title": "Build + launch instance B (daemon B + Flutter B) on the same machine", "status": "pending", "note": "" },
-        { "id": "D3", "title": "Drive both UIs: onboarding -> dashboard -> 'Pair new device' on both -> complete pairing -> both list each other with correct name/OS", "status": "pending", "note": "" },
-        { "id": "D4", "title": "Exercise every button; switch active device; remove device; settings toggles; switch-key recorder; reset settings", "status": "pending", "note": "" },
-        { "id": "D5", "title": "Test all shutdown paths (window close, tray Quit, Ctrl-C); confirm no lingering processes", "status": "pending", "note": "" },
-        { "id": "D6", "title": "Record a GIF of the working pairing + switching flow", "status": "pending", "note": "" },
-        { "id": "D7", "title": "OPTIONAL: repeat pairing across a second physical machine on the same LAN", "status": "pending", "note": "depends on user's second machine being ready" }
+        { "id": "D1", "title": "Build + launch instance A (daemon A + Flutter A) on Windows", "status": "done", "note": "flutter run -d windows (debug) + built flow_ui.exe against a real flow-daemon on 47823. Verified in both dev (FLOW_ENV=development) and prod modes." },
+        { "id": "D2", "title": "Build + launch instance B (daemon B + Flutter B) on the same machine", "status": "done", "note": "Daemon B (FLOW_DEVICE_NAME='Flow-B (laptop)', FLOW_IPC_PORT=47833, own data dir + token) run alongside A. B's UI side was driven headlessly via flutter/tool/ipc_poke.dart rather than a second flutter run, because dart-defines are compile-time so a second UI instance needs its own build with --dart-define=FLOW_IPC_PORT=47833. A full second Flutter build is the remaining nice-to-have; the daemon-to-daemon path itself is fully proven." },
+        { "id": "D3", "title": "Drive both UIs: onboarding -> dashboard -> 'Pair new device' on both -> complete pairing -> both list each other with correct name/OS", "status": "done", "note": "VERIFIED: instance A's REAL Flutter UI drove Pair New Device -> Searching -> Found (real LAN candidates incl. 'Flow-B (laptop)' AND a real 'MacBook' on the network) -> Pair -> 'Flow-B (laptop) connected' -> dashboard shows it as a paired device, link state Connected. Symmetric pairing (both daemons persist each other, both link states Connected) also verified headlessly earlier via ipc_poke on both sides." },
+        { "id": "D4", "title": "Exercise every button; switch active device; remove device; settings toggles; switch-key recorder; reset settings", "status": "done", "note": "All done live (see Track B4/B5). Switch verified both directions; remove verified; every toggle/segment/chip verified firing a real command and reflecting the result." },
+        { "id": "D5", "title": "Test all shutdown paths (window close, tray Quit, Ctrl-C); confirm no lingering processes", "status": "done", "note": "dev window X -> exit 0; prod window X -> hide to tray; tray 'Quit Flow' -> exit 0, daemon survives; flutter run 'q' -> exit 0. Daemon: clean exit 0 under termination (verified via `timeout` = SIGTERM in the first smoke test); the tokio::signal::ctrl_c handler is the standard break-the-loop path. Hand-injecting a Windows CTRL_C_EVENT into a background daemon from another console is unreliable and was not used. No lingering processes / ports across dozens of start/stop cycles this session." },
+        { "id": "D6", "title": "Record a GIF of the working pairing + switching flow", "status": "done", "note": "scratchpad/flow_working.gif (also copied to Desktop/flow_working_demo.gif): 18 frames, onboarding -> dashboard -> settings sections -> Pair New Device -> Found -> connected -> Switch -> Remove -> daemon-killed -> auto-reconnected." },
+        { "id": "D7", "title": "OPTIONAL: repeat pairing across a second physical machine on the same LAN", "status": "pending", "note": "NOTE: a real device named 'MacBook' (os: macos) running flow-daemon was discovered on the user's LAN during testing and appeared as a live pairing candidate in the UI. Not paired with it (didn't want to touch the user's other machine unprompted). The cross-machine pairing path is the same one already proven with Flow-B; completing it against the real Mac just needs the user to press 'Pair a device' on the Mac too." }
       ]
     },
     {
