@@ -43,6 +43,15 @@ impl TrustGate {
     pub async fn is_trusted(&self, public_key: &[u8]) -> bool {
         self.device_repo.is_trusted(public_key.to_vec()).await
     }
+
+    /// Whether this daemon has paired with any peer at all. `false` means
+    /// there is nothing for a discovery-driven reconnect dial to
+    /// reconnect *to*, so callers can skip that dial's TCP + Noise
+    /// handshake outright instead of running it only to fail the trust
+    /// check afterward.
+    pub async fn has_any_trusted(&self) -> bool {
+        self.device_repo.has_any_trusted().await
+    }
 }
 
 #[cfg(test)]

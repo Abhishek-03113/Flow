@@ -102,6 +102,26 @@ impl DeviceRepo {
             .await
     }
 
+    /// Whether any stored device has a trust key at all — i.e. this
+    /// daemon has completed pairing with at least one peer. Used to skip
+    /// the discovery-driven reconnect dial (a full TCP + Noise handshake)
+    /// entirely on a daemon that has never paired with anything, where it
+    /// could only ever fail.
+    pub async fn has_any_trusted(&self) -> bool {
+        self.storage
+            .with_connection(move |conn| {
+                conn.query_row(
+                    "SELECT 1 FROM devices WHERE public_key IS NOT NULL LIMIT 1",
+                    [],
+                    |_| Ok(()),
+                )
+                .optional()
+                .expect("query for any trusted device")
+                .is_some()
+            })
+            .await
+    }
+
     /// Whether `public_key` matches a stored device's trust key.
     pub async fn is_trusted(&self, public_key: Vec<u8>) -> bool {
         self.storage

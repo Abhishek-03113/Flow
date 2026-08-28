@@ -861,8 +861,14 @@ impl DaemonService {
         // exactly the unattended case this gate exists to refuse.
         let window_open = self.is_pairing_window_open().await;
         if !window_open {
-            tracing::warn!(
-                "refused an incoming pairing request: no pairing session is open on this device"
+            // Routine, not a fault: a peer that has this device paired
+            // (or a user mid-pair on the other side whose window opened
+            // before ours) probes the peer listener and is turned away
+            // because nobody here is currently pairing. The initiating
+            // side gets a real failure surfaced in its UI; this side has
+            // nothing to warn about.
+            tracing::debug!(
+                "declined an incoming pairing request: no pairing session is open on this device"
             );
         }
         let (request, decision) = handshake::respond_to_pairing(channel, |_request| {
@@ -979,6 +985,17 @@ impl DaemonService {
         &self,
         address: ChannelAddress,
     ) -> Option<(Box<dyn Channel>, DeviceId, ConnectionPrecedence)> {
+        // A daemon that has never paired with anything has nothing to
+        // reconnect to — skip the whole dial (a TCP connect plus a full
+        // Noise handshake, repeated for every discovered peer on every
+        // announce tick) rather than run it only to fail the trust check
+        // at the end. This is the common case for two fresh daemons on a
+        // LAN before the user has paired them through the UI.
+        let trust = TrustGate::new(self.storage.clone());
+        if !trust.has_any_trusted().await {
+            return None;
+        }
+
         let dial = async {
             let channel = negotiate::connect_best_available(std::slice::from_ref(&address))
                 .await
@@ -995,7 +1012,6 @@ impl DaemonService {
         };
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
 
-        let trust = TrustGate::new(self.storage.clone());
         if !trust.is_trusted(&peer_public_key).await {
             let mut noise_channel = noise_channel;
             let _ = noise_channel.close().await;
@@ -1228,7 +1244,20 @@ fn current_host_os() -> HostOs {
 /// This machine's real hostname, for the local device's display name —
 /// falls back to a generic label if the OS ever refuses to report one
 /// (rare, and not worth failing daemon startup over a display string).
+///
+/// `FLOW_DEVICE_NAME` overrides it outright. Its only intended use is
+/// running two `flow-daemon` instances on one physical machine for local
+/// pairing tests, where both would otherwise report the identical
+/// hostname and be impossible to tell apart in the UI.
 fn local_hostname() -> String {
+    if let Some(name) = std::env::var_os("FLOW_DEVICE_NAME") {
+        if let Ok(name) = name.into_string() {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
     hostname::get()
         .ok()
         .and_then(|name| name.into_string().ok())

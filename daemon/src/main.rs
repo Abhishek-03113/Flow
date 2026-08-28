@@ -44,9 +44,10 @@ async fn main() {
     // below; starts at the non-debug level and gets synced once it is.
     let logging = flow_daemon::logging::init(false);
 
-    let storage = Storage::open(db_path())
-        .await
-        .expect("failed to open flow-daemon database");
+    let storage = match Storage::open(db_path()).await {
+        Ok(storage) => storage,
+        Err(err) => fatal(&format!("failed to open the flow-daemon database: {err}")),
+    };
     let service = Arc::new(daemon_service(storage.clone()).await);
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
@@ -67,10 +68,16 @@ async fn main() {
     let ipc_token: Arc<str> = Arc::from(auth::load_or_generate_token());
     tracing::info!("IPC auth token: {}", auth::token_path().display());
 
-    let listener = TcpListener::bind(("127.0.0.1", IPC_PORT))
-        .await
-        .unwrap_or_else(|e| panic!("failed to bind 127.0.0.1:{IPC_PORT}: {e}"));
-    tracing::info!("flow-daemon listening on 127.0.0.1:{IPC_PORT}");
+    let ipc_port = ipc_port();
+    let listener = match TcpListener::bind(("127.0.0.1", ipc_port)).await {
+        Ok(listener) => listener,
+        Err(err) => fatal(&format!(
+            "failed to bind the IPC listener on 127.0.0.1:{ipc_port}: {err}\n\
+             (another flow-daemon may already be running on this port — set \
+             FLOW_IPC_PORT to run a second instance)"
+        )),
+    };
+    tracing::info!("flow-daemon listening on 127.0.0.1:{ipc_port}");
 
     loop {
         tokio::select! {
@@ -503,10 +510,80 @@ async fn daemon_service(storage: Storage) -> DaemonService {
 /// The database file lives under the platform data directory (via the
 /// `directories` crate) rather than the working directory, so
 /// `flow-daemon` behaves the same regardless of where it's launched from.
+///
+/// `FLOW_DATA_DIR` overrides that directory outright — the supported way
+/// to run a second `flow-daemon` instance on one machine (its own
+/// database and its own persisted ed25519 identity, distinct from the
+/// default instance's) for local two-daemon testing. Unset in a normal
+/// deployment.
 fn db_path() -> PathBuf {
-    let dirs = directories::ProjectDirs::from("dev", "Flow", "flow-daemon")
-        .expect("could not determine the platform data directory");
-    let dir = dirs.data_dir();
-    std::fs::create_dir_all(dir).expect("failed to create the data directory");
+    let dir = match std::env::var_os("FLOW_DATA_DIR") {
+        Some(dir) => PathBuf::from(dir),
+        None => directories::ProjectDirs::from("dev", "Flow", "flow-daemon")
+            .map(|dirs| dirs.data_dir().to_path_buf())
+            .unwrap_or_else(|| fatal("could not determine the platform data directory")),
+    };
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        fatal(&format!(
+            "failed to create the data directory {}: {err}",
+            dir.display()
+        ));
+    }
     dir.join("flow.db")
+}
+
+/// The IPC listener port — [`IPC_PORT`] unless `FLOW_IPC_PORT` overrides
+/// it (paired with `FLOW_DATA_DIR` and `FLOW_IPC_TOKEN_PATH` to run a
+/// second local instance). An unparseable value is a hard error rather
+/// than a silent fall back to the default, since that would land the
+/// second instance on the first instance's port.
+fn ipc_port() -> u16 {
+    match std::env::var("FLOW_IPC_PORT") {
+        Ok(raw) => raw.parse().unwrap_or_else(|_| {
+            fatal(&format!(
+                "FLOW_IPC_PORT is not a valid port number: {raw:?}"
+            ))
+        }),
+        Err(std::env::VarError::NotPresent) => IPC_PORT,
+        Err(std::env::VarError::NotUnicode(_)) => fatal("FLOW_IPC_PORT is not valid UTF-8"),
+    }
+}
+
+/// Prints a one-line reason to stderr and exits non-zero. Used for
+/// unrecoverable startup misconfiguration (a port already in use, an
+/// unwritable data directory) so `flow-daemon` fails with a readable
+/// message instead of a panic backtrace.
+fn fatal(message: &str) -> ! {
+    eprintln!("flow-daemon: {message}");
+    std::process::exit(1);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The three env overrides that let a second `flow-daemon` instance
+    /// run on one machine are read in exactly one place each; this pins
+    /// down `ipc_port()`'s parsing (the others just substitute a path).
+    #[test]
+    fn ipc_port_defaults_and_overrides() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let previous = std::env::var_os("FLOW_IPC_PORT");
+
+        std::env::remove_var("FLOW_IPC_PORT");
+        assert_eq!(
+            ipc_port(),
+            IPC_PORT,
+            "unset falls back to the well-known port"
+        );
+
+        std::env::set_var("FLOW_IPC_PORT", "47999");
+        assert_eq!(ipc_port(), 47999, "a valid value overrides the default");
+
+        match previous {
+            Some(value) => std::env::set_var("FLOW_IPC_PORT", value),
+            None => std::env::remove_var("FLOW_IPC_PORT"),
+        }
+    }
 }

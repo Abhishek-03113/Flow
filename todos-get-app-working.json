@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "project": "Flow — get the whole app working end to end (Flutter UI + Rust daemon) on Windows",
+    "created": "2026-08-28",
+    "owner": "abhishek00edu@gmail.com",
+    "goal": "All UI buttons work and show correct info; no mock/placeholder data leaking into the shipped UI; two daemons discover + pair through the Flutter UI; tray icon behaves correctly; no crashes; graceful shutdown on every close path.",
+    "workingStateCriteria": [
+      "Every button in the shipped Flutter app is clickable, fires a real daemon command, and reflects the real result.",
+      "No hardcoded/mock/placeholder data rendered as fact anywhere in the shipped UI.",
+      "Daemon-to-daemon discovery and pairing completes through the Flutter UI (two instances on this machine, and on a second physical machine if available).",
+      "Tray icon: correct tooltip, left-click toggles window, right-click menu works, Quit actually quits.",
+      "No panics/crashes in daemon or Flutter across normal use, startup races, mid-session daemon death, and restart.",
+      "Window close, tray Quit, and Ctrl-C on the daemon all shut down gracefully with no lingering processes."
+    ],
+    "statusValues": ["pending", "in_progress", "done", "blocked"],
+    "howToUseThisFile": "Update each task's status as work lands. Add a 'note' with what was actually done / verified how. Keep this in sync with the in-session todo list."
+  },
+  "tracks": [
+    {
+      "id": "A",
+      "title": "Multi-instance support (run two daemon+UI instances on one machine)",
+      "status": "done",
+      "note": "VERIFIED: two flow-daemon instances run side-by-side on this Windows box (A on 47823, B on 47833, shared discovery 47824), discover each other over UDP broadcast, and complete a real Noise-authenticated daemon-to-daemon pairing end to end via IPC — both sides persist each other as paired devices and both link states go to 'connected'. Driven headlessly with flutter/tool/ipc_poke.dart.",
+      "tasks": [
+        { "id": "A1", "title": "Daemon: FLOW_IPC_PORT env override for the IPC listener + advertised port", "status": "done", "note": "main.rs: ipc_port() reads FLOW_IPC_PORT (unparseable = fatal, not silent fallback). Peer-channel port is already ephemeral+advertised, so nothing else to do there." },
+        { "id": "A2", "title": "Daemon: FLOW_DATA_DIR env override for the SQLite DB + identity (separate per instance)", "status": "done", "note": "main.rs: db_path() honors FLOW_DATA_DIR; separate dir => separate flow.db + separate persisted ed25519 identity." },
+        { "id": "A3", "title": "Daemon: FLOW_IPC_TOKEN_PATH env override for the IPC auth token file", "status": "done", "note": "ipc/auth.rs: token_path() honors FLOW_IPC_TOKEN_PATH. Also replaced directories::BaseDirs with a USERPROFILE(Windows)/HOME(else) resolver matching the Flutter client's ipc_auth.dart exactly, so both sides compute the identical ~/.flow path and the 2 pre-existing Windows-only auth test failures are fixed." },
+        { "id": "A4", "title": "Daemon: SO_REUSEADDR/SO_REUSEPORT on the discovery UDP socket so two instances share port 47824", "status": "done", "note": "discovery/tcp.rs: bind_reusable_udp() via socket2 sets SO_REUSEADDR (+SO_REUSEPORT on unix) before bind. Verified: 2 instances both bind 47824 and both receive broadcast announces on Windows. Added socket2 dep." },
+        { "id": "A5", "title": "Flutter: FLOW_IPC_PORT + FLOW_IPC_TOKEN_PATH dart-defines wired into ipc_constants.dart / ipc_auth.dart", "status": "done", "note": "ipc_constants.dart: kFlowDaemonIpcPortResolved from int.fromEnvironment. ipc_auth.dart: _envTokenPath from String.fromEnvironment + Windows-first USERPROFILE resolution." },
+        { "id": "A6", "title": "Unit tests for the override plumbing; confirm default path unchanged", "status": "done", "note": "New: discovery two_instances_can_share_one_fixed_discovery_port; auth flow_ipc_token_path_overrides_the_default_location; main ipc_port_defaults_and_overrides. Also fixed pre-existing clippy -D warnings failure (dead futures_util::StreamExt import in ipc/server.rs tests) and made auth tests share one ENV_LOCK. cargo test --workspace + clippy --all-targets -D warnings + fmt --check all green." },
+        { "id": "A7", "title": "BONUS: FLOW_DEVICE_NAME override + kill unprompted pairing-handshake churn", "status": "done", "note": "service/mod.rs: FLOW_DEVICE_NAME overrides local_hostname() so two instances on one machine are distinguishable. dial_if_trusted now early-outs when TrustGate::has_any_trusted() is false (was doing a full TCP+Noise handshake against every discovered peer every 5s); the 'no pairing session open' log dropped WARN->debug (it's routine, not a fault)." }
+      ]
+    },
+    {
+      "id": "B",
+      "title": "Fix broken / misleading UI",
+      "status": "pending",
+      "tasks": [
+        { "id": "B1", "title": "Wire 'Quit Cross Device' tray-popover row to a real quit path", "status": "pending", "note": "" },
+        { "id": "B2", "title": "Replace hardcoded 'Work Laptop' link-state banner text with real state / generic copy", "status": "pending", "note": "" },
+        { "id": "B3", "title": "Make 'Diagnostics' row honest (no invented 8ms stat) or remove it", "status": "pending", "note": "" },
+        { "id": "B4", "title": "Audit every button in Dashboard/General/Devices/Input/Advanced sections — each fires a real command and reflects result", "status": "pending", "note": "" },
+        { "id": "B5", "title": "Audit onboarding steps (welcome/permission/pair/done) buttons", "status": "pending", "note": "" },
+        { "id": "B6", "title": "Decide + handle the reconnecting-state 'Cancel' no-op", "status": "pending", "note": "" }
+      ]
+    },
+    {
+      "id": "C",
+      "title": "Crash & graceful-shutdown hardening",
+      "status": "pending",
+      "tasks": [
+        { "id": "C1", "title": "Daemon: replace startup panic!/.expect() (IPC bind, db path) with clean stderr message + non-zero exit", "status": "pending", "note": "" },
+        { "id": "C2", "title": "Daemon: confirm Ctrl-C shutdown stays clean with all listeners up", "status": "pending", "note": "" },
+        { "id": "C3", "title": "Flutter: window close -> hide to tray (prod); tray Quit -> process actually exits (destroy() if needed on Windows)", "status": "pending", "note": "" },
+        { "id": "C4", "title": "Flutter: no unhandled exception on daemon-down-at-startup, daemon-dies-mid-session, daemon-restart", "status": "pending", "note": "" }
+      ]
+    },
+    {
+      "id": "D",
+      "title": "End-to-end verification via computer use",
+      "status": "pending",
+      "tasks": [
+        { "id": "D1", "title": "Build + launch instance A (daemon A + Flutter A) on Windows", "status": "pending", "note": "" },
+        { "id": "D2", "title": "Build + launch instance B (daemon B + Flutter B) on the same machine", "status": "pending", "note": "" },
+        { "id": "D3", "title": "Drive both UIs: onboarding -> dashboard -> 'Pair new device' on both -> complete pairing -> both list each other with correct name/OS", "status": "pending", "note": "" },
+        { "id": "D4", "title": "Exercise every button; switch active device; remove device; settings toggles; switch-key recorder; reset settings", "status": "pending", "note": "" },
+        { "id": "D5", "title": "Test all shutdown paths (window close, tray Quit, Ctrl-C); confirm no lingering processes", "status": "pending", "note": "" },
+        { "id": "D6", "title": "Record a GIF of the working pairing + switching flow", "status": "pending", "note": "" },
+        { "id": "D7", "title": "OPTIONAL: repeat pairing across a second physical machine on the same LAN", "status": "pending", "note": "depends on user's second machine being ready" }
+      ]
+    },
+    {
+      "id": "E",
+      "title": "Regression gate",
+      "status": "pending",
+      "tasks": [
+        { "id": "E1", "title": "cargo test --workspace + cargo clippy --workspace --all-targets -- -D warnings + cargo fmt --check", "status": "pending", "note": "" },
+        { "id": "E2", "title": "flutter analyze + dart format --set-exit-if-changed + flutter test", "status": "pending", "note": "" }
+      ]
+    }
+  ]
+}

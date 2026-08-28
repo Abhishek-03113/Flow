@@ -12,6 +12,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use flow_core::channel::ChannelAddress;
 use flow_core::device::HostOs;
 use serde::{Deserialize, Serialize};
+use socket2::{Domain, Protocol, Socket, Type};
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
@@ -71,7 +72,7 @@ impl DiscoveryService {
         channel_port: u16,
         instance_id: String,
     ) -> std::io::Result<Self> {
-        let socket = UdpSocket::bind(("0.0.0.0", listen_port)).await?;
+        let socket = bind_reusable_udp(listen_port)?;
         socket.set_broadcast(true)?;
         Ok(Self {
             socket,
@@ -204,6 +205,24 @@ impl DiscoveryService {
         });
         rx
     }
+}
+
+/// Binds a UDP socket on `0.0.0.0:port` with `SO_REUSEADDR` (and
+/// `SO_REUSEPORT` where the OS has it) set *before* the bind, so a
+/// second `flow-daemon` instance on the same machine can bind the same
+/// well-known [`DISCOVERY_PORT`] and both processes still receive the
+/// broadcast announces delivered to it. Without this the second bind
+/// fails outright with `AddrInUse` and local two-daemon testing is
+/// impossible. For the normal single-instance deployment this is a
+/// harmless no-op — nothing else contends for the port.
+fn bind_reusable_udp(port: u16) -> std::io::Result<UdpSocket> {
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+    socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
+    socket.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
+    UdpSocket::from_std(socket.into())
 }
 
 #[cfg(test)]
@@ -385,5 +404,38 @@ mod tests {
 
         let discovered = listener.recv_one().await.expect("recv").expect("parsed");
         assert_eq!(discovered.name, "Device B");
+    }
+
+    /// Two `flow-daemon` instances on one machine must both be able to
+    /// bind the same well-known [`DISCOVERY_PORT`] — that's what
+    /// `bind_reusable_udp`'s `SO_REUSEADDR` is for. Without it the second
+    /// bind fails with `AddrInUse` and local two-daemon testing is
+    /// impossible. Uses a high, unlikely-to-be-taken fixed port rather
+    /// than `DISCOVERY_PORT` itself so a real daemon running on the test
+    /// machine can't make this flake.
+    #[tokio::test]
+    async fn two_instances_can_share_one_fixed_discovery_port() {
+        const SHARED_PORT: u16 = 47950;
+        let a = DiscoveryService::bind(
+            SHARED_PORT,
+            "Device A".to_string(),
+            HostOs::Linux,
+            47900,
+            "id-a".to_string(),
+        )
+        .await
+        .expect("first bind on the shared port");
+        let b = DiscoveryService::bind(
+            SHARED_PORT,
+            "Device B".to_string(),
+            HostOs::Linux,
+            47901,
+            "id-b".to_string(),
+        )
+        .await
+        .expect("second bind on the same shared port must also succeed");
+
+        assert_eq!(a.local_port().unwrap(), SHARED_PORT);
+        assert_eq!(b.local_port().unwrap(), SHARED_PORT);
     }
 }
