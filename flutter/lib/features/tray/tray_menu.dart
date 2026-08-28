@@ -1,41 +1,58 @@
 import '../../domain/daemon_link_state.dart';
 import '../../domain/device.dart';
 
+enum TrayActionKind {
+  switchDevice,
+  pairNewDevice,
+  openDashboard,
+  openSettings,
+  quitApp,
+}
+
 /// What a tray menu row does when clicked. `null` action ⇒ a disabled
 /// informational row.
-sealed class TrayAction {
-  const TrayAction();
-  const factory TrayAction.switchDevice(String deviceId) = _SwitchDevice;
-  static const pairNewDevice = _PairNewDevice();
-  static const openDashboard = _OpenDashboard();
-  static const openSettings = _OpenSettings();
-  static const quitApp = _QuitApp();
-}
+class TrayAction {
+  const TrayAction._(this.kind, [this.switchDeviceId]);
 
-class _SwitchDevice extends TrayAction {
-  const _SwitchDevice(this.deviceId);
-  final String deviceId;
+  /// Named const factory constructors for each action type.
+  const factory TrayAction.switchDevice(String deviceId) = _SwitchDeviceImpl;
+  const factory TrayAction.pairNewDevice() = _PairNewDeviceImpl;
+  const factory TrayAction.openDashboard() = _OpenDashboardImpl;
+  const factory TrayAction.openSettings() = _OpenSettingsImpl;
+  const factory TrayAction.quitApp() = _QuitAppImpl;
+
+  final TrayActionKind kind;
+  final String? switchDeviceId;
+
   @override
   bool operator ==(Object other) =>
-      other is _SwitchDevice && other.deviceId == deviceId;
+      other is TrayAction &&
+      other.kind == kind &&
+      other.switchDeviceId == switchDeviceId;
+
   @override
-  int get hashCode => deviceId.hashCode;
+  int get hashCode => Object.hash(kind, switchDeviceId);
 }
 
-class _PairNewDevice extends TrayAction {
-  const _PairNewDevice();
+class _SwitchDeviceImpl extends TrayAction {
+  const _SwitchDeviceImpl(String deviceId)
+    : super._(TrayActionKind.switchDevice, deviceId);
 }
 
-class _OpenDashboard extends TrayAction {
-  const _OpenDashboard();
+class _PairNewDeviceImpl extends TrayAction {
+  const _PairNewDeviceImpl() : super._(TrayActionKind.pairNewDevice);
 }
 
-class _OpenSettings extends TrayAction {
-  const _OpenSettings();
+class _OpenDashboardImpl extends TrayAction {
+  const _OpenDashboardImpl() : super._(TrayActionKind.openDashboard);
 }
 
-class _QuitApp extends TrayAction {
-  const _QuitApp();
+class _OpenSettingsImpl extends TrayAction {
+  const _OpenSettingsImpl() : super._(TrayActionKind.openSettings);
+}
+
+class _QuitAppImpl extends TrayAction {
+  const _QuitAppImpl() : super._(TrayActionKind.quitApp);
 }
 
 class TrayMenuEntry {
@@ -118,13 +135,16 @@ List<TrayMenuEntry> buildTrayMenu({
     }
   }
 
-  entries.addAll(const [
-    TrayMenuEntry.separator(),
-    TrayMenuEntry(label: 'Pair New Device…', action: TrayAction.pairNewDevice),
-    TrayMenuEntry.separator(),
-    TrayMenuEntry(label: 'Dashboard', action: TrayAction.openDashboard),
-    TrayMenuEntry(label: 'Settings', action: TrayAction.openSettings),
-    TrayMenuEntry(label: 'Quit Flow', action: TrayAction.quitApp),
+  entries.addAll([
+    const TrayMenuEntry.separator(),
+    const TrayMenuEntry(
+      label: 'Pair New Device…',
+      action: TrayAction.pairNewDevice(),
+    ),
+    const TrayMenuEntry.separator(),
+    const TrayMenuEntry(label: 'Dashboard', action: TrayAction.openDashboard()),
+    const TrayMenuEntry(label: 'Settings', action: TrayAction.openSettings()),
+    const TrayMenuEntry(label: 'Quit Flow', action: TrayAction.quitApp()),
   ]);
 
   return entries;

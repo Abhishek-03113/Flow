@@ -70,4 +70,39 @@ void main() {
     );
     expect(entries.first.label, 'Flow — Needs permission');
   });
+
+  test('TrayAction public discriminant: kind and switchDeviceId', () {
+    final entries = buildTrayMenu(
+      link: DaemonLinkState.connected,
+      localDeviceId: 'd1',
+      devices: [
+        _dev('d1', 'MacBook', DeviceState.active),
+        _dev('d2', 'Work Laptop', DeviceState.inactive),
+      ],
+    );
+
+    // Test switchDevice action has correct kind and deviceId
+    final switchRow = entries.firstWhere(
+      (e) => e.label == 'Switch to Work Laptop',
+    );
+    expect(switchRow.action!.kind, TrayActionKind.switchDevice);
+    expect(switchRow.action!.switchDeviceId, 'd2');
+
+    // Test other actions have correct kind and null switchDeviceId
+    final dashboardRow = entries.firstWhere((e) => e.label == 'Dashboard');
+    expect(dashboardRow.action!.kind, TrayActionKind.openDashboard);
+    expect(dashboardRow.action!.switchDeviceId, isNull);
+
+    final pairRow = entries.firstWhere((e) => e.label == 'Pair New Device…');
+    expect(pairRow.action!.kind, TrayActionKind.pairNewDevice);
+    expect(pairRow.action!.switchDeviceId, isNull);
+
+    final settingsRow = entries.firstWhere((e) => e.label == 'Settings');
+    expect(settingsRow.action!.kind, TrayActionKind.openSettings);
+    expect(settingsRow.action!.switchDeviceId, isNull);
+
+    final quitRow = entries.firstWhere((e) => e.label == 'Quit Flow');
+    expect(quitRow.action!.kind, TrayActionKind.quitApp);
+    expect(quitRow.action!.switchDeviceId, isNull);
+  });
 }
