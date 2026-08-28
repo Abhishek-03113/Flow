@@ -284,6 +284,7 @@ async fn handle_incoming_peer_stream(
     stream: TcpStream,
     connected_peers: ConnectedPeers,
 ) {
+    let peer_addr = stream.peer_addr().ok();
     let channel: Box<dyn Channel> = match TcpChannel::accept(stream).await {
         Ok(channel) => Box::new(channel),
         Err(err) => {
@@ -291,7 +292,10 @@ async fn handle_incoming_peer_stream(
             return;
         }
     };
-    match service.accept_incoming_peer_channel(channel).await {
+    match service
+        .accept_incoming_peer_channel(channel, peer_addr)
+        .await
+    {
         Ok(IncomingPeerConnection::HandledAsPairing) => {}
         Ok(IncomingPeerConnection::TrustedPeer(channel, device_id, precedence)) => {
             claim_and_run(service, channel, device_id, precedence, connected_peers).await;

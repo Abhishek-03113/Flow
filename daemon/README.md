@@ -286,7 +286,15 @@ Relatedly, Linux's device enumeration (`platform/src/linux/discovery.rs`) skips 
 
 ## Pairing consent window
 
-`DaemonService::accept_pairing_request` accepts an incoming pairing request **only while this daemon's own user has a pairing session open** (`is_pairing_window_open`: `PairingSession.stage != Idle`, i.e. they pressed "Pair a device" and it hasn't returned to idle).
+`DaemonService::accept_pairing_request` / `accept_incoming_peer_channel`
+surface every untrusted inbound pairing attempt to the connected UI as an
+`IncomingPairingRequest` (`watch_incoming_request`, event
+`incoming_pairing_request_changed`) and block the handshake until the
+user answers via the `respond_to_pairing_request` IPC command. No UI
+connected ⇒ the request is rejected immediately; no answer within
+`PAIRING_DECISION_TIMEOUT` (30s) ⇒ rejected; only one request is prompted
+at a time (others rejected while one is pending). This replaces the
+earlier stage-based `is_pairing_window_open` stand-in.
 
 This matters because the peer listener binds `0.0.0.0` and broadcasts its port every few seconds. Accepting unconditionally — which is what the responder did while it was unreachable in production, and which became live the moment `main.rs` grew a listener — would let any host on the local network add itself to the trust store with no user involvement, and then inject arbitrary keyboard and mouse input. Refusing by default is the only safe posture.
 
