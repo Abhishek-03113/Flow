@@ -9,6 +9,7 @@
 //! tests opt into explicitly instead.
 
 use std::collections::{HashMap, HashSet};
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -18,12 +19,13 @@ use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{
-    PairingCandidate, PairingDecision, PairingRequest, PairingSession, PairingStage,
+    IncomingPairingRequest, PairingCandidate, PairingDecision, PairingRequest, PairingSession,
+    PairingStage,
 };
 use flow_core::permission::PermissionStatus;
 use flow_core::settings::{FlowSettings, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
@@ -31,6 +33,7 @@ use crate::channel::noise::NoiseChannel;
 use crate::channel::{handshake, negotiate};
 use crate::discovery::DiscoveredPeer;
 use crate::identity::DeviceIdentity;
+use crate::pairing_fingerprint::key_fingerprint;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
@@ -74,6 +77,10 @@ const PAIRING_REQUEST_TO_PAIRED: Duration = Duration::from_millis(1500);
 /// `sharedContractConstants.mockParityTimings.pairingTerminalToIdleMs`.
 const PAIRING_TERMINAL_TO_IDLE: Duration = Duration::from_millis(1600);
 
+/// How long an incoming pairing request waits for the local user's
+/// Accept/Reject before the daemon rejects it on their behalf.
+const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// How long [`DaemonService::dial_if_trusted`] will spend connecting to
 /// and handshaking with a discovered peer before giving up. Generous
 /// enough for a slow LAN and a Noise `XX` round trip, short enough that
@@ -101,6 +108,17 @@ pub struct ServiceState {
     /// keep exercising the pure mock flow unchanged, with no separate
     /// feature flag needed.
     pub discovered_candidates: HashMap<String, (PairingCandidate, ChannelAddress)>,
+    /// The single incoming pairing request currently awaiting a
+    /// decision, if any. `None` whenever nothing is pending.
+    pub incoming_request: Option<PendingPairingRequest>,
+}
+
+/// An incoming pairing request the daemon has surfaced to the UI and is
+/// blocking a handshake on. `respond_to_pairing_request` fires
+/// `responder`; `accept_pairing_over` owns clearing this slot.
+pub struct PendingPairingRequest {
+    pub info: IncomingPairingRequest,
+    responder: oneshot::Sender<PairingDecision>,
 }
 
 impl ServiceState {
@@ -140,6 +158,7 @@ impl ServiceState {
             permission: default_permission(),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
+            incoming_request: None,
         }
     }
 
@@ -194,6 +213,7 @@ impl ServiceState {
             },
             candidates_pool: mock_parity_candidates(),
             discovered_candidates: HashMap::new(),
+            incoming_request: None,
         }
     }
 }
@@ -294,6 +314,9 @@ pub struct DaemonService {
     /// means an incoming pairing request has no one to prompt and is
     /// rejected outright — see `accept_pairing_over`.
     connected_clients: Arc<AtomicUsize>,
+    /// Broadcasts the single in-flight incoming pairing request (or
+    /// `None` when nothing is pending) to subscribed UIs.
+    incoming_request_tx: watch::Sender<Option<IncomingPairingRequest>>,
 }
 
 impl DaemonService {
@@ -326,6 +349,7 @@ impl DaemonService {
         let (pairing_session_tx, _) = watch::channel(state.pairing_session.clone());
         let (settings_tx, _) = watch::channel(state.settings.clone());
         let (permission_tx, _) = watch::channel(state.permission.clone());
+        let (incoming_request_tx, _) = watch::channel(None);
 
         Self {
             state: Arc::new(RwLock::new(state)),
@@ -338,6 +362,7 @@ impl DaemonService {
             permission_tx,
             pairing_timer: Arc::new(Mutex::new(None)),
             connected_clients: Arc::new(AtomicUsize::new(0)),
+            incoming_request_tx,
         }
     }
 
@@ -388,6 +413,14 @@ impl DaemonService {
 
     pub fn watch_permission(&self) -> watch::Receiver<PermissionStatus> {
         self.permission_tx.subscribe()
+    }
+
+    /// Subscribes to the single in-flight incoming pairing request. The
+    /// value is `Some` between the daemon surfacing a request and it
+    /// being resolved (by `respond_to_pairing_request` or the decision
+    /// timeout), `None` otherwise.
+    pub fn watch_incoming_request(&self) -> watch::Receiver<Option<IncomingPairingRequest>> {
+        self.incoming_request_tx.subscribe()
     }
 
     /// Makes `device_id` the active device, moving whichever device was
@@ -829,47 +862,21 @@ impl DaemonService {
     /// trusted" holds symmetrically for both ends of one handshake, not
     /// just the initiator's.
     ///
-    /// **Only accepts while this daemon's own user has pairing open** —
-    /// see [`Self::is_pairing_window_open`]. The Flutter-facing contract
-    /// still has no incoming-pairing-request command/UI
-    /// (`docs/contracts/daemon-ipc.md`'s `PairingSession` only models the
-    /// *initiating* side's view), so there's no way to prompt "Device X
-    /// wants to pair, accept?" without a new contract command. The
-    /// pairing window is what stands in for that prompt using state the
-    /// user already drives directly: they pressed "Pair a device," so an
-    /// incoming request in that moment is one they're expecting.
+    /// **Only accepts once the local user has approved the request** —
+    /// see [`Self::accept_pairing_over`]. The daemon surfaces the request
+    /// to the connected UI over `watch_incoming_request` and blocks this
+    /// handshake on [`Self::respond_to_pairing_request`], rejecting on the
+    /// user's behalf after [`PAIRING_DECISION_TIMEOUT`] or immediately
+    /// when no UI is connected to prompt.
     pub async fn accept_pairing_request(
         &self,
         channel: Box<dyn Channel>,
+        peer_addr: Option<SocketAddr>,
     ) -> Result<(), ChannelError> {
         let mut noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
-        self.accept_pairing_over(&mut noise_channel, peer_public_key)
+        self.accept_pairing_over(&mut noise_channel, peer_public_key, peer_addr)
             .await
-    }
-
-    /// Whether this daemon is currently willing to accept an incoming
-    /// pairing request: true only while the local user has a pairing
-    /// session in flight (they pressed "Pair a device" and the session
-    /// hasn't returned to `Idle`).
-    ///
-    /// Without this, the peer listener — bound to `0.0.0.0` and
-    /// advertising its port by broadcast every few seconds — would let
-    /// *any* host on the network pair itself into the trust store with
-    /// no user involvement at all, and then inject arbitrary keyboard
-    /// and mouse input. That's the whole product working against its
-    /// owner, so the default has to be "closed."
-    ///
-    /// Honest about what this is not: within an open window it's still
-    /// first-come-first-served, with no short-authentication-string or
-    /// numeric-comparison step to prove the device that answered is the
-    /// one the user meant. Closing that gap needs a real accept/reject
-    /// prompt (a new contract command and UI). This narrows the exposure
-    /// from "always, unattended" to "a few seconds, while the user is
-    /// deliberately pairing and watching" — a large reduction, not a
-    /// complete fix.
-    pub async fn is_pairing_window_open(&self) -> bool {
-        self.state.read().await.pairing_session.stage != PairingStage::Idle
     }
 
     /// The post-handshake half of [`Self::accept_pairing_request`],
@@ -881,36 +888,71 @@ impl DaemonService {
     /// handshake produces one), so it can't go through
     /// `accept_pairing_request` without handshaking twice on the same
     /// connection.
+    ///
+    /// Reads the peer's `PairingRequest`, then gates trust on an explicit
+    /// local decision: with no UI connected there is nobody to consent so
+    /// the request is rejected outright; otherwise it is published on
+    /// `watch_incoming_request` and this call blocks until
+    /// [`Self::respond_to_pairing_request`] delivers a decision or
+    /// [`PAIRING_DECISION_TIMEOUT`] elapses (⇒ Reject). Only one request
+    /// is entertained at a time — a second concurrent one is rejected
+    /// while the first is pending. This method is the sole owner of
+    /// clearing the pending slot and its watch value.
     async fn accept_pairing_over(
         &self,
         channel: &mut dyn Channel,
         peer_public_key: Vec<u8>,
+        peer_addr: Option<SocketAddr>,
     ) -> Result<(), ChannelError> {
-        // Checked once here, at the moment the request actually arrives,
-        // rather than by the caller before the handshake: the window can
-        // close while the Noise exchange is still in flight, and a
-        // request that lands after the user gave up on pairing is
-        // exactly the unattended case this gate exists to refuse.
-        let window_open = self.is_pairing_window_open().await;
-        if !window_open {
-            // Routine, not a fault: a peer that has this device paired
-            // (or a user mid-pair on the other side whose window opened
-            // before ours) probes the peer listener and is turned away
-            // because nobody here is currently pairing. The initiating
-            // side gets a real failure surfaced in its UI; this side has
-            // nothing to warn about.
-            tracing::debug!(
-                "declined an incoming pairing request: no pairing session is open on this device"
-            );
+        let request = handshake::recv_pairing_request(channel).await?;
+
+        // No UI connected ⇒ nobody can consent. Reject outright, without
+        // publishing anything.
+        if self.connected_client_count() == 0 {
+            tracing::info!("declined an incoming pairing request: no UI connected to prompt");
+            return handshake::send_pairing_decision(channel, PairingDecision::Reject).await;
         }
-        let (request, decision) = handshake::respond_to_pairing(channel, |_request| {
-            if window_open {
-                PairingDecision::Accept
-            } else {
+
+        let info = IncomingPairingRequest {
+            request_id: format!("ipr-{:032x}", rand::random::<u128>()),
+            device_name: request.device_name.clone(),
+            device_os: request.device_os,
+            fingerprint: key_fingerprint(&peer_public_key),
+            address: peer_addr.map(|a| a.ip().to_string()).unwrap_or_default(),
+        };
+
+        let (tx, rx) = oneshot::channel();
+        {
+            let mut state = self.state.write().await;
+            if state.incoming_request.is_some() {
+                tracing::info!(
+                    "declined an incoming pairing request: another request is awaiting a decision"
+                );
+                drop(state);
+                return handshake::send_pairing_decision(channel, PairingDecision::Reject).await;
+            }
+            state.incoming_request = Some(PendingPairingRequest {
+                info: info.clone(),
+                responder: tx,
+            });
+        }
+        self.incoming_request_tx.send_replace(Some(info));
+
+        let decision = tokio::select! {
+            received = rx => received.unwrap_or(PairingDecision::Reject),
+            _ = tokio::time::sleep(PAIRING_DECISION_TIMEOUT) => {
+                tracing::info!("incoming pairing request timed out with no decision");
                 PairingDecision::Reject
             }
-        })
-        .await?;
+        };
+
+        {
+            let mut state = self.state.write().await;
+            state.incoming_request = None;
+        }
+        self.incoming_request_tx.send_replace(None);
+
+        handshake::send_pairing_decision(channel, decision).await?;
         if decision != PairingDecision::Accept {
             return Ok(());
         }
@@ -938,6 +980,39 @@ impl DaemonService {
         Ok(())
     }
 
+    /// Delivers the local user's Accept/Reject for a pending incoming
+    /// pairing request. [`Self::accept_pairing_over`] owns clearing the
+    /// pending slot and emitting the `None` watch value, so this only
+    /// routes the decision to the blocked handshake.
+    ///
+    /// `Err(FlowError::PairingRequestNotFound)` when `request_id` matches
+    /// nothing currently pending — a stale response, a typo, or a race
+    /// with the decision timeout.
+    pub async fn respond_to_pairing_request(
+        &self,
+        request_id: &str,
+        decision: PairingDecision,
+    ) -> Result<(), FlowError> {
+        let responder = {
+            let mut state = self.state.write().await;
+            match &state.incoming_request {
+                Some(pending) if pending.info.request_id == request_id => {
+                    state.incoming_request.take().map(|p| p.responder)
+                }
+                _ => None,
+            }
+        };
+        match responder {
+            Some(tx) => {
+                // A send failure means the acceptor already timed out and
+                // dropped `rx` — harmless, the decision is moot.
+                let _ = tx.send(decision);
+                Ok(())
+            }
+            None => Err(FlowError::PairingRequestNotFound),
+        }
+    }
+
     /// Accepts one incoming daemon-to-daemon connection on the peer
     /// channel listener (`main.rs`, not yet wired anywhere before this):
     /// runs the Noise handshake first (there's no peer identity to check
@@ -946,12 +1021,13 @@ impl DaemonService {
     /// device. An already-trusted peer is handed back to the caller as a
     /// live, authenticated [`Channel`] to run the input-streaming
     /// pipeline over; an untrusted peer is treated as a pairing attempt
-    /// and handled in place via [`Self::accept_pairing_over`] — subject
-    /// to [`Self::is_pairing_window_open`], so an unattended daemon
+    /// and handled in place via [`Self::accept_pairing_over`] — which
+    /// blocks on an explicit local decision, so an unattended daemon
     /// rejects it rather than silently trusting whoever asked.
     pub async fn accept_incoming_peer_channel(
         &self,
         channel: Box<dyn Channel>,
+        peer_addr: Option<SocketAddr>,
     ) -> Result<IncomingPeerConnection, ChannelError> {
         let noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
@@ -967,7 +1043,7 @@ impl DaemonService {
         }
 
         let mut noise_channel = noise_channel;
-        self.accept_pairing_over(&mut noise_channel, peer_public_key)
+        self.accept_pairing_over(&mut noise_channel, peer_public_key, peer_addr)
             .await?;
         Ok(IncomingPeerConnection::HandledAsPairing)
     }
@@ -2216,10 +2292,19 @@ mod tests {
         );
     }
 
-    /// Drives one incoming pairing attempt against `service` and reports
-    /// the decision the initiator received, so the two tests below differ
-    /// only in whether a pairing window was open.
-    async fn attempt_incoming_pairing(service: &DaemonService) -> PairingDecision {
+    struct IncomingAttempt {
+        initiator: JoinHandle<PairingDecision>,
+        acceptor: JoinHandle<Result<IncomingPeerConnection, ChannelError>>,
+    }
+
+    /// Spawns one incoming pairing attempt against `service`: a loopback
+    /// TCP + Noise initiator that sends a `PairingRequest` for
+    /// `device_name`, and an acceptor task running
+    /// `accept_incoming_peer_channel` — which now blocks on the local
+    /// user's decision, so a test must drive `watch_incoming_request()` /
+    /// `respond_to_pairing_request()` (or advance past the timeout)
+    /// before awaiting either handle.
+    async fn spawn_incoming_pairing(service: &DaemonService, device_name: &str) -> IncomingAttempt {
         use crate::channel::tcp::TcpChannel;
         use tokio::net::TcpListener;
 
@@ -2231,6 +2316,7 @@ mod tests {
         let initiator_identity_storage =
             Storage::open_in_memory().await.expect("open initiator db");
         let initiator_identity = DeviceIdentity::load_or_generate(initiator_identity_storage).await;
+        let name = device_name.to_string();
         let initiator = tokio::spawn(async move {
             let tcp = TcpChannel::connect(addr).await.expect("connect");
             let mut noise = NoiseChannel::initiate(tcp, &initiator_identity)
@@ -2239,7 +2325,7 @@ mod tests {
             handshake::request_pairing(
                 &mut noise,
                 PairingRequest {
-                    device_name: "New Laptop".to_string(),
+                    device_name: name,
                     device_os: HostOs::Linux,
                     address: String::new(),
                 },
@@ -2248,56 +2334,244 @@ mod tests {
             .expect("decision")
         });
 
-        let (stream, _peer) = listener.accept().await.expect("accept");
-        let channel: Box<dyn Channel> =
-            Box::new(TcpChannel::accept(stream).await.expect("accept ws"));
-        let outcome = service
-            .accept_incoming_peer_channel(channel)
-            .await
-            .expect("accept incoming");
-        assert!(matches!(outcome, IncomingPeerConnection::HandledAsPairing));
+        let (stream, peer_addr) = listener.accept().await.expect("accept");
+        let service = service.clone();
+        let acceptor = tokio::spawn(async move {
+            let channel: Box<dyn Channel> =
+                Box::new(TcpChannel::accept(stream).await.expect("accept ws"));
+            service
+                .accept_incoming_peer_channel(channel, Some(peer_addr))
+                .await
+        });
 
-        initiator.await.expect("initiator task")
+        IncomingAttempt {
+            initiator,
+            acceptor,
+        }
     }
 
-    /// The security-critical default. The peer listener is bound to
-    /// `0.0.0.0` and its port is broadcast every few seconds, so an
-    /// unattended daemon that accepted pairing unconditionally would let
-    /// any host on the network add itself to the trust store and then
-    /// inject input. Nothing may be trusted without the local user
-    /// opening a pairing window first.
+    /// Blocks until `requests` yields a published incoming pairing
+    /// request and returns it.
+    async fn next_published_request(
+        requests: &mut watch::Receiver<Option<IncomingPairingRequest>>,
+    ) -> IncomingPairingRequest {
+        loop {
+            if let Some(info) = requests.borrow_and_update().clone() {
+                return info;
+            }
+            requests
+                .changed()
+                .await
+                .expect("incoming request published");
+        }
+    }
+
+    /// The happy path: the request is published on the watch channel, the
+    /// local user Accepts via `respond_to_pairing_request`, the initiator
+    /// sees Accept, the peer is persisted keyed by its proven key, and
+    /// the pending slot is cleared.
     #[tokio::test]
-    async fn an_incoming_pairing_request_is_rejected_when_no_pairing_window_is_open() {
+    async fn an_incoming_request_is_published_and_accepted_by_respond() {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new_seeded_for_test(storage).await;
-        assert!(!service.is_pairing_window_open().await);
+        let _ui = service.register_ipc_client();
 
-        let decision = attempt_incoming_pairing(&service).await;
-        assert_eq!(decision, PairingDecision::Reject);
+        let mut requests = service.watch_incoming_request();
+        let attempt = spawn_incoming_pairing(&service, "Windows Box").await;
 
+        let pending = next_published_request(&mut requests).await;
+        assert_eq!(pending.device_name, "Windows Box");
+        assert_eq!(pending.device_os, HostOs::Linux);
+        assert!(pending.request_id.starts_with("ipr-"));
+        assert_eq!(pending.address, "127.0.0.1");
+        assert!(!pending.fingerprint.is_empty());
+
+        service
+            .respond_to_pairing_request(&pending.request_id, PairingDecision::Accept)
+            .await
+            .expect("respond accept");
+
+        assert_eq!(
+            attempt.initiator.await.expect("initiator join"),
+            PairingDecision::Accept
+        );
+        let outcome = attempt
+            .acceptor
+            .await
+            .expect("acceptor join")
+            .expect("accept ok");
+        assert!(matches!(outcome, IncomingPeerConnection::HandledAsPairing));
+
+        assert!(
+            service.watch_incoming_request().borrow().is_none(),
+            "the pending slot must be cleared once resolved"
+        );
         let devices = service.watch_devices().borrow().clone();
         assert!(
-            !devices.iter().any(|d| d.name == "New Laptop"),
-            "an unattended daemon must not add an uninvited device: {devices:?}"
+            devices.iter().any(|d| d.name == "Windows Box"),
+            "an accepted peer must be persisted: {devices:?}"
         );
     }
 
-    /// The complement: once the user has actually pressed "Pair a
-    /// device", an incoming request is the one they're expecting, and
-    /// pairing completes as before.
+    /// A Reject decision reaches the initiator and leaves nothing behind.
     #[tokio::test]
-    async fn an_incoming_pairing_request_is_accepted_while_a_pairing_window_is_open() {
+    async fn respond_reject_persists_nothing() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        let _ui = service.register_ipc_client();
+
+        let mut requests = service.watch_incoming_request();
+        let attempt = spawn_incoming_pairing(&service, "Rejected Box").await;
+        let pending = next_published_request(&mut requests).await;
+
+        service
+            .respond_to_pairing_request(&pending.request_id, PairingDecision::Reject)
+            .await
+            .expect("respond reject");
+
+        assert_eq!(
+            attempt.initiator.await.expect("initiator join"),
+            PairingDecision::Reject
+        );
+        attempt
+            .acceptor
+            .await
+            .expect("acceptor join")
+            .expect("acceptor ok");
+
+        assert!(service.watch_incoming_request().borrow().is_none());
+        let devices = service.watch_devices().borrow().clone();
+        assert!(
+            !devices.iter().any(|d| d.name == "Rejected Box"),
+            "a rejected peer must not be persisted: {devices:?}"
+        );
+    }
+
+    /// No decision within `PAIRING_DECISION_TIMEOUT` ⇒ the daemon rejects
+    /// on the user's behalf; the initiator sees Reject and nothing is
+    /// persisted.
+    #[tokio::test(start_paused = true)]
+    async fn no_answer_auto_rejects_after_timeout() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        let _ui = service.register_ipc_client();
+
+        let mut requests = service.watch_incoming_request();
+        let attempt = spawn_incoming_pairing(&service, "Silent Box").await;
+        let pending = next_published_request(&mut requests).await;
+        assert!(pending.request_id.starts_with("ipr-"));
+
+        tokio::time::advance(PAIRING_DECISION_TIMEOUT + Duration::from_millis(1)).await;
+
+        assert_eq!(
+            attempt.initiator.await.expect("initiator join"),
+            PairingDecision::Reject
+        );
+        attempt
+            .acceptor
+            .await
+            .expect("acceptor join")
+            .expect("acceptor ok");
+
+        assert!(service.watch_incoming_request().borrow().is_none());
+        let devices = service.watch_devices().borrow().clone();
+        assert!(!devices.iter().any(|d| d.name == "Silent Box"));
+    }
+
+    /// With no IPC client connected there is nobody to prompt, so the
+    /// request is rejected outright — never published, never persisted.
+    #[tokio::test]
+    async fn no_connected_ui_rejects_immediately() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        // Deliberately no `register_ipc_client()`.
+
+        let attempt = spawn_incoming_pairing(&service, "Uninvited Box").await;
+
+        assert_eq!(
+            attempt.initiator.await.expect("initiator join"),
+            PairingDecision::Reject
+        );
+        attempt
+            .acceptor
+            .await
+            .expect("acceptor join")
+            .expect("acceptor ok");
+
+        assert!(
+            service.watch_incoming_request().borrow().is_none(),
+            "nothing may be published when no UI can consent"
+        );
+        let devices = service.watch_devices().borrow().clone();
+        assert!(!devices.iter().any(|d| d.name == "Uninvited Box"));
+    }
+
+    /// Only one request at a time: a second attempt arriving while one is
+    /// pending is rejected immediately without displacing the first.
+    #[tokio::test]
+    async fn a_second_request_while_one_is_pending_is_rejected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        let _ui = service.register_ipc_client();
+
+        let mut requests = service.watch_incoming_request();
+        let first = spawn_incoming_pairing(&service, "First Box").await;
+        let pending = next_published_request(&mut requests).await;
+        assert_eq!(pending.device_name, "First Box");
+
+        let second = spawn_incoming_pairing(&service, "Second Box").await;
+        assert_eq!(
+            second.initiator.await.expect("second initiator join"),
+            PairingDecision::Reject
+        );
+        second
+            .acceptor
+            .await
+            .expect("second acceptor join")
+            .expect("second acceptor ok");
+
+        let still = service
+            .watch_incoming_request()
+            .borrow()
+            .clone()
+            .expect("first request still pending");
+        assert_eq!(still.request_id, pending.request_id);
+
+        service
+            .respond_to_pairing_request(&pending.request_id, PairingDecision::Accept)
+            .await
+            .expect("respond accept");
+        assert_eq!(
+            first.initiator.await.expect("first initiator join"),
+            PairingDecision::Accept
+        );
+        first
+            .acceptor
+            .await
+            .expect("first acceptor join")
+            .expect("first acceptor ok");
+
+        let devices = service.watch_devices().borrow().clone();
+        assert!(devices.iter().any(|d| d.name == "First Box"));
+        assert!(
+            !devices.iter().any(|d| d.name == "Second Box"),
+            "the rejected second peer must not be persisted: {devices:?}"
+        );
+        assert!(service.watch_incoming_request().borrow().is_none());
+    }
+
+    /// `respond_to_pairing_request` with an id that matches nothing
+    /// pending is a `PairingRequestNotFound` error.
+    #[tokio::test]
+    async fn respond_with_unknown_id_errs() {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new_seeded_for_test(storage).await;
 
-        service.start_pairing().await.expect("start pairing");
-        assert!(service.is_pairing_window_open().await);
-
-        let decision = attempt_incoming_pairing(&service).await;
-        assert_eq!(decision, PairingDecision::Accept);
-
-        let devices = service.watch_devices().borrow().clone();
-        assert!(devices.iter().any(|d| d.name == "New Laptop"));
+        let err = service
+            .respond_to_pairing_request("ipr-nope", PairingDecision::Accept)
+            .await
+            .unwrap_err();
+        assert_eq!(err, FlowError::PairingRequestNotFound);
     }
 
     #[tokio::test]
@@ -2340,7 +2614,7 @@ mod tests {
         let channel: Box<dyn Channel> =
             Box::new(TcpChannel::accept(stream).await.expect("accept ws"));
         let outcome = service
-            .accept_incoming_peer_channel(channel)
+            .accept_incoming_peer_channel(channel, None)
             .await
             .expect("accept incoming");
         match outcome {
