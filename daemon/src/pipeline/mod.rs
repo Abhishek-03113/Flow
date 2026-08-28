@@ -255,16 +255,46 @@ pub async fn run_paired_connection<I, S>(
     // already the active device.
     let mut suppressing = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
     suppress_local(suppressing);
+    crate::hop_note!(
+        stage = "pipeline_gate_init",
+        role = "owner",
+        peer = %peer_id.0,
+        forwarding = suppressing,
+        "initial send-gate state for this connection"
+    );
 
     loop {
         tokio::select! {
             event = capture_events.recv() => {
                 let Some(event) = event else { break; };
-                if is_peer_receiving_input(&devices.borrow_and_update(), &peer_id) {
+                let forwarding = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
+                crate::hop!(
+                    stage = "send_gate",
+                    role = "owner",
+                    peer = %peer_id.0,
+                    forwarding,
+                    kind = event_kind(&event),
+                    "captured event reached the send gate"
+                );
+                if forwarding {
                     send_sequence += 1;
                     if channel.send(ChannelMessage::Input { sequence: send_sequence, event }).await.is_err() {
+                        crate::hop_note!(
+                            stage = "send_failed",
+                            role = "owner",
+                            peer = %peer_id.0,
+                            seq = send_sequence,
+                            "channel send failed; ending pipeline"
+                        );
                         break;
                     }
+                    crate::hop!(
+                        stage = "frame_sent",
+                        role = "owner",
+                        peer = %peer_id.0,
+                        seq = send_sequence,
+                        "input frame sent to the active peer"
+                    );
                 }
             }
             changed = devices.changed() => {
@@ -275,6 +305,13 @@ pub async fn run_paired_connection<I, S>(
                     is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
                 if should_suppress != suppressing {
                     suppressing = should_suppress;
+                    crate::hop_note!(
+                        stage = "suppress_toggle",
+                        role = "owner",
+                        peer = %peer_id.0,
+                        forwarding = should_suppress,
+                        "active-device change flipped the send gate"
+                    );
                     suppress_local(suppressing);
                 }
             }
@@ -282,11 +319,35 @@ pub async fn run_paired_connection<I, S>(
                 match received {
                     Ok(ChannelMessage::Input { sequence, event }) => {
                         if last_received_sequence.is_some_and(|last| sequence <= last) {
+                            crate::hop!(
+                                stage = "replay_drop",
+                                role = "receiver",
+                                peer = %peer_id.0,
+                                seq = sequence,
+                                "dropped a frame at or below the last accepted sequence"
+                            );
                             continue;
                         }
                         last_received_sequence = Some(sequence);
+                        crate::hop!(
+                            stage = "frame_recv",
+                            role = "receiver",
+                            peer = %peer_id.0,
+                            seq = sequence,
+                            kind = event_kind(&event),
+                            "input frame received from the peer"
+                        );
                         match injector.inject(&event) {
-                            Ok(()) => held.observe(&event),
+                            Ok(()) => {
+                                crate::hop!(
+                                    stage = "injected",
+                                    role = "receiver",
+                                    peer = %peer_id.0,
+                                    seq = sequence,
+                                    "event injected into this machine"
+                                );
+                                held.observe(&event)
+                            }
                             Err(err) => tracing::warn!("input injection failed: {err:?}"),
                         }
                     }
@@ -310,6 +371,21 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
+}
+
+/// A short, stable label for an event, for the `kind` field on
+/// `flow::hop` records — enough to eyeball "keydown A" vs "mouse move"
+/// in a log without dumping the whole `InputEvent`. `pub` so `main.rs`'s
+/// capture-bridge hop can use the same labels.
+pub fn event_kind(event: &InputEvent) -> &'static str {
+    match event {
+        InputEvent::Keyboard(KeyboardEvent::KeyDown { .. }) => "key_down",
+        InputEvent::Keyboard(KeyboardEvent::KeyUp { .. }) => "key_up",
+        InputEvent::Mouse(MouseEvent::Move { .. }) => "mouse_move",
+        InputEvent::Mouse(MouseEvent::ButtonDown { .. }) => "mouse_button_down",
+        InputEvent::Mouse(MouseEvent::ButtonUp { .. }) => "mouse_button_up",
+        InputEvent::Mouse(MouseEvent::Scroll { .. }) => "mouse_scroll",
+    }
 }
 
 #[cfg(test)]

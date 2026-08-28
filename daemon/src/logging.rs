@@ -11,12 +11,50 @@ use tracing_subscriber::reload;
 
 use crate::service::DaemonService;
 
+/// The tracing target every end-to-end lifecycle record is emitted on.
+/// Grep a log for this string to isolate the trail: discovery → dial /
+/// accept → Noise handshake → pairing → pipeline up → per-event send /
+/// gate / recv / inject → switch → pipeline down. Documented as a const
+/// for reference; the macros below hard-code the same literal because
+/// `tracing`'s `target:` only accepts one.
+pub const HOP_TARGET: &str = "flow::hop";
+
+/// One per-event lifecycle record — the firehose (capture, send-gate,
+/// frame out, frame in, replay drop, inject). `TRACE` level, so it is
+/// silent unless `FLOW_TRACE=1`. Always pass a `stage` and, where they
+/// apply, `role` (`owner` / `receiver` / `initiator` / `responder` /
+/// `local`), `peer`, `seq`, `kind`.
+#[macro_export]
+macro_rules! hop {
+    ($($arg:tt)*) => {
+        tracing::trace!(target: "flow::hop", $($arg)*)
+    };
+}
+
+/// A milestone lifecycle record — connection came up / went down,
+/// pairing decided, active device switched, suppression toggled. `DEBUG`
+/// level so `settings.debug_logging` (or `FLOW_TRACE`) surfaces it
+/// without the full per-event firehose.
+#[macro_export]
+macro_rules! hop_note {
+    ($($arg:tt)*) => {
+        tracing::debug!(target: "flow::hop", $($arg)*)
+    };
+}
+
 /// A live handle to the daemon's log filter level. Cheap to clone —
 /// every clone controls the same underlying filter, the same sharing
 /// model `Storage`'s own handle already uses.
 #[derive(Clone)]
 pub struct LoggingHandle {
     reload_handle: reload::Handle<LevelFilter, tracing_subscriber::Registry>,
+    /// The most *quiet* level [`Self::set_debug`] is ever allowed to
+    /// reload to. `INFO` normally (so `set_debug(false)` behaves as it
+    /// always has); `TRACE` when `FLOW_TRACE` pinned verbose logging on
+    /// for the whole run, so a later `settings.debug_logging = false`
+    /// coming through the toggle can't quietly turn the trace firehose
+    /// back off mid-session.
+    floor: LevelFilter,
 }
 
 impl LoggingHandle {
@@ -24,15 +62,21 @@ impl LoggingHandle {
     /// spans/events — matching `docs/product/vision.md` §15's Advanced
     /// settings "Debug logging" toggle actually doing something once
     /// wired to a real daemon; `false` shows `info`-and-above only.
+    /// Never goes quieter than [`Self::floor`], so a `FLOW_TRACE` run
+    /// stays at `TRACE` regardless of the persisted `debug_logging`
+    /// setting.
     /// A `SubscriberGone` failure (the global subscriber was somehow
     /// torn down) is logged, not panicked on — logging misconfiguration
     /// shouldn't take the daemon down.
     pub fn set_debug(&self, enabled: bool) {
-        let level = if enabled {
+        let requested = if enabled {
             LevelFilter::DEBUG
         } else {
             LevelFilter::INFO
         };
+        // `LevelFilter`'s `Ord` places `TRACE` highest, so `max` is the
+        // more verbose of "what was asked for" and "the floor".
+        let level = requested.max(self.floor);
         if self.reload_handle.reload(level).is_err() {
             tracing::warn!("could not reload the log filter: the subscriber is gone");
         }
@@ -53,18 +97,35 @@ impl LoggingHandle {
 /// value is even known, so callers sync the real value onto the
 /// returned handle once it's loaded (see `daemon/README.md`'s "Auto-reconnect"-
 /// adjacent structured-logging section for the full startup sequence).
-pub fn init(debug_logging: bool) -> LoggingHandle {
-    let initial = if debug_logging {
+pub fn init(debug_logging: bool, trace: bool) -> LoggingHandle {
+    let floor = if trace {
+        LevelFilter::TRACE
+    } else {
+        LevelFilter::INFO
+    };
+    let requested = if debug_logging {
         LevelFilter::DEBUG
     } else {
         LevelFilter::INFO
     };
+    let initial = requested.max(floor);
     let (filter, reload_handle) = reload::Layer::new(initial);
     tracing_subscriber::registry()
         .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            // Under `FLOW_TRACE` every hop record wants to be
+            // attributable: which thread, which module target, which
+            // line. Off by default so a normal run's logs stay terse.
+            tracing_subscriber::fmt::layer()
+                .with_thread_ids(trace)
+                .with_target(trace)
+                .with_line_number(trace),
+        )
         .init();
-    LoggingHandle { reload_handle }
+    LoggingHandle {
+        reload_handle,
+        floor,
+    }
 }
 
 /// Syncs `logging`'s filter level to `service`'s persisted
@@ -100,9 +161,40 @@ mod tests {
     /// underlying `Arc` to still be alive somewhere, which keeping
     /// `_subscriber` in scope guarantees.
     fn a_handle_with_a_kept_alive_layer(initial: LevelFilter) -> (LoggingHandle, impl Sized) {
+        a_handle_with_floor(initial, LevelFilter::INFO)
+    }
+
+    fn a_handle_with_floor(
+        initial: LevelFilter,
+        floor: LevelFilter,
+    ) -> (LoggingHandle, impl Sized) {
         let (filter, reload_handle) = reload::Layer::new(initial);
         let subscriber = tracing_subscriber::registry().with(filter);
-        (LoggingHandle { reload_handle }, subscriber)
+        (
+            LoggingHandle {
+                reload_handle,
+                floor,
+            },
+            subscriber,
+        )
+    }
+
+    #[test]
+    fn a_trace_floor_keeps_set_debug_false_from_dropping_below_trace() {
+        let (handle, _subscriber) = a_handle_with_floor(LevelFilter::TRACE, LevelFilter::TRACE);
+        handle.set_debug(false);
+        assert_eq!(handle.current_level(), LevelFilter::TRACE);
+        handle.set_debug(true);
+        assert_eq!(handle.current_level(), LevelFilter::TRACE);
+    }
+
+    #[test]
+    fn without_a_trace_floor_set_debug_still_toggles_info_and_debug() {
+        let (handle, _subscriber) = a_handle_with_floor(LevelFilter::INFO, LevelFilter::INFO);
+        handle.set_debug(true);
+        assert_eq!(handle.current_level(), LevelFilter::DEBUG);
+        handle.set_debug(false);
+        assert_eq!(handle.current_level(), LevelFilter::INFO);
     }
 
     #[test]

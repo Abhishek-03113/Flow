@@ -20,6 +20,12 @@ pub async fn request_pairing(
     channel: &mut dyn Channel,
     request: PairingRequest,
 ) -> Result<PairingDecision, ChannelError> {
+    crate::hop_note!(
+        stage = "pair_request_sent",
+        role = "initiator",
+        device = %request.device_name,
+        "sent a pairing request to the peer"
+    );
     channel
         .send(ChannelMessage::Pairing(PairingWireMessage::Request(
             request,
@@ -29,6 +35,12 @@ pub async fn request_pairing(
         if let ChannelMessage::Pairing(PairingWireMessage::Decision(decision)) =
             channel.recv().await?
         {
+            crate::hop_note!(
+                stage = "pair_decision_recv",
+                role = "initiator",
+                decision = ?decision,
+                "peer returned a pairing decision"
+            );
             return Ok(decision);
         }
     }
@@ -44,6 +56,12 @@ pub async fn recv_pairing_request(
         if let ChannelMessage::Pairing(PairingWireMessage::Request(request)) =
             channel.recv().await?
         {
+            crate::hop_note!(
+                stage = "pair_request_recv",
+                role = "responder",
+                device = %request.device_name,
+                "received a pairing request from the peer"
+            );
             return Ok(request);
         }
     }
@@ -54,6 +72,12 @@ pub async fn send_pairing_decision(
     channel: &mut dyn Channel,
     decision: PairingDecision,
 ) -> Result<(), ChannelError> {
+    crate::hop_note!(
+        stage = "pair_decision_sent",
+        role = "responder",
+        decision = ?decision,
+        "sent a pairing decision back to the initiator"
+    );
     channel
         .send(ChannelMessage::Pairing(PairingWireMessage::Decision(
             decision,

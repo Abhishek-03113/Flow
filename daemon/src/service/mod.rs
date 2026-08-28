@@ -460,6 +460,13 @@ impl DaemonService {
         };
 
         self.devices_tx.send_replace(devices);
+        crate::hop_note!(
+            stage = "switch",
+            role = "local",
+            target = %target_id.0,
+            trigger = "ipc",
+            "active device switched — input now flows toward this device"
+        );
         Ok(())
     }
 
@@ -496,6 +503,13 @@ impl DaemonService {
         };
 
         self.devices_tx.send_replace(devices);
+        crate::hop_note!(
+            stage = "switch",
+            role = "local",
+            target = %target_id.0,
+            trigger = "hotkey",
+            "active device switched by the local switch key"
+        );
     }
 
     /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is
@@ -1035,6 +1049,12 @@ impl DaemonService {
         let trust = TrustGate::new(self.storage.clone());
         if trust.is_trusted(&peer_public_key).await {
             let device_id = device_id_from_public_key(&peer_public_key);
+            crate::hop_note!(
+                stage = "peer_accept_trusted",
+                role = "responder",
+                peer = %device_id.0,
+                "inbound peer connection is an already-trusted device; handing off to the pipeline"
+            );
             return Ok(IncomingPeerConnection::TrustedPeer(
                 Box::new(noise_channel),
                 device_id,
@@ -1042,6 +1062,11 @@ impl DaemonService {
             ));
         }
 
+        crate::hop_note!(
+            stage = "peer_accept_pairing",
+            role = "responder",
+            "inbound peer connection is not yet trusted; treating it as a pairing attempt"
+        );
         let mut noise_channel = noise_channel;
         self.accept_pairing_over(&mut noise_channel, peer_public_key, peer_addr)
             .await?;
@@ -1101,6 +1126,12 @@ impl DaemonService {
         // LAN before the user has paired them through the UI.
         let trust = TrustGate::new(self.storage.clone());
         if !trust.has_any_trusted().await {
+            crate::hop!(
+                stage = "dial_skip",
+                role = "initiator",
+                address = ?address,
+                "no paired devices yet; not dialing this discovered peer"
+            );
             return None;
         }
 
@@ -1112,9 +1143,23 @@ impl DaemonService {
         };
         let noise_channel = match tokio::time::timeout(DIAL_TIMEOUT, dial).await {
             Ok(Some(channel)) => channel,
-            Ok(None) => return None,
+            Ok(None) => {
+                crate::hop_note!(
+                    stage = "dial_failed",
+                    role = "initiator",
+                    address = ?address,
+                    "could not connect or complete the Noise handshake with this peer"
+                );
+                return None;
+            }
             Err(_) => {
                 tracing::debug!("dialing {address:?} timed out before the handshake completed");
+                crate::hop_note!(
+                    stage = "dial_timeout",
+                    role = "initiator",
+                    address = ?address,
+                    "dial timed out before the handshake completed"
+                );
                 return None;
             }
         };
@@ -1123,9 +1168,21 @@ impl DaemonService {
         if !trust.is_trusted(&peer_public_key).await {
             let mut noise_channel = noise_channel;
             let _ = noise_channel.close().await;
+            crate::hop_note!(
+                stage = "dial_untrusted",
+                role = "initiator",
+                address = ?address,
+                "dialed peer's proven identity is not in the trust store; dropping"
+            );
             return None;
         }
         let device_id = device_id_from_public_key(&peer_public_key);
+        crate::hop_note!(
+            stage = "dial_trusted",
+            role = "initiator",
+            peer = %device_id.0,
+            "outbound dial reached an already-trusted peer; will run the pipeline"
+        );
         // Inverted relative to the inbound case: `connection_precedence`
         // answers "should the connection *they* opened win," so for one
         // we opened ourselves the verdict flips.
