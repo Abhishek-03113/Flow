@@ -110,6 +110,7 @@ pub async fn handle_connection(
         }
     };
     tracing::debug!("ipc connection established");
+    let _client_guard = service.register_ipc_client();
     let (mut sink, mut source) = ws_stream.split();
 
     let mut devices_rx = service.watch_devices();
@@ -297,6 +298,18 @@ mod tests {
             .await
             .expect("connect with the correct token");
         ws
+    }
+
+    #[tokio::test]
+    async fn a_live_connection_is_counted_and_uncounted_on_drop() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = Arc::new(DaemonService::new_seeded_for_test(storage).await);
+        assert_eq!(service.connected_client_count(), 0);
+        {
+            let _guard = service.register_ipc_client();
+            assert_eq!(service.connected_client_count(), 1);
+        }
+        assert_eq!(service.connected_client_count(), 0);
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@
 //! tests opt into explicitly instead.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
@@ -289,6 +290,10 @@ pub struct DaemonService {
     /// aborts whatever is here; each timer clears its own slot once it
     /// fires so a later cancel never aborts an already-finished task.
     pairing_timer: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Number of IPC clients (Flutter UIs) currently connected. Zero
+    /// means an incoming pairing request has no one to prompt and is
+    /// rejected outright — see `accept_pairing_over`.
+    connected_clients: Arc<AtomicUsize>,
 }
 
 impl DaemonService {
@@ -332,6 +337,22 @@ impl DaemonService {
             settings_tx,
             permission_tx,
             pairing_timer: Arc::new(Mutex::new(None)),
+            connected_clients: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    /// How many IPC clients are connected right now.
+    pub fn connected_client_count(&self) -> usize {
+        self.connected_clients.load(Ordering::Relaxed)
+    }
+
+    /// Registers one live IPC client for the lifetime of the returned
+    /// guard. `ipc::server::handle_connection` holds it for the duration
+    /// of a connection; tests hold it to simulate a connected UI.
+    pub fn register_ipc_client(&self) -> IpcClientGuard {
+        self.connected_clients.fetch_add(1, Ordering::Relaxed);
+        IpcClientGuard {
+            counter: Arc::clone(&self.connected_clients),
         }
     }
 
@@ -1224,6 +1245,17 @@ impl DaemonService {
         }
         self.link_state_tx.send_replace(DaemonLinkState::Connecting);
         Ok(())
+    }
+}
+
+/// Decrements the connected-client count when dropped.
+pub struct IpcClientGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for IpcClientGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
