@@ -23,6 +23,7 @@ use flow_core::pairing::{
     PairingStage,
 };
 use flow_core::permission::PermissionStatus;
+use flow_core::protocol::InputEvent;
 use flow_core::settings::{FlowSettings, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
 use tokio::sync::{oneshot, watch, Mutex, RwLock};
@@ -324,6 +325,16 @@ pub struct DaemonService {
     /// Broadcasts the single in-flight incoming pairing request (or
     /// `None` when nothing is pending) to subscribed UIs.
     incoming_request_tx: watch::Sender<Option<IncomingPairingRequest>>,
+    /// `FLOW_TEST_HOOKS` — enables the `debug_inject_input` IPC command.
+    /// `false` in production; nothing reads [`Self::debug_inject_tx`]
+    /// unless this is set.
+    test_hooks: bool,
+    /// Fan-out of synthetic `InputEvent`s pushed by the
+    /// `debug_inject_input` IPC command (test hooks only). Every live
+    /// peer pipeline subscribes and merges these into its own capture
+    /// stream, so a driver-injected event travels the exact same
+    /// gate → sequence → channel → peer → inject path as a real keypress.
+    debug_inject_tx: tokio::sync::broadcast::Sender<InputEvent>,
 }
 
 impl DaemonService {
@@ -365,6 +376,10 @@ impl DaemonService {
         let (settings_tx, _) = watch::channel(state.settings.clone());
         let (permission_tx, _) = watch::channel(state.permission.clone());
         let (incoming_request_tx, _) = watch::channel(None);
+        // 256 is comfortably above any burst a driver script sends (a
+        // key sequence + a mouse path); a slow pipeline that lags is
+        // told via `RecvError::Lagged` and just skips ahead.
+        let (debug_inject_tx, _) = tokio::sync::broadcast::channel(256);
 
         Self {
             state: Arc::new(RwLock::new(state)),
@@ -379,7 +394,47 @@ impl DaemonService {
             pairing_timer: Arc::new(Mutex::new(None)),
             connected_clients: Arc::new(AtomicUsize::new(0)),
             incoming_request_tx,
+            test_hooks: false,
+            debug_inject_tx,
         }
+    }
+
+    /// Enables the `debug_inject_input` IPC command on this service.
+    /// Consuming builder used by `main.rs` when `FLOW_TEST_HOOKS` is set;
+    /// off for every other construction path.
+    pub fn with_test_hooks(mut self, enabled: bool) -> Self {
+        self.test_hooks = enabled;
+        self
+    }
+
+    /// Whether the `debug_inject_input` IPC command is accepted.
+    pub fn test_hooks_enabled(&self) -> bool {
+        self.test_hooks
+    }
+
+    /// A receiver for synthetic events pushed via [`Self::debug_inject`].
+    /// Each live peer pipeline holds one and merges it into its capture
+    /// stream (test hooks only).
+    pub fn subscribe_debug_injections(&self) -> tokio::sync::broadcast::Receiver<InputEvent> {
+        self.debug_inject_tx.subscribe()
+    }
+
+    /// Pushes one synthetic `InputEvent` into every live peer pipeline's
+    /// capture stream. Returns how many pipelines received it (0 when no
+    /// peer connection is currently streaming — a signal to the driver
+    /// that it needs to switch/connect first). Test hooks only; the
+    /// dispatch layer rejects the command unless
+    /// [`Self::test_hooks_enabled`].
+    pub fn debug_inject(&self, event: InputEvent) -> usize {
+        let receivers = self.debug_inject_tx.send(event.clone()).unwrap_or(0);
+        crate::hop_note!(
+            stage = "debug_inject",
+            role = "owner",
+            kind = crate::pipeline::event_kind(&event),
+            pipelines = receivers,
+            "debug_inject_input pushed a synthetic event into {receivers} live pipeline(s)"
+        );
+        receivers
     }
 
     /// How many IPC clients are connected right now.

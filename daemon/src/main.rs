@@ -59,7 +59,14 @@ async fn main() {
         Ok(storage) => storage,
         Err(err) => fatal(&format!("failed to open the flow-daemon database: {err}")),
     };
-    let service = Arc::new(daemon_service(storage.clone(), &dev).await);
+    let service = Arc::new(
+        daemon_service(storage.clone(), &dev)
+            .await
+            .with_test_hooks(dev.test_hooks),
+    );
+    if dev.test_hooks {
+        tracing::warn!("FLOW_TEST_HOOKS is set — the debug_inject_input IPC command is enabled");
+    }
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
     let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
@@ -417,6 +424,7 @@ async fn run_peer_pipeline(
 
     let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
     let bridge_device_id = device_id.clone();
+    let capture_bridge_tx = bridge_tx.clone();
     std::thread::spawn(move || {
         for event in capture_rx {
             flow_daemon::hop!(
@@ -426,11 +434,45 @@ async fn run_peer_pipeline(
                 kind = pipeline::event_kind(&event),
                 "raw event captured from the OS"
             );
-            if bridge_tx.send(event).is_err() {
+            if capture_bridge_tx.send(event).is_err() {
                 break;
             }
         }
     });
+
+    // Synthetic events from the `debug_inject_input` IPC command
+    // (`FLOW_TEST_HOOKS`) join the very same capture stream, so a
+    // driver-injected keypress is gated, sequenced, framed, sent and
+    // injected identically to a real one. The broadcast receiver stays
+    // empty and this task idle when test hooks are off.
+    let debug_bridge_tx = bridge_tx.clone();
+    let debug_device_id = device_id.clone();
+    let mut debug_rx = service.subscribe_debug_injections();
+    tokio::spawn(async move {
+        loop {
+            match debug_rx.recv().await {
+                Ok(event) => {
+                    flow_daemon::hop!(
+                        stage = "debug_inject_in",
+                        role = "owner",
+                        peer = %debug_device_id.0,
+                        kind = pipeline::event_kind(&event),
+                        "synthetic test event entered this pipeline's capture stream"
+                    );
+                    if debug_bridge_tx.send(event).is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("debug injection lagged, dropped {n} synthetic events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    // Drop the original so `bridge_rx` closes once both forwarders are
+    // gone (capture thread ends, debug task ends).
+    drop(bridge_tx);
 
     // The real injector (e.g. `MacosInputInjector`, wrapping a
     // `CGEventSource`) can be platform-thread-affine — its Core
