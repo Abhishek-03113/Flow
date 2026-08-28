@@ -220,6 +220,19 @@ class _OnboardingFlowState extends ConsumerState<OnboardingFlow> {
                           onPair: (id) => ref
                               .read(daemonRepositoryProvider)
                               .pairWithCandidate(id),
+                          onSkip: () {
+                            // Leave the daemon's pairing session as we
+                            // found it, then move on — pairing is always
+                            // reachable later from the dashboard.
+                            if (session.stage != PairingStage.idle) {
+                              unawaited(
+                                ref
+                                    .read(daemonRepositoryProvider)
+                                    .cancelPairing(),
+                              );
+                            }
+                            _goTo(3);
+                          },
                         ),
                         _ => DoneStep(
                           palette: c,

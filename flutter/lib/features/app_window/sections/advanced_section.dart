@@ -36,12 +36,14 @@ class AdvancedSection extends ConsumerWidget {
           ).copyWith(fontSize: 15),
         ),
         const SizedBox(height: 8),
-        // Static copy — the daemon doesn't report real switch-time/drop
-        // metrics yet (docs/contracts/README.md, "out of scope for 0.1.0").
+        // The daemon doesn't report real switch-time / dropped-input
+        // metrics yet (docs/contracts/README.md, "out of scope for
+        // 0.1.0"), so this states that plainly rather than showing an
+        // invented number.
         SettingRow(
           palette: c,
           label: 'Diagnostics',
-          description: 'Average switch time 8 ms · no dropped input today',
+          description: 'Switch-timing metrics aren\'t collected yet.',
           trailing: const SizedBox.shrink(),
         ),
         SettingRow(

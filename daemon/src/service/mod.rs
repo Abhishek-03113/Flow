@@ -136,10 +136,7 @@ impl ServiceState {
             link_state: DaemonLinkState::Disconnected,
             pairing_session: PairingSession::idle(),
             settings,
-            permission: PermissionStatus {
-                name: "Accessibility access".to_string(),
-                granted: false,
-            },
+            permission: default_permission(),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
         }
@@ -458,12 +455,13 @@ impl DaemonService {
         }
 
         let target_id = DeviceId(device_id.to_string());
-        let devices = {
+        let (devices, no_paired_devices_left) = {
             let mut state = self.state.write().await;
             if state.devices.remove(&target_id).is_none() {
                 return Err(FlowError::DeviceNotFound(target_id));
             }
-            devices_list(&state)
+            let none_left = !state.devices.keys().any(|id| id.0 != LOCAL_DEVICE_ID);
+            (devices_list(&state), none_left)
         };
 
         // Removal is durable: a removed device must not reappear from a
@@ -473,6 +471,19 @@ impl DaemonService {
             .await;
 
         self.devices_tx.send_replace(devices);
+
+        // Removing the last paired device means there is nothing left for
+        // the link to legitimately be `Connected` to. `main.rs`'s peer
+        // pipeline sets `Connected` and only clears it when its channel
+        // actually breaks, which a removal doesn't trigger on its own —
+        // so the UI would keep showing "Connected" to a device the user
+        // just removed. Reflect reality here instead.
+        if no_paired_devices_left
+            && !matches!(*self.link_state_tx.borrow(), DaemonLinkState::Disconnected)
+        {
+            self.set_link_state(DaemonLinkState::Disconnected);
+        }
+
         Ok(())
     }
 
@@ -1238,6 +1249,33 @@ fn current_host_os() -> HostOs {
         "macos" => HostOs::Macos,
         "windows" => HostOs::Windows,
         _ => HostOs::Linux,
+    }
+}
+
+/// The OS input-capture permission this daemon starts with, per platform.
+///
+/// Only macOS gates low-level input capture behind a user-granted
+/// permission (Accessibility), and only there can the daemon meaningfully
+/// ask for it — so macOS starts `granted: false` and the UI's "Allow"
+/// flow is real. Windows (`WH_KEYBOARD_LL`/`SendInput`) and Linux
+/// (evdev/uinput, gated by install-time group membership the running
+/// process can't change) need nothing the UI could grant at runtime, so
+/// they start `granted: true` with an accurate name rather than showing
+/// the user a permission prompt that does nothing.
+fn default_permission() -> PermissionStatus {
+    match current_host_os() {
+        HostOs::Macos => PermissionStatus {
+            name: "Accessibility access".to_string(),
+            granted: false,
+        },
+        HostOs::Windows => PermissionStatus {
+            name: "Input monitoring".to_string(),
+            granted: true,
+        },
+        HostOs::Linux => PermissionStatus {
+            name: "Input device access".to_string(),
+            granted: true,
+        },
     }
 }
 

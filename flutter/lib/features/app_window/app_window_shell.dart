@@ -138,9 +138,10 @@ class _StandaloneTitleHeader extends StatelessWidget {
       ),
       child: Text(
         title,
-        style: FlowType.body(c.text1, weight: FontWeight.w700).copyWith(
-          fontSize: 15,
-        ),
+        style: FlowType.body(
+          c.text1,
+          weight: FontWeight.w700,
+        ).copyWith(fontSize: 15),
       ),
     );
   }

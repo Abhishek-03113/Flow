@@ -27,11 +27,16 @@ class TrayPopover extends ConsumerStatefulWidget {
     required this.platform,
     this.onOpenDashboard,
     this.onOpenSettings,
+    this.onQuit,
   });
 
   final HostOs platform;
   final VoidCallback? onOpenDashboard;
   final VoidCallback? onOpenSettings;
+
+  /// Invoked by the "Quit Cross Device" row. `null` disables the row
+  /// (e.g. the dev harness, which has no real app lifecycle to end).
+  final VoidCallback? onQuit;
 
   @override
   ConsumerState<TrayPopover> createState() => _TrayPopoverState();
@@ -114,6 +119,7 @@ class _TrayPopoverState extends ConsumerState<TrayPopover> {
                     ref.read(daemonRepositoryProvider).startPairing(),
                 onOpenDashboard: widget.onOpenDashboard,
                 onOpenSettings: widget.onOpenSettings,
+                onQuit: widget.onQuit,
               )
             : TrayPairingView(
                 session: pairing,
@@ -135,7 +141,13 @@ class _LinkMeta {
   final String? action;
 }
 
-_LinkMeta _linkMeta(DaemonLinkState state, FlowPalette c) {
+/// [peerName] is the paired device this link is to, when exactly one is
+/// known — the banners name it instead of a hardcoded placeholder. With
+/// zero or several paired devices it falls back to "the other device".
+_LinkMeta _linkMeta(DaemonLinkState state, FlowPalette c, String? peerName) {
+  final peer = (peerName == null || peerName.isEmpty)
+      ? 'the other device'
+      : peerName;
   return switch (state) {
     DaemonLinkState.connected => _LinkMeta(
       'Connected',
@@ -155,21 +167,21 @@ _LinkMeta _linkMeta(DaemonLinkState state, FlowPalette c) {
       'Reconnecting…',
       c.statusPending,
       true,
-      'Work Laptop dropped out. Trying again.',
+      '$peer dropped out. Trying again.',
       'Cancel',
     ),
     DaemonLinkState.disconnected => _LinkMeta(
       'Disconnected',
       c.statusOffline,
       false,
-      'Work Laptop is unavailable.',
+      '$peer is unavailable.',
       'Retry',
     ),
     DaemonLinkState.error => _LinkMeta(
       'Connection lost',
       c.statusError,
       false,
-      'Input sharing paused until Work Laptop is back.',
+      'Input sharing paused until $peer is back.',
       'Retry',
     ),
     DaemonLinkState.permissionRequired => _LinkMeta(
@@ -194,6 +206,7 @@ class _MainMenu extends StatelessWidget {
     required this.onStartPairing,
     required this.onOpenDashboard,
     required this.onOpenSettings,
+    required this.onQuit,
   });
 
   final FlowPalette palette;
@@ -206,15 +219,20 @@ class _MainMenu extends StatelessWidget {
   final VoidCallback onStartPairing;
   final VoidCallback? onOpenDashboard;
   final VoidCallback? onOpenSettings;
+  final VoidCallback? onQuit;
 
   @override
   Widget build(BuildContext context) {
     final c = palette;
-    final meta = _linkMeta(linkState, c);
     final active =
         devices.where((d) => d.state == DeviceState.active).firstOrNull ??
         devices.firstOrNull;
     final others = devices.where((d) => d.id != active?.id).toList();
+    final meta = _linkMeta(
+      linkState,
+      c,
+      others.length == 1 ? others.single.name : null,
+    );
 
     return Padding(
       padding: const EdgeInsets.only(bottom: 9),
@@ -377,7 +395,12 @@ class _MainMenu extends StatelessWidget {
             trailing: '↗',
             onTap: onOpenSettings,
           ),
-          _MenuRow(palette: c, label: 'Quit Cross Device', muted: true),
+          _MenuRow(
+            palette: c,
+            label: 'Quit Cross Device',
+            muted: true,
+            onTap: onQuit,
+          ),
         ],
       ),
     );
