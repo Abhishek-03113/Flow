@@ -2,7 +2,7 @@
 //! the real `flow-daemon` service and WebSocket listener, spawned
 //! in-process (not a subprocess), driven by a raw `tokio-tungstenite`
 //! client asserting the exact JSON shape of a full session — connect,
-//! the 6 initial events, one of each of the 9 commands, and at least 2
+//! the 6 initial events, one of each of the 11 commands, and at least 2
 //! error-code paths. The Rust-side equivalent of what track D proves
 //! from the Dart side against a real daemon.
 

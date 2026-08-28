@@ -163,6 +163,12 @@ class _RealAppState extends ConsumerState<_RealApp>
   /// things that write it.
   AppSection _pendingSection = AppSection.dashboard;
 
+  /// Bumped every time a tray action targets a section, so the shell
+  /// remounts even when [_pendingSection] is unchanged — e.g. tray→Settings
+  /// while the user has already navigated in-app away from General. Folded
+  /// into [AppWindowShell]'s [ValueKey] alongside [_pendingSection].
+  int _sectionEpoch = 0;
+
   /// Live subscriptions that keep the native tray menu in step with
   /// daemon state — the menu lists switchable devices and the link
   /// status, both of which change without any `build` of this widget.
@@ -294,10 +300,16 @@ class _RealAppState extends ConsumerState<_RealApp>
           ref.read(toastProvider.notifier).show(e.message);
         }
       case ShowWindowEffect(:final section):
-        setState(() => _pendingSection = section);
+        setState(() {
+          _pendingSection = section;
+          _sectionEpoch++;
+        });
         await showMainWindow();
       case StartPairingThenShowEffect(:final section):
-        setState(() => _pendingSection = section);
+        setState(() {
+          _pendingSection = section;
+          _sectionEpoch++;
+        });
         try {
           await repo.startPairing();
         } on DaemonCommandException {
@@ -397,7 +409,7 @@ class _RealAppState extends ConsumerState<_RealApp>
       error: (_, _) => onboarding(),
       data: (complete) => complete
           ? AppWindowShell(
-              key: ValueKey(_pendingSection),
+              key: ValueKey((_pendingSection, _sectionEpoch)),
               platform: platform,
               standalone: true,
               initialSection: _pendingSection,

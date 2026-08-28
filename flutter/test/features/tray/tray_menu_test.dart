@@ -62,6 +62,47 @@ void main() {
     expect(entries.first.label, 'Flow — Connecting…');
   });
 
+  test('non-local error-state device: disabled "— unavailable" row', () {
+    final entries = buildTrayMenu(
+      link: DaemonLinkState.connected,
+      localDeviceId: 'd1',
+      devices: [_dev('d2', 'Work Laptop', DeviceState.error)],
+    );
+    final row = entries.firstWhere(
+      (e) => e.label == 'Work Laptop — unavailable',
+    );
+    expect(row.enabled, isFalse);
+    expect(row.action, isNull);
+    expect(
+      entries.any((e) => e.label == 'Work Laptop — disconnected'),
+      isFalse,
+    );
+  });
+
+  test('non-local pairing-state device: disabled "— pairing…" row', () {
+    final entries = buildTrayMenu(
+      link: DaemonLinkState.connected,
+      localDeviceId: 'd1',
+      devices: [_dev('d2', 'Work Laptop', DeviceState.pairing)],
+    );
+    final row = entries.firstWhere((e) => e.label == 'Work Laptop — pairing…');
+    expect(row.enabled, isFalse);
+    expect(row.action, isNull);
+  });
+
+  test('remote active over local: "Using:" row shows the remote device', () {
+    final entries = buildTrayMenu(
+      link: DaemonLinkState.connected,
+      localDeviceId: 'd1',
+      devices: [
+        _dev('d1', 'MacBook', DeviceState.inactive),
+        _dev('d2', 'Work Laptop', DeviceState.active),
+      ],
+    );
+    expect(entries.any((e) => e.label == 'Using: Work Laptop (macOS)'), isTrue);
+    expect(entries.any((e) => e.label.startsWith('Using: MacBook')), isFalse);
+  });
+
   test('permissionRequired status label', () {
     final entries = buildTrayMenu(
       link: DaemonLinkState.permissionRequired,

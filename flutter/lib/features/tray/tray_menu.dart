@@ -127,10 +127,15 @@ List<TrayMenuEntry> buildTrayMenu({
           action: TrayAction.switchDevice(d.id),
         ),
       );
-    } else if (d.state == DeviceState.disconnected ||
-        d.state == DeviceState.error) {
+    } else if (d.state == DeviceState.pairing) {
+      entries.add(TrayMenuEntry(label: '${d.name} — pairing…', enabled: false));
+    } else if (d.state == DeviceState.disconnected) {
       entries.add(
         TrayMenuEntry(label: '${d.name} — disconnected', enabled: false),
+      );
+    } else if (d.state == DeviceState.error) {
+      entries.add(
+        TrayMenuEntry(label: '${d.name} — unavailable', enabled: false),
       );
     }
   }

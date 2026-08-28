@@ -80,6 +80,10 @@ class IpcDaemonRepository implements DaemonRepository {
   final _pairingSession = ReplayChannel<PairingSession>();
   final _settings = ReplayChannel<FlowSettings>();
   final _permission = ReplayChannel<PermissionStatus>();
+  // Intentionally asymmetric with the channels above: its steady state is
+  // `null`, so `hasValue` stays false and `_failChannelsAwaitingFirstValue`
+  // surfaces a transport error on it on every drop — which is what we want
+  // here (daemon gone ⇒ can't answer ⇒ the prompt is moot anyway).
   final _incomingRequest = ReplayChannel<IncomingPairingRequest?>();
 
   int _nextRequestId = 0;
