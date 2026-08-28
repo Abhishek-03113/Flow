@@ -25,7 +25,8 @@ import 'package:flutter_test/flutter_test.dart';
 /// guarantees the fresh database too, without touching your real one):
 ///
 /// ```sh
-/// # terminal 1, from the repo root
+/// # terminal 1, from the repo root (on Windows set USERPROFILE instead
+/// # of HOME — that's the variable the daemon resolves ~/.flow from there)
 /// HOME=$(mktemp -d) FLOW_DAEMON_SEED_MOCK_PARITY=1 cargo run -p flow-daemon
 ///
 /// # terminal 2

@@ -34,6 +34,27 @@ cargo run -p flow-daemon
 
 This binds a WebSocket listener on `127.0.0.1:47823` (`docs/contracts/daemon-ipc.md`'s local IPC contract) and stays running, serving commands and pushing state events, until interrupted (Ctrl-C).
 
+A startup failure that can't be recovered from — the IPC port already in use, an unwritable data directory — now exits non-zero with a one-line `flow-daemon: ...` message on stderr instead of a panic backtrace.
+
+### Running a second instance on one machine
+
+For local two-daemon testing (discovery + pairing without a second physical computer), four environment variables relocate everything the two instances would otherwise contend for:
+
+```sh
+FLOW_DEVICE_NAME="Flow-B" \
+FLOW_DATA_DIR=/tmp/flow-b \
+FLOW_IPC_PORT=47833 \
+FLOW_IPC_TOKEN_PATH=/tmp/flow-b/ipc.token \
+cargo run -p flow-daemon
+```
+
+- `FLOW_IPC_PORT` — the `127.0.0.1` IPC listener port (default `47823`). The Flutter client must be pointed at the same value with `--dart-define=FLOW_IPC_PORT`.
+- `FLOW_DATA_DIR` — the directory holding `flow.db` (and with it this instance's own persisted ed25519 identity). Default: the platform data dir.
+- `FLOW_IPC_TOKEN_PATH` — the IPC auth token file (default `~/.flow/ipc.token`). Pass the same path to the Flutter client with `--dart-define=FLOW_IPC_TOKEN_PATH`.
+- `FLOW_DEVICE_NAME` — overrides the local device's display name (default: the machine hostname), so two instances on one box aren't both called the same thing in the UI.
+
+The UDP discovery port (`47824`) is deliberately *not* overridable — both instances bind it with `SO_REUSEADDR` so they still hear each other's broadcast announces. None of these variables have any effect on a normal single-instance deployment when left unset.
+
 ## Testing and linting
 
 The default (no extra features, native target) sweep — this is the bar every commit in this repo is expected to clear, and what `daemon/todos.json` J1 formalizes:

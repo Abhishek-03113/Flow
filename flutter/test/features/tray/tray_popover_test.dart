@@ -95,12 +95,16 @@ void main() {
     expect(gesture.onTap, isNull);
   });
 
+  // The mock seeds two non-active devices, so the banner can't name a
+  // single peer and falls back to "the other device" (see
+  // `_linkMeta`'s `peerName` handling in tray_popover.dart).
   for (final entry in {
     DaemonLinkState.connected: null,
     DaemonLinkState.connecting: null,
-    DaemonLinkState.reconnecting: 'Work Laptop dropped out. Trying again.',
-    DaemonLinkState.disconnected: 'Work Laptop is unavailable.',
-    DaemonLinkState.error: 'Input sharing paused until Work Laptop is back.',
+    DaemonLinkState.reconnecting: 'the other device dropped out. Trying again.',
+    DaemonLinkState.disconnected: 'the other device is unavailable.',
+    DaemonLinkState.error:
+        'Input sharing paused until the other device is back.',
     DaemonLinkState.permissionRequired:
         'Allow input access to share your keyboard.',
   }.entries) {

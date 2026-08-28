@@ -34,12 +34,35 @@ use std::os::unix::fs::PermissionsExt;
 /// different language (Flutter's `ipc_daemon_repository.dart`) to
 /// compute identically, without reimplementing `ProjectDirs`' per-OS
 /// layout rules just to find one file.
+///
+/// `FLOW_IPC_TOKEN_PATH` overrides the location outright — needed to run
+/// a second `flow-daemon` instance on one machine (paired with
+/// `FLOW_IPC_PORT` and `FLOW_DATA_DIR`) so the two instances don't share
+/// a single token file. The matching Flutter client reads the same env
+/// var (`--dart-define=FLOW_IPC_TOKEN_PATH`).
 pub fn token_path() -> PathBuf {
-    let home = directories::BaseDirs::new()
+    if let Some(path) = std::env::var_os("FLOW_IPC_TOKEN_PATH") {
+        return PathBuf::from(path);
+    }
+    home_dir()
         .expect("could not determine the current user's home directory")
-        .home_dir()
-        .to_path_buf();
-    home.join(".flow").join("ipc.token")
+        .join(".flow")
+        .join("ipc.token")
+}
+
+/// The current user's home directory, resolved the same way the Flutter
+/// client's `ipc_auth.dart` resolves it — straight from `USERPROFILE`
+/// (Windows) / `HOME` (elsewhere) — so both sides independently compute
+/// the identical `~/.flow/ipc.token` path. Falls back to the platform
+/// API (`directories`) only if that variable is somehow unset, which is
+/// also what keeps this working when the daemon is launched by a service
+/// manager with a minimal environment.
+fn home_dir() -> Option<PathBuf> {
+    let primary = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    if let Some(dir) = std::env::var_os(primary).filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf())
 }
 
 /// Loads the persisted token, generating and persisting a new
@@ -96,24 +119,29 @@ fn write_token_file(path: &PathBuf, token: &str) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    /// Every test in this module mutates process-global environment
+    /// variables (`HOME`/`USERPROFILE`/`FLOW_IPC_TOKEN_PATH`), so they
+    /// must not run concurrently with each other — `cargo test`
+    /// parallelizes by default. One module-wide lock, held for the whole
+    /// body of each test, serializes them.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Points `HOME` (and `USERPROFILE`, for a Windows-hosted CI run
     /// executing this same test file) at a fresh temp dir for the
-    /// duration of one test — `directories::BaseDirs` reads the home
-    /// directory from the environment, not a mockable parameter, so
-    /// isolating tests from a developer's real `~/.flow` means
-    /// overriding it here rather than accepting `token_path()`'s
-    /// default. Serialized via a shared mutex since env vars are
-    /// process-global and `cargo test` runs this file's tests
-    /// concurrently by default.
+    /// duration of one test, and clears `FLOW_IPC_TOKEN_PATH` so a value
+    /// leaked from another test can't redirect `token_path()`. Isolating
+    /// tests from a developer's real `~/.flow` means overriding the
+    /// environment here rather than accepting `token_path()`'s default.
     fn with_isolated_home<T>(f: impl FnOnce() -> T) -> T {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
         let dir = tempfile_dir();
         let previous_home = std::env::var_os("HOME");
         let previous_userprofile = std::env::var_os("USERPROFILE");
+        let previous_token_path = std::env::var_os("FLOW_IPC_TOKEN_PATH");
         std::env::set_var("HOME", &dir);
         std::env::set_var("USERPROFILE", &dir);
+        std::env::remove_var("FLOW_IPC_TOKEN_PATH");
 
         let result = f();
 
@@ -124,6 +152,9 @@ mod tests {
         match previous_userprofile {
             Some(value) => std::env::set_var("USERPROFILE", value),
             None => std::env::remove_var("USERPROFILE"),
+        }
+        if let Some(value) = previous_token_path {
+            std::env::set_var("FLOW_IPC_TOKEN_PATH", value);
         }
         let _ = fs::remove_dir_all(&dir);
         result
@@ -174,5 +205,29 @@ mod tests {
                 .mode();
             assert_eq!(mode & 0o777, 0o600);
         });
+    }
+
+    /// `FLOW_IPC_TOKEN_PATH` relocates the token file wholesale — the
+    /// mechanism that lets a second local `flow-daemon` instance keep its
+    /// own token instead of clobbering the default instance's.
+    #[test]
+    fn flow_ipc_token_path_overrides_the_default_location() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let dir = tempfile_dir();
+        let custom = dir.join("nested").join("ipc.token");
+        let previous = std::env::var_os("FLOW_IPC_TOKEN_PATH");
+        std::env::set_var("FLOW_IPC_TOKEN_PATH", &custom);
+
+        assert_eq!(token_path(), custom);
+        let token = load_or_generate_token();
+        assert!(custom.exists(), "token written to the overridden path");
+        assert_eq!(fs::read_to_string(&custom).unwrap().trim(), token);
+
+        match previous {
+            Some(value) => std::env::set_var("FLOW_IPC_TOKEN_PATH", value),
+            None => std::env::remove_var("FLOW_IPC_TOKEN_PATH"),
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

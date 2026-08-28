@@ -136,10 +136,7 @@ impl ServiceState {
             link_state: DaemonLinkState::Disconnected,
             pairing_session: PairingSession::idle(),
             settings,
-            permission: PermissionStatus {
-                name: "Accessibility access".to_string(),
-                granted: false,
-            },
+            permission: default_permission(),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
         }
@@ -458,12 +455,13 @@ impl DaemonService {
         }
 
         let target_id = DeviceId(device_id.to_string());
-        let devices = {
+        let (devices, no_paired_devices_left) = {
             let mut state = self.state.write().await;
             if state.devices.remove(&target_id).is_none() {
                 return Err(FlowError::DeviceNotFound(target_id));
             }
-            devices_list(&state)
+            let none_left = !state.devices.keys().any(|id| id.0 != LOCAL_DEVICE_ID);
+            (devices_list(&state), none_left)
         };
 
         // Removal is durable: a removed device must not reappear from a
@@ -473,6 +471,19 @@ impl DaemonService {
             .await;
 
         self.devices_tx.send_replace(devices);
+
+        // Removing the last paired device means there is nothing left for
+        // the link to legitimately be `Connected` to. `main.rs`'s peer
+        // pipeline sets `Connected` and only clears it when its channel
+        // actually breaks, which a removal doesn't trigger on its own —
+        // so the UI would keep showing "Connected" to a device the user
+        // just removed. Reflect reality here instead.
+        if no_paired_devices_left
+            && !matches!(*self.link_state_tx.borrow(), DaemonLinkState::Disconnected)
+        {
+            self.set_link_state(DaemonLinkState::Disconnected);
+        }
+
         Ok(())
     }
 
@@ -861,8 +872,14 @@ impl DaemonService {
         // exactly the unattended case this gate exists to refuse.
         let window_open = self.is_pairing_window_open().await;
         if !window_open {
-            tracing::warn!(
-                "refused an incoming pairing request: no pairing session is open on this device"
+            // Routine, not a fault: a peer that has this device paired
+            // (or a user mid-pair on the other side whose window opened
+            // before ours) probes the peer listener and is turned away
+            // because nobody here is currently pairing. The initiating
+            // side gets a real failure surfaced in its UI; this side has
+            // nothing to warn about.
+            tracing::debug!(
+                "declined an incoming pairing request: no pairing session is open on this device"
             );
         }
         let (request, decision) = handshake::respond_to_pairing(channel, |_request| {
@@ -979,6 +996,17 @@ impl DaemonService {
         &self,
         address: ChannelAddress,
     ) -> Option<(Box<dyn Channel>, DeviceId, ConnectionPrecedence)> {
+        // A daemon that has never paired with anything has nothing to
+        // reconnect to — skip the whole dial (a TCP connect plus a full
+        // Noise handshake, repeated for every discovered peer on every
+        // announce tick) rather than run it only to fail the trust check
+        // at the end. This is the common case for two fresh daemons on a
+        // LAN before the user has paired them through the UI.
+        let trust = TrustGate::new(self.storage.clone());
+        if !trust.has_any_trusted().await {
+            return None;
+        }
+
         let dial = async {
             let channel = negotiate::connect_best_available(std::slice::from_ref(&address))
                 .await
@@ -995,7 +1023,6 @@ impl DaemonService {
         };
         let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
 
-        let trust = TrustGate::new(self.storage.clone());
         if !trust.is_trusted(&peer_public_key).await {
             let mut noise_channel = noise_channel;
             let _ = noise_channel.close().await;
@@ -1225,10 +1252,50 @@ fn current_host_os() -> HostOs {
     }
 }
 
+/// The OS input-capture permission this daemon starts with, per platform.
+///
+/// Only macOS gates low-level input capture behind a user-granted
+/// permission (Accessibility), and only there can the daemon meaningfully
+/// ask for it — so macOS starts `granted: false` and the UI's "Allow"
+/// flow is real. Windows (`WH_KEYBOARD_LL`/`SendInput`) and Linux
+/// (evdev/uinput, gated by install-time group membership the running
+/// process can't change) need nothing the UI could grant at runtime, so
+/// they start `granted: true` with an accurate name rather than showing
+/// the user a permission prompt that does nothing.
+fn default_permission() -> PermissionStatus {
+    match current_host_os() {
+        HostOs::Macos => PermissionStatus {
+            name: "Accessibility access".to_string(),
+            granted: false,
+        },
+        HostOs::Windows => PermissionStatus {
+            name: "Input monitoring".to_string(),
+            granted: true,
+        },
+        HostOs::Linux => PermissionStatus {
+            name: "Input device access".to_string(),
+            granted: true,
+        },
+    }
+}
+
 /// This machine's real hostname, for the local device's display name —
 /// falls back to a generic label if the OS ever refuses to report one
 /// (rare, and not worth failing daemon startup over a display string).
+///
+/// `FLOW_DEVICE_NAME` overrides it outright. Its only intended use is
+/// running two `flow-daemon` instances on one physical machine for local
+/// pairing tests, where both would otherwise report the identical
+/// hostname and be impossible to tell apart in the UI.
 fn local_hostname() -> String {
+    if let Some(name) = std::env::var_os("FLOW_DEVICE_NAME") {
+        if let Ok(name) = name.into_string() {
+            let trimmed = name.trim();
+            if !trimmed.is_empty() {
+                return trimmed.to_string();
+            }
+        }
+    }
     hostname::get()
         .ok()
         .and_then(|name| name.into_string().ok())
@@ -1557,6 +1624,61 @@ mod tests {
                 .contains_key(&DeviceId("pk:removable-peer".to_string())),
             "a removed device must never reappear on restart, real or not"
         );
+    }
+
+    #[tokio::test]
+    async fn removing_the_last_paired_device_drops_link_state_to_disconnected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        DeviceRepo::new(storage.clone())
+            .upsert(DeviceRecord {
+                device: Device {
+                    id: DeviceId("pk:only-peer".to_string()),
+                    name: "Only Peer".to_string(),
+                    os: HostOs::Linux,
+                    state: DeviceState::Connected,
+                    last_seen: Utc::now(),
+                },
+                public_key: Some(vec![7; 32]),
+                removable: true,
+            })
+            .await;
+        let service = DaemonService::new(storage).await;
+        // Simulate the peer pipeline having marked the link healthy.
+        service.set_link_state(DaemonLinkState::Connected);
+
+        service
+            .remove_device("pk:only-peer")
+            .await
+            .expect("remove the only paired peer");
+
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Disconnected,
+            "removing the last paired device must stop the UI showing a live link to it"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_state_permission_matches_this_platform() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let permission = service.watch_permission().borrow().clone();
+
+        // macOS is the only platform whose input capture the UI can
+        // actually gate on a user grant; Windows/Linux need nothing the
+        // app can do, so they must not start out asking.
+        match current_host_os() {
+            HostOs::Macos => {
+                assert!(!permission.granted);
+                assert_eq!(permission.name, "Accessibility access");
+            }
+            HostOs::Windows | HostOs::Linux => {
+                assert!(
+                    permission.granted,
+                    "non-macOS platforms must not present an unsatisfiable permission prompt"
+                );
+            }
+        }
     }
 
     /// The guard the task explicitly asked for: this must fail if

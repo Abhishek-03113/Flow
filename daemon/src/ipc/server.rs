@@ -248,7 +248,6 @@ async fn send_response(sink: &mut WsSink, response: &IpcResponse) -> Result<(), 
 
 #[cfg(test)]
 mod tests {
-    use futures_util::StreamExt as _;
     use serde_json::json;
     use tokio::net::TcpListener;
 

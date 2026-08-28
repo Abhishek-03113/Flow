@@ -15,11 +15,17 @@ class PairStep extends StatelessWidget {
     required this.palette,
     required this.session,
     required this.onPair,
+    required this.onSkip,
   });
 
   final FlowPalette palette;
   final PairingSession session;
   final ValueChanged<String> onPair;
+
+  /// Leaves onboarding without pairing now — pairing is always available
+  /// later from the dashboard, and a user with only one machine set up so
+  /// far must not be trapped on this step.
+  final VoidCallback onSkip;
 
   @override
   Widget build(BuildContext context) {
@@ -64,6 +70,21 @@ class PairStep extends StatelessWidget {
             text: 'Searching…',
           ),
         },
+        const SizedBox(height: 10),
+        Text(
+          'Keep Cross Device open on your other computer and press '
+          '"Pair a device" there too.',
+          style: FlowType.meta(c.text3).copyWith(height: 1.4),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 6),
+        FlowButton(
+          label: 'Set up later',
+          kind: FlowButtonKind.ghost,
+          background: c.mat1,
+          foreground: c.text2,
+          onPressed: onSkip,
+        ),
       ],
     );
   }

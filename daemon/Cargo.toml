@@ -28,6 +28,7 @@ ed25519-dalek = "3.0.0"
 snow = "0.10.0"
 if-addrs = "0.13"
 hostname = "0.4"
+socket2 = { version = "0.6", features = ["all"] }
 
 # bluer (BlueZ D-Bus bindings) is Linux-only and needs bluetoothd/a real
 # adapter to do anything at runtime; gated behind the "bluetooth" feature

@@ -173,6 +173,16 @@ void main() {
       environment: {
         ...Platform.environment,
         'HOME': homeDir.path,
+        'USERPROFILE': homeDir.path,
+        // Pin the daemon's database and token file into the scratch dir
+        // explicitly, rather than relying on HOME/USERPROFILE redirection
+        // alone: on Windows the `directories` crate resolves the platform
+        // data dir from the OS, not the environment, so a redirected
+        // home doesn't move the database there. These are the same
+        // env overrides `daemon/README.md` documents for running a
+        // second instance.
+        'FLOW_DATA_DIR': '${homeDir.path}/data',
+        'FLOW_IPC_TOKEN_PATH': '${homeDir.path}/.flow/ipc.token',
         'XDG_DATA_HOME': '${homeDir.path}/.local/share',
         'XDG_CONFIG_HOME': '${homeDir.path}/.config',
         'XDG_CACHE_HOME': '${homeDir.path}/.cache',
