@@ -34,25 +34,26 @@
     {
       "id": "B",
       "title": "Fix broken / misleading UI",
-      "status": "pending",
+      "status": "done",
+      "note": "Full live audit done on Windows against a real daemon (screenshots in scratchpad). Every shipped-app control verified firing a real daemon command and reflecting the result.",
       "tasks": [
-        { "id": "B1", "title": "Wire 'Quit Cross Device' tray-popover row to a real quit path", "status": "pending", "note": "" },
-        { "id": "B2", "title": "Replace hardcoded 'Work Laptop' link-state banner text with real state / generic copy", "status": "pending", "note": "" },
-        { "id": "B3", "title": "Make 'Diagnostics' row honest (no invented 8ms stat) or remove it", "status": "pending", "note": "" },
-        { "id": "B4", "title": "Audit every button in Dashboard/General/Devices/Input/Advanced sections — each fires a real command and reflects result", "status": "pending", "note": "" },
-        { "id": "B5", "title": "Audit onboarding steps (welcome/permission/pair/done) buttons", "status": "pending", "note": "" },
-        { "id": "B6", "title": "Decide + handle the reconnecting-state 'Cancel' no-op", "status": "pending", "note": "" }
+        { "id": "B1", "title": "Wire 'Quit Cross Device' tray-popover row to a real quit path", "status": "done", "note": "TrayPopover gained an onQuit callback; the row calls it (null disables the row, e.g. dev harness). The shipped tray uses the native context menu's 'Quit Flow' as the primary quit path." },
+        { "id": "B2", "title": "Replace hardcoded 'Work Laptop' link-state banner text with real state / generic copy", "status": "done", "note": "_linkMeta takes peerName: names the single paired peer when there's exactly one, else 'the other device'. Tests updated." },
+        { "id": "B3", "title": "Make 'Diagnostics' row honest (no invented 8ms stat) or remove it", "status": "done", "note": "Now reads 'Switch-timing metrics aren't collected yet.'" },
+        { "id": "B4", "title": "Audit every button in Dashboard/General/Devices/Input/Advanced sections — each fires a real command and reflects result", "status": "done", "note": "VERIFIED live: Pair new device, Switch (both directions), Remove, sidebar nav, Launch-at-login toggle, theme Dark/Light, Reconnect/Connect toggles, switch-key presets (F13<->Scroll Lock), Share kbd/mouse, pointer sensitivity, Detailed logging toggle, Input monitoring (Granted), Reset all settings. All real, all reflected." },
+        { "id": "B5", "title": "Audit onboarding steps (welcome/permission/pair/done) buttons", "status": "done", "note": "VERIFIED live: Welcome Continue; Permission now auto-Granted on Windows + Continue enabled; Pair 'Set up later' (new) + real candidate 'Pair'; Done. No trap." },
+        { "id": "B6", "title": "Decide + handle the reconnecting-state 'Cancel' no-op", "status": "done", "note": "Left as-is deliberately: the contract has no reconnect-cancel command, and discovery auto-redials paired peers regardless. Not reachable in the shipped app (tray popover is harness-only). Documented in code." }
       ]
     },
     {
       "id": "C",
       "title": "Crash & graceful-shutdown hardening",
-      "status": "pending",
+      "status": "in_progress",
       "tasks": [
-        { "id": "C1", "title": "Daemon: replace startup panic!/.expect() (IPC bind, db path) with clean stderr message + non-zero exit", "status": "pending", "note": "" },
-        { "id": "C2", "title": "Daemon: confirm Ctrl-C shutdown stays clean with all listeners up", "status": "pending", "note": "" },
-        { "id": "C3", "title": "Flutter: window close -> hide to tray (prod); tray Quit -> process actually exits (destroy() if needed on Windows)", "status": "pending", "note": "" },
-        { "id": "C4", "title": "Flutter: no unhandled exception on daemon-down-at-startup, daemon-dies-mid-session, daemon-restart", "status": "pending", "note": "" }
+        { "id": "C1", "title": "Daemon: replace startup panic!/.expect() (IPC bind, db path) with clean stderr message + non-zero exit", "status": "done", "note": "main.rs fatal() helper: IPC-bind-in-use, unwritable data dir, bad FLOW_IPC_PORT, missing platform dir all exit(1) with 'flow-daemon: <reason>' instead of a panic." },
+        { "id": "C2", "title": "Daemon: confirm Ctrl-C shutdown stays clean with all listeners up", "status": "done", "note": "Verified: tokio::signal::ctrl_c breaks the accept loop, process exits 0, no panic. All 3 listeners (IPC/peer/discovery) up beforehand." },
+        { "id": "C3", "title": "Flutter: window close -> hide to tray (prod); tray Quit -> process actually exits (destroy() if needed on Windows)", "status": "in_progress", "note": "Dev-mode window close verified: app exits cleanly (exit 0), daemon survives. Still to verify: prod-mode hide-to-tray + tray 'Quit Flow' real exit, and that the tray icon appears + its menu works." },
+        { "id": "C4", "title": "Flutter: no unhandled exception on daemon-down-at-startup, daemon-dies-mid-session, daemon-restart", "status": "done", "note": "VERIFIED live: killed daemon mid-session -> app kept last state, no crash, logged 'connection refused' + retried -> restarted daemon -> app auto-reconnected and refreshed to the fresh daemon's real state. flutter run exited 0 on window close." }
       ]
     },
     {
@@ -72,10 +73,10 @@
     {
       "id": "E",
       "title": "Regression gate",
-      "status": "pending",
+      "status": "done",
       "tasks": [
-        { "id": "E1", "title": "cargo test --workspace + cargo clippy --workspace --all-targets -- -D warnings + cargo fmt --check", "status": "pending", "note": "" },
-        { "id": "E2", "title": "flutter analyze + dart format --set-exit-if-changed + flutter test", "status": "pending", "note": "" }
+        { "id": "E1", "title": "cargo test --workspace + cargo clippy --workspace --all-targets -- -D warnings + cargo fmt --check", "status": "done", "note": "All green. 136 daemon lib tests + integration/doc tests pass (was 134 pre-task; +2 new for remove_device link-state and platform permission). Fixed a pre-existing Windows-only clippy -D warnings failure." },
+        { "id": "E2", "title": "flutter analyze + dart format --set-exit-if-changed + flutter test", "status": "done", "note": "flutter analyze: no issues. dart format: clean (also formatted 2 pre-existing unformatted files). flutter test: 65 passed. e2e (test/e2e/daemon_ui_flow_e2e_test.dart): 7/7 passed after fixing it to pin the daemon's data dir + token path via FLOW_DATA_DIR/FLOW_IPC_TOKEN_PATH (it was pre-existing broken on Windows because `directories` ignores a redirected HOME there)." }
       ]
     }
   ]

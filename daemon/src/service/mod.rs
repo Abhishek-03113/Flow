@@ -1626,6 +1626,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn removing_the_last_paired_device_drops_link_state_to_disconnected() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        DeviceRepo::new(storage.clone())
+            .upsert(DeviceRecord {
+                device: Device {
+                    id: DeviceId("pk:only-peer".to_string()),
+                    name: "Only Peer".to_string(),
+                    os: HostOs::Linux,
+                    state: DeviceState::Connected,
+                    last_seen: Utc::now(),
+                },
+                public_key: Some(vec![7; 32]),
+                removable: true,
+            })
+            .await;
+        let service = DaemonService::new(storage).await;
+        // Simulate the peer pipeline having marked the link healthy.
+        service.set_link_state(DaemonLinkState::Connected);
+
+        service
+            .remove_device("pk:only-peer")
+            .await
+            .expect("remove the only paired peer");
+
+        assert_eq!(
+            *service.watch_link_state().borrow(),
+            DaemonLinkState::Disconnected,
+            "removing the last paired device must stop the UI showing a live link to it"
+        );
+    }
+
+    #[tokio::test]
+    async fn fresh_state_permission_matches_this_platform() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        let permission = service.watch_permission().borrow().clone();
+
+        // macOS is the only platform whose input capture the UI can
+        // actually gate on a user grant; Windows/Linux need nothing the
+        // app can do, so they must not start out asking.
+        match current_host_os() {
+            HostOs::Macos => {
+                assert!(!permission.granted);
+                assert_eq!(permission.name, "Accessibility access");
+            }
+            HostOs::Windows | HostOs::Linux => {
+                assert!(
+                    permission.granted,
+                    "non-macOS platforms must not present an unsatisfiable permission prompt"
+                );
+            }
+        }
+    }
+
     /// The guard the task explicitly asked for: this must fail if
     /// production's `DaemonService::new`/`ServiceState::from_storage` are
     /// ever pointed back at the mock-parity fixture
