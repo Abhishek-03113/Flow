@@ -12,6 +12,7 @@ import 'domain/device.dart';
 import 'features/app_window/app_window_shell.dart';
 import 'features/harness/dev_harness.dart';
 import 'features/onboarding/onboarding_flow.dart';
+import 'features/pairing/incoming_pairing_request_listener.dart';
 import 'state/app_env.dart';
 import 'state/ui_mode.dart';
 import 'state/ui_providers.dart';
@@ -33,6 +34,21 @@ HostOs currentHostOs() {
   if (Platform.isMacOS) return HostOs.macos;
   if (Platform.isWindows) return HostOs.windows;
   return HostOs.linux;
+}
+
+/// Raises and focuses the real OS window. Top-level so surfaces outside
+/// [_RealApp] — e.g. [IncomingPairingRequestListener] — can pull the
+/// window forward without reaching into [_RealAppState]. Swallows any
+/// failure from these platform-channel calls: there's no native
+/// `window_manager` implementation under `flutter test`, and a raise
+/// failure on a real desktop shouldn't take anything else down.
+Future<void> showMainWindow() async {
+  try {
+    await windowManager.show();
+    await windowManager.focus();
+  } catch (_) {
+    // No window plugin available in this environment.
+  }
 }
 
 /// App root. `--dart-define=FLOW_UI_MODE=harness` (`state/ui_mode.dart`)
@@ -172,10 +188,7 @@ class _RealAppState extends ConsumerState<_RealApp>
     }
   }
 
-  Future<void> _showWindow() async {
-    await windowManager.show();
-    await windowManager.focus();
-  }
+  Future<void> _showWindow() => showMainWindow();
 
   Future<void> _quit() async {
     // Undo `setPreventClose` first — otherwise `close()` would just hide
@@ -263,7 +276,10 @@ class _RealAppState extends ConsumerState<_RealApp>
     return Scaffold(
       body: Container(
         decoration: BoxDecoration(gradient: c.wallpaper),
-        child: Center(child: content),
+        child: IncomingPairingRequestListener(
+          onShouldSurfaceWindow: () => unawaited(showMainWindow()),
+          child: Center(child: content),
+        ),
       ),
     );
   }
