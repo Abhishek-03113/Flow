@@ -41,6 +41,9 @@ pub enum FlowError {
 
     #[error("link state is {0:?}, not disconnected or error — nothing to retry")]
     LinkNotRecoverable(crate::link::DaemonLinkState),
+
+    #[error("no pairing request is awaiting a decision for that id")]
+    PairingRequestNotFound,
 }
 
 impl FlowError {
@@ -58,6 +61,7 @@ impl FlowError {
             FlowError::InvalidSwitchKey => "invalid_switch_key",
             FlowError::PermissionAlreadyGranted => "permission_already_granted",
             FlowError::LinkNotRecoverable(_) => "link_not_recoverable",
+            FlowError::PairingRequestNotFound => "pairing_request_not_found",
         }
     }
 }
@@ -96,6 +100,10 @@ mod tests {
         assert_eq!(
             FlowError::LinkNotRecoverable(crate::link::DaemonLinkState::Connected).code(),
             "link_not_recoverable"
+        );
+        assert_eq!(
+            FlowError::PairingRequestNotFound.code(),
+            "pairing_request_not_found"
         );
     }
 }
