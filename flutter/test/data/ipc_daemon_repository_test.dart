@@ -5,6 +5,7 @@ import 'package:flow_ui/data/ipc_daemon_repository.dart';
 import 'package:flow_ui/domain/daemon_command_exception.dart';
 import 'package:flow_ui/domain/daemon_link_state.dart';
 import 'package:flow_ui/domain/device.dart';
+import 'package:flow_ui/domain/pairing.dart';
 import 'package:flow_ui/domain/settings.dart';
 import 'package:flow_ui/domain/switch_key_binding.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -204,5 +205,40 @@ void main() {
     reply(firstRequest['id'] as String);
     await firstFuture;
     await secondFuture;
+  });
+
+  test('routes incoming_pairing_request_changed onto the stream', () async {
+    final requests = <IncomingPairingRequest?>[];
+    repo.watchIncomingPairingRequest().listen(requests.add);
+
+    sendEvent('incoming_pairing_request_changed', {
+      'request_id': 'ipr-7',
+      'device_name': 'Windows Box',
+      'device_os': 'windows',
+      'fingerprint': '3f2a 91c4 8d10 6b57',
+      'address': '10.0.0.5',
+    });
+    await Future<void>.delayed(Duration.zero);
+
+    expect(requests.last?.requestId, 'ipr-7');
+
+    sendEvent('incoming_pairing_request_changed', null);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(requests.last, isNull);
+  });
+
+  test('respondToPairingRequest sends the correct frame', () async {
+    final future = repo.respondToPairingRequest(
+      'ipr-7',
+      PairingDecision.accept,
+    );
+    final request = await nextRequest();
+
+    expect(request['command'], 'respond_to_pairing_request');
+    expect(request['payload'], {'request_id': 'ipr-7', 'decision': 'accept'});
+
+    reply(request['id'] as String);
+    await future;
   });
 }
