@@ -89,6 +89,18 @@ async fn handle(
             .await
             .map_err(ErrorPayload::from),
         "retry_connection" => service.retry_connection().await.map_err(ErrorPayload::from),
+        "debug_inject_input" => {
+            // Test-hook-only (`FLOW_TEST_HOOKS`). When the hooks are off
+            // this is not part of the contract at all — reported exactly
+            // like any other unknown command so a production client sees
+            // no difference.
+            if !service.test_hooks_enabled() {
+                return Err(unknown_command("debug_inject_input"));
+            }
+            let event: flow_core::protocol::InputEvent = parse_payload(payload)?;
+            service.debug_inject(event);
+            Ok(())
+        }
         other => Err(unknown_command(other)),
     }
 }
@@ -278,6 +290,64 @@ mod tests {
                 id: "req-5".to_string(),
                 ok: true
             }
+        );
+    }
+
+    #[tokio::test]
+    async fn debug_inject_input_is_an_unknown_command_without_test_hooks() {
+        let service = service().await; // test hooks off by default
+        let resp = dispatch(
+            &service,
+            IpcRequest {
+                id: "req-di-1".to_string(),
+                command: "debug_inject_input".to_string(),
+                payload: json!({ "Keyboard": { "KeyDown": { "key": "H", "modifiers": [], "timestamp_ms": 0 } } }),
+            },
+        )
+        .await;
+        match resp {
+            IpcResponse::Err { error, .. } => assert_eq!(error.code, "unknown_command"),
+            other => panic!("expected unknown_command, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn debug_inject_input_acks_and_reaches_a_pipeline_subscriber_with_test_hooks() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage)
+            .await
+            .with_test_hooks(true);
+        let mut rx = service.subscribe_debug_injections();
+
+        let resp = dispatch(
+            &service,
+            IpcRequest {
+                id: "req-di-2".to_string(),
+                command: "debug_inject_input".to_string(),
+                payload: json!({ "Keyboard": { "KeyDown": { "key": "H", "modifiers": [], "timestamp_ms": 7 } } }),
+            },
+        )
+        .await;
+        assert_eq!(
+            resp,
+            IpcResponse::Ack {
+                id: "req-di-2".to_string(),
+                ok: true
+            }
+        );
+
+        let got = rx
+            .try_recv()
+            .expect("the synthetic event reached a subscriber");
+        assert_eq!(
+            got,
+            flow_core::protocol::InputEvent::Keyboard(
+                flow_core::protocol::KeyboardEvent::KeyDown {
+                    key: "H".to_string(),
+                    modifiers: vec![],
+                    timestamp_ms: 7,
+                }
+            )
         );
     }
 

@@ -6,6 +6,7 @@
 //! same way `main.rs` does.
 
 pub mod channel;
+pub mod devmode;
 pub mod discovery;
 pub mod hotkey;
 pub mod identity;
@@ -13,6 +14,7 @@ pub mod ipc;
 pub mod logging;
 pub mod pairing_fingerprint;
 pub mod pipeline;
+pub mod security;
 pub mod service;
 pub mod storage;
 pub mod trust;

@@ -118,7 +118,13 @@ impl EventTranslator {
     fn translate_move(&mut self, x: i32, y: i32, timestamp_ms: u64) -> Option<InputEvent> {
         let previous = self.last_mouse_position.replace((x, y));
         let (prev_x, prev_y) = previous?;
-        let (dx, dy) = (x - prev_x, y - prev_y);
+        // `saturating_sub`, never plain `-`: this runs inside an
+        // `extern "system"` hook callback that cannot unwind, so a
+        // debug-build overflow panic here aborts the daemon. A delta
+        // that overflows `i32` (a jump across the full virtual-desktop
+        // coordinate range, an injected absolute position) is not a
+        // meaningful mouse motion anyway — clamp it.
+        let (dx, dy) = (x.saturating_sub(prev_x), y.saturating_sub(prev_y));
         if dx == 0 && dy == 0 {
             return None;
         }
@@ -391,6 +397,35 @@ mod tests {
             InputEvent::Mouse(MouseEvent::Move {
                 dx: 5,
                 dy: -3,
+                timestamp_ms: 0,
+            })
+        );
+    }
+
+    /// `translate_mouse` runs inside `mouse_proc`, an `extern "system"`
+    /// hook callback that CANNOT unwind — a panic there aborts the whole
+    /// daemon. So the absolute-position diff must never overflow-panic,
+    /// no matter what `MSLLHOOKSTRUCT.pt` holds (a far virtual-desktop
+    /// coordinate, an injected absolute position, garbage). A delta that
+    /// genuinely can't fit in `i32` is meaningless anyway; saturating it
+    /// is the sane clamp.
+    #[test]
+    fn a_mouse_move_across_the_full_i32_range_saturates_instead_of_panicking() {
+        let mut translator = EventTranslator::new();
+        // First move only records the starting position.
+        assert!(translator
+            .translate_mouse(WM_MOUSEMOVE, &mouse_info(i32::MIN, i32::MIN, 0), 0)
+            .is_none());
+        // A jump to the opposite extreme: the true delta is
+        // `i32::MAX - i32::MIN`, which does not fit in an `i32`.
+        let moved = translator
+            .translate_mouse(WM_MOUSEMOVE, &mouse_info(i32::MAX, i32::MAX, 0), 0)
+            .expect("still yields a Move, clamped");
+        assert_eq!(
+            moved,
+            InputEvent::Mouse(MouseEvent::Move {
+                dx: i32::MAX,
+                dy: i32::MAX,
                 timestamp_ms: 0,
             })
         );

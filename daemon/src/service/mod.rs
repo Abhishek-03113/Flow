@@ -23,17 +23,20 @@ use flow_core::pairing::{
     PairingStage,
 };
 use flow_core::permission::PermissionStatus;
+use flow_core::protocol::InputEvent;
 use flow_core::settings::{FlowSettings, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
 use tokio::sync::{oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
 
+#[cfg(test)]
 use crate::channel::noise::NoiseChannel;
 use crate::channel::{handshake, negotiate};
 use crate::discovery::DiscoveredPeer;
 use crate::identity::DeviceIdentity;
 use crate::pairing_fingerprint::key_fingerprint;
+use crate::security::Security;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
@@ -300,6 +303,11 @@ pub struct DaemonService {
     /// than trusting a peer's self-reported name outright. See
     /// `request_real_pairing`/`accept_pairing_request`.
     identity: DeviceIdentity,
+    /// The peer-connection security profile (`crate::security`). Always
+    /// [`Security::secure`] in production; `main.rs` swaps in the
+    /// insecure dev profile only when `FLOW_SECURITY=insecure` +
+    /// `FLOW_DEV=1` are both set.
+    security: Security,
     devices_tx: watch::Sender<Vec<Device>>,
     link_state_tx: watch::Sender<DaemonLinkState>,
     pairing_session_tx: watch::Sender<PairingSession>,
@@ -317,6 +325,16 @@ pub struct DaemonService {
     /// Broadcasts the single in-flight incoming pairing request (or
     /// `None` when nothing is pending) to subscribed UIs.
     incoming_request_tx: watch::Sender<Option<IncomingPairingRequest>>,
+    /// `FLOW_TEST_HOOKS` — enables the `debug_inject_input` IPC command.
+    /// `false` in production; nothing reads [`Self::debug_inject_tx`]
+    /// unless this is set.
+    test_hooks: bool,
+    /// Fan-out of synthetic `InputEvent`s pushed by the
+    /// `debug_inject_input` IPC command (test hooks only). Every live
+    /// peer pipeline subscribes and merges these into its own capture
+    /// stream, so a driver-injected event travels the exact same
+    /// gate → sequence → channel → peer → inject path as a real keypress.
+    debug_inject_tx: tokio::sync::broadcast::Sender<InputEvent>,
 }
 
 impl DaemonService {
@@ -325,7 +343,15 @@ impl DaemonService {
     /// seeded mock data.
     pub async fn new(storage: Storage) -> Self {
         let state = ServiceState::from_storage(&storage).await;
-        Self::from_state(storage, state).await
+        Self::from_state(storage, state, Security::secure()).await
+    }
+
+    /// Production entry point with an explicit security profile —
+    /// `main.rs`'s constructor when `FLOW_SECURITY` selected the insecure
+    /// dev profile. Identical to [`Self::new`] otherwise.
+    pub async fn new_with_security(storage: Storage, security: Security) -> Self {
+        let state = ServiceState::from_storage(&storage).await;
+        Self::from_state(storage, state, security).await
     }
 
     /// Test-only entry point — the mock-parity fixture every daemon test
@@ -336,12 +362,12 @@ impl DaemonService {
     #[doc(hidden)]
     pub async fn new_seeded_for_test(storage: Storage) -> Self {
         let state = ServiceState::seeded_for_test(&storage).await;
-        Self::from_state(storage, state).await
+        Self::from_state(storage, state, Security::secure()).await
     }
 
-    /// Shared tail of both constructors above: wraps an already-loaded
+    /// Shared tail of the constructors above: wraps an already-loaded
     /// [`ServiceState`] in its watch channels.
-    async fn from_state(storage: Storage, state: ServiceState) -> Self {
+    async fn from_state(storage: Storage, state: ServiceState, security: Security) -> Self {
         let identity = DeviceIdentity::load_or_generate(storage.clone()).await;
 
         let (devices_tx, _) = watch::channel(devices_list(&state));
@@ -350,11 +376,16 @@ impl DaemonService {
         let (settings_tx, _) = watch::channel(state.settings.clone());
         let (permission_tx, _) = watch::channel(state.permission.clone());
         let (incoming_request_tx, _) = watch::channel(None);
+        // 256 is comfortably above any burst a driver script sends (a
+        // key sequence + a mouse path); a slow pipeline that lags is
+        // told via `RecvError::Lagged` and just skips ahead.
+        let (debug_inject_tx, _) = tokio::sync::broadcast::channel(256);
 
         Self {
             state: Arc::new(RwLock::new(state)),
             storage,
             identity,
+            security,
             devices_tx,
             link_state_tx,
             pairing_session_tx,
@@ -363,7 +394,47 @@ impl DaemonService {
             pairing_timer: Arc::new(Mutex::new(None)),
             connected_clients: Arc::new(AtomicUsize::new(0)),
             incoming_request_tx,
+            test_hooks: false,
+            debug_inject_tx,
         }
+    }
+
+    /// Enables the `debug_inject_input` IPC command on this service.
+    /// Consuming builder used by `main.rs` when `FLOW_TEST_HOOKS` is set;
+    /// off for every other construction path.
+    pub fn with_test_hooks(mut self, enabled: bool) -> Self {
+        self.test_hooks = enabled;
+        self
+    }
+
+    /// Whether the `debug_inject_input` IPC command is accepted.
+    pub fn test_hooks_enabled(&self) -> bool {
+        self.test_hooks
+    }
+
+    /// A receiver for synthetic events pushed via [`Self::debug_inject`].
+    /// Each live peer pipeline holds one and merges it into its capture
+    /// stream (test hooks only).
+    pub fn subscribe_debug_injections(&self) -> tokio::sync::broadcast::Receiver<InputEvent> {
+        self.debug_inject_tx.subscribe()
+    }
+
+    /// Pushes one synthetic `InputEvent` into every live peer pipeline's
+    /// capture stream. Returns how many pipelines received it (0 when no
+    /// peer connection is currently streaming — a signal to the driver
+    /// that it needs to switch/connect first). Test hooks only; the
+    /// dispatch layer rejects the command unless
+    /// [`Self::test_hooks_enabled`].
+    pub fn debug_inject(&self, event: InputEvent) -> usize {
+        let receivers = self.debug_inject_tx.send(event.clone()).unwrap_or(0);
+        crate::hop_note!(
+            stage = "debug_inject",
+            role = "owner",
+            kind = crate::pipeline::event_kind(&event),
+            pipelines = receivers,
+            "debug_inject_input pushed a synthetic event into {receivers} live pipeline(s)"
+        );
+        receivers
     }
 
     /// How many IPC clients are connected right now.
@@ -460,6 +531,13 @@ impl DaemonService {
         };
 
         self.devices_tx.send_replace(devices);
+        crate::hop_note!(
+            stage = "switch",
+            role = "local",
+            target = %target_id.0,
+            trigger = "ipc",
+            "active device switched — input now flows toward this device"
+        );
         Ok(())
     }
 
@@ -496,6 +574,13 @@ impl DaemonService {
         };
 
         self.devices_tx.send_replace(devices);
+        crate::hop_note!(
+            stage = "switch",
+            role = "local",
+            target = %target_id.0,
+            trigger = "hotkey",
+            "active device switched by the local switch key"
+        );
     }
 
     /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is
@@ -816,8 +901,8 @@ impl DaemonService {
         address: &ChannelAddress,
     ) -> Result<(PairingDecision, Vec<u8>), ChannelError> {
         let channel = negotiate::connect_best_available(std::slice::from_ref(address)).await?;
-        let mut noise_channel = NoiseChannel::initiate(channel, &self.identity).await?;
-        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+        let (mut session, peer_key) = self.security.initiate(channel, &self.identity).await?;
+        let peer_public_key = peer_key.to_vec();
 
         let (local_name, local_os) = self.local_device_identity().await;
         let request = PairingRequest {
@@ -829,7 +914,7 @@ impl DaemonService {
             // buildNote) — left blank rather than fabricated.
             address: String::new(),
         };
-        let decision = handshake::request_pairing(&mut noise_channel, request).await?;
+        let decision = handshake::request_pairing(session.as_mut(), request).await?;
         Ok((decision, peer_public_key))
     }
 
@@ -873,9 +958,8 @@ impl DaemonService {
         channel: Box<dyn Channel>,
         peer_addr: Option<SocketAddr>,
     ) -> Result<(), ChannelError> {
-        let mut noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
-        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
-        self.accept_pairing_over(&mut noise_channel, peer_public_key, peer_addr)
+        let (mut session, peer_key) = self.security.accept(channel, &self.identity).await?;
+        self.accept_pairing_over(session.as_mut(), peer_key.to_vec(), peer_addr)
             .await
     }
 
@@ -906,51 +990,68 @@ impl DaemonService {
     ) -> Result<(), ChannelError> {
         let request = handshake::recv_pairing_request(channel).await?;
 
-        // No UI connected ⇒ nobody can consent. Reject outright, without
-        // publishing anything.
-        if self.connected_client_count() == 0 {
+        let decision = if self.security.pairing_auto_accepts() {
+            // Insecure dev profile: accept with no prompt and no consent
+            // window, so a headless daemon B can be paired by a driver
+            // script with no UI attached. `FLOW_SECURITY=insecure` +
+            // `FLOW_DEV=1` only. The device is still persisted through
+            // the common tail below, exactly as an interactively-accepted
+            // one would be.
+            crate::hop_note!(
+                stage = "pair_auto_accept",
+                role = "responder",
+                device = %request.device_name,
+                "insecure dev mode: auto-accepting the incoming pairing request"
+            );
+            PairingDecision::Accept
+        } else if self.connected_client_count() == 0 {
+            // No UI connected ⇒ nobody can consent. Reject outright,
+            // without publishing anything.
             tracing::info!("declined an incoming pairing request: no UI connected to prompt");
-            return handshake::send_pairing_decision(channel, PairingDecision::Reject).await;
-        }
+            handshake::send_pairing_decision(channel, PairingDecision::Reject).await?;
+            return Ok(());
+        } else {
+            let info = IncomingPairingRequest {
+                request_id: format!("ipr-{:032x}", rand::random::<u128>()),
+                device_name: request.device_name.clone(),
+                device_os: request.device_os,
+                fingerprint: key_fingerprint(&peer_public_key),
+                address: peer_addr.map(|a| a.ip().to_string()).unwrap_or_default(),
+            };
 
-        let info = IncomingPairingRequest {
-            request_id: format!("ipr-{:032x}", rand::random::<u128>()),
-            device_name: request.device_name.clone(),
-            device_os: request.device_os,
-            fingerprint: key_fingerprint(&peer_public_key),
-            address: peer_addr.map(|a| a.ip().to_string()).unwrap_or_default(),
-        };
-
-        let (tx, rx) = oneshot::channel();
-        {
-            let mut state = self.state.write().await;
-            if state.incoming_request.is_some() {
-                tracing::info!(
-                    "declined an incoming pairing request: another request is awaiting a decision"
-                );
-                drop(state);
-                return handshake::send_pairing_decision(channel, PairingDecision::Reject).await;
+            let (tx, rx) = oneshot::channel();
+            {
+                let mut state = self.state.write().await;
+                if state.incoming_request.is_some() {
+                    tracing::info!(
+                        "declined an incoming pairing request: another request is awaiting a decision"
+                    );
+                    drop(state);
+                    handshake::send_pairing_decision(channel, PairingDecision::Reject).await?;
+                    return Ok(());
+                }
+                state.incoming_request = Some(PendingPairingRequest {
+                    info: info.clone(),
+                    responder: tx,
+                });
             }
-            state.incoming_request = Some(PendingPairingRequest {
-                info: info.clone(),
-                responder: tx,
-            });
-        }
-        self.incoming_request_tx.send_replace(Some(info));
+            self.incoming_request_tx.send_replace(Some(info));
 
-        let decision = tokio::select! {
-            received = rx => received.unwrap_or(PairingDecision::Reject),
-            _ = tokio::time::sleep(PAIRING_DECISION_TIMEOUT) => {
-                tracing::info!("incoming pairing request timed out with no decision");
-                PairingDecision::Reject
+            let decision = tokio::select! {
+                received = rx => received.unwrap_or(PairingDecision::Reject),
+                _ = tokio::time::sleep(PAIRING_DECISION_TIMEOUT) => {
+                    tracing::info!("incoming pairing request timed out with no decision");
+                    PairingDecision::Reject
+                }
+            };
+
+            {
+                let mut state = self.state.write().await;
+                state.incoming_request = None;
             }
+            self.incoming_request_tx.send_replace(None);
+            decision
         };
-
-        {
-            let mut state = self.state.write().await;
-            state.incoming_request = None;
-        }
-        self.incoming_request_tx.send_replace(None);
 
         handshake::send_pairing_decision(channel, decision).await?;
         if decision != PairingDecision::Accept {
@@ -1029,21 +1130,36 @@ impl DaemonService {
         channel: Box<dyn Channel>,
         peer_addr: Option<SocketAddr>,
     ) -> Result<IncomingPeerConnection, ChannelError> {
-        let noise_channel = NoiseChannel::accept(channel, &self.identity).await?;
-        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+        let (mut session, peer_key) = self.security.accept(channel, &self.identity).await?;
+        let peer_public_key = peer_key.to_vec();
 
+        // The trust check itself is unchanged in the insecure profile:
+        // an unknown peer must still go through (auto-accepted) pairing
+        // so it lands in the device list and can be switched to. What the
+        // profile changes is only *how* the session was established
+        // (plaintext) and that pairing needs no prompt.
         let trust = TrustGate::new(self.storage.clone());
         if trust.is_trusted(&peer_public_key).await {
             let device_id = device_id_from_public_key(&peer_public_key);
+            crate::hop_note!(
+                stage = "peer_accept_trusted",
+                role = "responder",
+                peer = %device_id.0,
+                "inbound peer connection is an already-trusted device; handing off to the pipeline"
+            );
             return Ok(IncomingPeerConnection::TrustedPeer(
-                Box::new(noise_channel),
+                session,
                 device_id,
                 self.connection_precedence(&peer_public_key),
             ));
         }
 
-        let mut noise_channel = noise_channel;
-        self.accept_pairing_over(&mut noise_channel, peer_public_key, peer_addr)
+        crate::hop_note!(
+            stage = "peer_accept_pairing",
+            role = "responder",
+            "inbound peer connection is not yet trusted; treating it as a pairing attempt"
+        );
+        self.accept_pairing_over(session.as_mut(), peer_public_key, peer_addr)
             .await?;
         Ok(IncomingPeerConnection::HandledAsPairing)
     }
@@ -1101,6 +1217,12 @@ impl DaemonService {
         // LAN before the user has paired them through the UI.
         let trust = TrustGate::new(self.storage.clone());
         if !trust.has_any_trusted().await {
+            crate::hop!(
+                stage = "dial_skip",
+                role = "initiator",
+                address = ?address,
+                "no paired devices yet; not dialing this discovered peer"
+            );
             return None;
         }
 
@@ -1108,24 +1230,49 @@ impl DaemonService {
             let channel = negotiate::connect_best_available(std::slice::from_ref(&address))
                 .await
                 .ok()?;
-            NoiseChannel::initiate(channel, &self.identity).await.ok()
+            self.security.initiate(channel, &self.identity).await.ok()
         };
-        let noise_channel = match tokio::time::timeout(DIAL_TIMEOUT, dial).await {
-            Ok(Some(channel)) => channel,
-            Ok(None) => return None,
+        let (mut session, peer_key) = match tokio::time::timeout(DIAL_TIMEOUT, dial).await {
+            Ok(Some(pair)) => pair,
+            Ok(None) => {
+                crate::hop_note!(
+                    stage = "dial_failed",
+                    role = "initiator",
+                    address = ?address,
+                    "could not connect or complete the session handshake with this peer"
+                );
+                return None;
+            }
             Err(_) => {
                 tracing::debug!("dialing {address:?} timed out before the handshake completed");
+                crate::hop_note!(
+                    stage = "dial_timeout",
+                    role = "initiator",
+                    address = ?address,
+                    "dial timed out before the handshake completed"
+                );
                 return None;
             }
         };
-        let peer_public_key = noise_channel.peer_identity().to_bytes().to_vec();
+        let peer_public_key = peer_key.to_vec();
 
         if !trust.is_trusted(&peer_public_key).await {
-            let mut noise_channel = noise_channel;
-            let _ = noise_channel.close().await;
+            let _ = session.close().await;
+            crate::hop_note!(
+                stage = "dial_untrusted",
+                role = "initiator",
+                address = ?address,
+                "dialed peer's identity is not in the trust store; dropping"
+            );
             return None;
         }
         let device_id = device_id_from_public_key(&peer_public_key);
+        crate::hop_note!(
+            stage = "dial_trusted",
+            role = "initiator",
+            peer = %device_id.0,
+            "outbound dial reached an already-trusted peer; will run the pipeline"
+        );
         // Inverted relative to the inbound case: `connection_precedence`
         // answers "should the connection *they* opened win," so for one
         // we opened ourselves the verdict flips.
@@ -1133,8 +1280,7 @@ impl DaemonService {
             ConnectionPrecedence::Preferred => ConnectionPrecedence::Redundant,
             ConnectionPrecedence::Redundant => ConnectionPrecedence::Preferred,
         };
-        let channel: Box<dyn Channel> = Box::new(noise_channel);
-        Some((channel, device_id, precedence))
+        Some((session, device_id, precedence))
     }
 
     /// A stable, per-daemon identifier for `main.rs`'s discovery

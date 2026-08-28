@@ -40,15 +40,33 @@ type ConnectedPeers = Arc<Mutex<HashSet<DeviceId>>>;
 
 #[tokio::main]
 async fn main() {
+    // Opt-in dev/testing switches, resolved once up front (all inert
+    // unless their env vars are set) — see `flow_daemon::devmode`.
+    let dev = flow_daemon::devmode::DevMode::from_env();
+
     // `debug_logging`'s persisted value isn't known until settings load
     // below; starts at the non-debug level and gets synced once it is.
-    let logging = flow_daemon::logging::init(false);
+    // `FLOW_TRACE` pins the verbose `TRACE` floor on for the whole run.
+    let logging = flow_daemon::logging::init(false, dev.trace);
+    for warning in &dev.warnings {
+        tracing::warn!("{warning}");
+    }
+    if let Some(banner) = dev.insecure_banner() {
+        tracing::warn!("\n{banner}");
+    }
 
     let storage = match Storage::open(db_path()).await {
         Ok(storage) => storage,
         Err(err) => fatal(&format!("failed to open the flow-daemon database: {err}")),
     };
-    let service = Arc::new(daemon_service(storage.clone()).await);
+    let service = Arc::new(
+        daemon_service(storage.clone(), &dev)
+            .await
+            .with_test_hooks(dev.test_hooks),
+    );
+    if dev.test_hooks {
+        tracing::warn!("FLOW_TEST_HOOKS is set — the debug_inject_input IPC command is enabled");
+    }
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
     let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
@@ -194,7 +212,21 @@ async fn spawn_discovery(
             tokio::select! {
                 _ = announce_interval.tick() => {
                     for destination in &destinations {
-                        let _ = discovery.announce_to(*destination).await;
+                        match discovery.announce_to(*destination).await {
+                            Ok(()) => flow_daemon::hop!(
+                                stage = "announce_sent",
+                                role = "local",
+                                to = %destination,
+                                "sent a discovery announce"
+                            ),
+                            Err(err) => flow_daemon::hop!(
+                                stage = "announce_failed",
+                                role = "local",
+                                to = %destination,
+                                error = %err,
+                                "a discovery announce send failed"
+                            ),
+                        }
                     }
                 }
                 received = discovery.recv_one() => {
@@ -233,6 +265,13 @@ async fn handle_discovered_peer(
     peer: DiscoveredPeer,
     connected_peers: &ConnectedPeers,
 ) {
+    flow_daemon::hop!(
+        stage = "discovered",
+        role = "local",
+        peer = %peer.name,
+        address = ?peer.address,
+        "discovery announce parsed for a peer"
+    );
     service.note_discovered_peer(peer.clone()).await;
 
     let service = Arc::clone(service);
@@ -256,6 +295,13 @@ async fn claim_and_run(
     precedence: ConnectionPrecedence,
     connected_peers: ConnectedPeers,
 ) {
+    flow_daemon::hop_note!(
+        stage = "claim",
+        role = "local",
+        peer = %device_id.0,
+        precedence = ?precedence,
+        "resolving this connection against any competing one to the same peer"
+    );
     // A `Redundant` verdict means the peer's competing connection is the
     // designated keeper, so drop this one without even trying to claim.
     // Both ends compute this identically, so exactly one of the two
@@ -263,11 +309,23 @@ async fn claim_and_run(
     if precedence == ConnectionPrecedence::Redundant {
         let mut channel = channel;
         let _ = channel.close().await;
+        flow_daemon::hop_note!(
+            stage = "claim_dropped",
+            role = "local",
+            peer = %device_id.0,
+            "dropped this connection as redundant"
+        );
         return;
     }
     if !try_claim_peer(&connected_peers, &device_id).await {
         let mut channel = channel;
         let _ = channel.close().await;
+        flow_daemon::hop_note!(
+            stage = "claim_lost",
+            role = "local",
+            peer = %device_id.0,
+            "another task already holds this peer's connection slot"
+        );
         return;
     }
     run_peer_pipeline(service, channel, device_id, connected_peers).await;
@@ -334,6 +392,12 @@ async fn run_peer_pipeline(
     connected_peers: ConnectedPeers,
 ) {
     tracing::info!("streaming pipeline starting for peer {device_id:?}");
+    flow_daemon::hop_note!(
+        stage = "pipeline_up",
+        role = "local",
+        peer = %device_id.0,
+        "input-streaming pipeline starting for a paired peer"
+    );
     let devices_rx = service.watch_devices();
 
     let (capture_tx, capture_rx) = std::sync::mpsc::channel();
@@ -342,18 +406,73 @@ async fn run_peer_pipeline(
         tracing::warn!(
             "peer pipeline for {device_id:?} not started: input capture failed: {err:?}"
         );
+        flow_daemon::hop_note!(
+            stage = "capture_failed",
+            role = "owner",
+            peer = %device_id.0,
+            "input capture would not start; this peer's pipeline is not running"
+        );
         connected_peers.lock().await.remove(&device_id);
         return;
     }
+    flow_daemon::hop_note!(
+        stage = "capture_started",
+        role = "owner",
+        peer = %device_id.0,
+        "OS input capture started for this connection"
+    );
 
     let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
+    let bridge_device_id = device_id.clone();
+    let capture_bridge_tx = bridge_tx.clone();
     std::thread::spawn(move || {
         for event in capture_rx {
-            if bridge_tx.send(event).is_err() {
+            flow_daemon::hop!(
+                stage = "captured",
+                role = "owner",
+                peer = %bridge_device_id.0,
+                kind = pipeline::event_kind(&event),
+                "raw event captured from the OS"
+            );
+            if capture_bridge_tx.send(event).is_err() {
                 break;
             }
         }
     });
+
+    // Synthetic events from the `debug_inject_input` IPC command
+    // (`FLOW_TEST_HOOKS`) join the very same capture stream, so a
+    // driver-injected keypress is gated, sequenced, framed, sent and
+    // injected identically to a real one. The broadcast receiver stays
+    // empty and this task idle when test hooks are off.
+    let debug_bridge_tx = bridge_tx.clone();
+    let debug_device_id = device_id.clone();
+    let mut debug_rx = service.subscribe_debug_injections();
+    tokio::spawn(async move {
+        loop {
+            match debug_rx.recv().await {
+                Ok(event) => {
+                    flow_daemon::hop!(
+                        stage = "debug_inject_in",
+                        role = "owner",
+                        peer = %debug_device_id.0,
+                        kind = pipeline::event_kind(&event),
+                        "synthetic test event entered this pipeline's capture stream"
+                    );
+                    if debug_bridge_tx.send(event).is_err() {
+                        break;
+                    }
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("debug injection lagged, dropped {n} synthetic events");
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    // Drop the original so `bridge_rx` closes once both forwarders are
+    // gone (capture thread ends, debug task ends).
+    drop(bridge_tx);
 
     // The real injector (e.g. `MacosInputInjector`, wrapping a
     // `CGEventSource`) can be platform-thread-affine — its Core
@@ -388,6 +507,12 @@ async fn run_peer_pipeline(
     };
 
     service.set_link_state(DaemonLinkState::Connected);
+    flow_daemon::hop_note!(
+        stage = "link_connected",
+        role = "local",
+        peer = %device_id.0,
+        "link state set to Connected; streaming both directions now"
+    );
     pipeline::run_paired_connection(
         channel,
         bridge_rx,
@@ -398,6 +523,12 @@ async fn run_peer_pipeline(
     )
     .await;
     tracing::info!("streaming pipeline ended for peer {device_id:?}");
+    flow_daemon::hop_note!(
+        stage = "pipeline_down",
+        role = "local",
+        peer = %device_id.0,
+        "input-streaming pipeline ended for this peer"
+    );
 
     let no_peers_left = {
         let mut connected = connected_peers.lock().await;
@@ -498,17 +629,18 @@ fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
 /// against without a real daemon ever seeding fake data by default. A
 /// real deployment must never set this; nothing in this codebase sets it
 /// automatically.
-async fn daemon_service(storage: Storage) -> DaemonService {
+async fn daemon_service(storage: Storage, dev: &flow_daemon::devmode::DevMode) -> DaemonService {
     if std::env::var_os("FLOW_DAEMON_SEED_MOCK_PARITY").is_some() {
         tracing::warn!(
             "FLOW_DAEMON_SEED_MOCK_PARITY is set — seeding the mock-parity \
              test fixture instead of real state. Never set this for a real \
              deployment."
         );
-        DaemonService::new_seeded_for_test(storage).await
-    } else {
-        DaemonService::new(storage).await
+        return DaemonService::new_seeded_for_test(storage).await;
     }
+    let security = flow_daemon::security::Security::from_mode(dev.security);
+    tracing::info!("peer-connection security profile: {}", security.label());
+    DaemonService::new_with_security(storage, security).await
 }
 
 /// The database file lives under the platform data directory (via the
