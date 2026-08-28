@@ -8,7 +8,7 @@
 
 use flow_core::channel::{Channel, ChannelAddress};
 use flow_core::device::HostOs;
-use flow_core::pairing::PairingStage;
+use flow_core::pairing::{PairingDecision, PairingStage};
 use flow_daemon::channel::noise::NoiseChannel;
 use flow_daemon::channel::tcp::TcpChannel;
 use flow_daemon::discovery::DiscoveredPeer;
@@ -64,26 +64,47 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
         .expect("bind b's listener");
     let b_addr = listener.local_addr().expect("local addr");
 
-    // The responder only accepts while its own user has pairing open
-    // (`DaemonService::is_pairing_window_open`) — an unattended daemon
-    // refuses, which is what stops any host on the network from pairing
-    // itself in uninvited. In the real product both people press "Pair a
-    // device"; this is that second press.
-    service_b
-        .start_pairing()
-        .await
-        .expect("device B opens its own pairing window");
+    // The responder only surfaces an incoming request while a UI is
+    // connected to prompt (`DaemonService::register_ipc_client`) — an
+    // unattended daemon rejects outright, which is what stops any host on
+    // the network from pairing itself in uninvited. Hold the guard for
+    // the rest of the test to keep B's "UI" connected.
+    let _b_ui = service_b.register_ipc_client();
 
     let responder = {
         let service_b = service_b.clone();
         tokio::spawn(async move {
-            let (stream, _peer) = listener.accept().await.expect("accept");
+            let (stream, peer) = listener.accept().await.expect("accept");
             let channel = TcpChannel::accept(stream).await.expect("accept ws");
             let channel: Box<dyn Channel> = Box::new(channel);
             service_b
-                .accept_pairing_request(channel)
+                .accept_pairing_request(channel, Some(peer))
                 .await
                 .expect("responder side of the handshake");
+        })
+    };
+
+    // B's UI: watch for the incoming pairing request the daemon publishes
+    // and accept it on the user's behalf, unblocking the handshake.
+    let ui_b = {
+        let service_b = service_b.clone();
+        tokio::spawn(async move {
+            let mut reqs = service_b.watch_incoming_request();
+            loop {
+                // Bind the clone in its own statement so the non-`Send`
+                // `watch::Ref` is dropped before the `.await` below
+                // (edition-2021 `if let` scrutinee temporaries otherwise
+                // live to the end of the block).
+                let current = reqs.borrow_and_update().clone();
+                if let Some(req) = current {
+                    service_b
+                        .respond_to_pairing_request(&req.request_id, PairingDecision::Accept)
+                        .await
+                        .expect("ui accepts");
+                    return;
+                }
+                reqs.changed().await.expect("incoming request stream");
+            }
         })
     };
 
@@ -128,6 +149,7 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
     assert_eq!(sessions.borrow_and_update().stage, PairingStage::Paired);
 
     responder.await.expect("responder task");
+    ui_b.await.expect("ui task");
 
     let a_devices = service_a.watch_devices().borrow().clone();
     let b_in_a = a_devices
@@ -248,4 +270,112 @@ async fn a_rejected_real_pairing_request_lands_in_failed_not_paired() {
 
     let a_devices = service_a.watch_devices().borrow().clone();
     assert!(!a_devices.iter().any(|d| d.name == "Studio C"));
+}
+
+/// The same real two-`DaemonService` wiring as
+/// `two_daemons_complete_a_real_pairing_handshake_over_tcp`, but B's UI
+/// *rejects* the incoming request via `respond_to_pairing_request`: the
+/// initiator's session lands in `Failed` (not `Paired`) and B never
+/// persists the initiator as a device.
+#[tokio::test]
+async fn a_rejected_incoming_request_fails_the_initiator() {
+    let TestDaemon {
+        service: service_a, ..
+    } = service().await;
+    let TestDaemon {
+        service: service_b,
+        storage: storage_b,
+    } = service().await;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind b's listener");
+    let b_addr = listener.local_addr().expect("local addr");
+
+    // A connected UI is what makes the daemon surface the request for a
+    // decision rather than rejecting it outright; keep the guard alive.
+    let _b_ui = service_b.register_ipc_client();
+
+    let responder = {
+        let service_b = service_b.clone();
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("accept");
+            let channel = TcpChannel::accept(stream).await.expect("accept ws");
+            let channel: Box<dyn Channel> = Box::new(channel);
+            service_b
+                .accept_pairing_request(channel, Some(peer))
+                .await
+                .expect("responder side of the handshake");
+        })
+    };
+
+    // B's UI: watch for the incoming pairing request and reject it.
+    let ui_b = {
+        let service_b = service_b.clone();
+        tokio::spawn(async move {
+            let mut reqs = service_b.watch_incoming_request();
+            loop {
+                // See the accept-path test for why the clone is bound in
+                // its own statement here.
+                let current = reqs.borrow_and_update().clone();
+                if let Some(req) = current {
+                    service_b
+                        .respond_to_pairing_request(&req.request_id, PairingDecision::Reject)
+                        .await
+                        .expect("ui rejects");
+                    return;
+                }
+                reqs.changed().await.expect("incoming request stream");
+            }
+        })
+    };
+
+    service_a
+        .note_discovered_peer(DiscoveredPeer {
+            name: "Studio B".to_string(),
+            os: HostOs::Linux,
+            address: ChannelAddress::Tcp(b_addr),
+        })
+        .await;
+
+    let mut sessions = service_a.watch_pairing_session();
+    let _ = sessions.borrow_and_update();
+    service_a.start_pairing().await.expect("start pairing");
+
+    sessions.changed().await.expect("searching");
+    sessions.changed().await.expect("found");
+    let candidate = sessions
+        .borrow_and_update()
+        .candidates
+        .iter()
+        .find(|c| c.name == "Studio B")
+        .expect("the live-discovered candidate is offered")
+        .clone();
+
+    service_a
+        .pair_with_candidate(&candidate.id)
+        .await
+        .expect("pair with the live candidate");
+
+    sessions.changed().await.expect("requesting");
+    sessions.changed().await.expect("failed");
+    let failed = sessions.borrow_and_update().clone();
+    assert_eq!(failed.stage, PairingStage::Failed);
+    assert!(failed.error.is_some());
+
+    responder.await.expect("responder task");
+    ui_b.await.expect("ui task");
+
+    // B never turned the rejected initiator into a trusted device: no
+    // public-key-keyed record in the repo, nothing new in the list.
+    let b_records = DeviceRepo::new(storage_b).list().await;
+    assert!(
+        !b_records.iter().any(|r| r.device.id.0.starts_with("pk:")),
+        "B must not persist a rejected initiator: {b_records:?}"
+    );
+    let b_devices = service_b.watch_devices().borrow().clone();
+    assert!(
+        !b_devices.iter().any(|d| d.id.0.starts_with("pk:")),
+        "B's devices list must not gain the rejected initiator: {b_devices:?}"
+    );
 }
