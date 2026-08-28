@@ -90,6 +90,35 @@ class PairingSession {
 
 State machine and transitions are in `daemon-ipc.md`.
 
+## `IncomingPairingRequest`
+
+Another device that has connected to this daemon's peer listener and is
+waiting for the local user to accept or reject it. Independent of
+`PairingSession` (which models only the *initiating* side); surfaced to
+the UI one at a time as `incoming_pairing_request_changed` — see
+`daemon-ipc.md`.
+
+```dart
+class IncomingPairingRequest {
+  final String requestId;   // opaque, daemon-generated
+  final String deviceName;  // self-reported by the peer; display only
+  final HostOs deviceOs;    // self-reported by the peer
+  final String fingerprint; // "3f2a 91c4 8d10 6b57" — short hash of the
+                            // peer's PROVEN ed25519 public key
+  final String address;     // peer source IP, display only ("" if unknown)
+}
+```
+
+```json
+{
+  "request_id": "ipr-9f2c1a...",
+  "device_name": "Abhishek's Windows",
+  "device_os": "windows",
+  "fingerprint": "3f2a 91c4 8d10 6b57",
+  "address": "192.168.0.103"
+}
+```
+
 ## `SwitchKeyBinding`
 
 The shortcut that switches the active device (`docs/product/vision.md` §12).

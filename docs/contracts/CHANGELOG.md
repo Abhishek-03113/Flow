@@ -1,5 +1,23 @@
 # Contract Changelog
 
+## 0.1.3 — incoming pairing prompt (non-breaking)
+
+Adds a sixth `watch*` stream, `watchIncomingPairingRequest()` (event
+`incoming_pairing_request_changed`, sent last on connect, `null` when
+nothing is pending), and an eleventh command,
+`respond_to_pairing_request` (`{ request_id, decision }`). Together they
+replace the daemon's internal, undocumented stand-in for user consent —
+a stage-based "pairing window" that only accepted an incoming request
+while this device's own user happened to be mid-pair — with a real
+Accept/Reject prompt: any untrusted inbound connection raises an
+`IncomingPairingRequest` on the UI, and the user's choice drives the
+handshake. No connected UI ⇒ immediate reject; ~30s without an answer ⇒
+reject; one request at a time. New error code: `pairing_request_not_found`.
+New type `IncomingPairingRequest` in `data-model.md`. Implemented by both
+`MockDaemonRepository` and `flow-daemon`
+(`DaemonService::respond_to_pairing_request`,
+`daemon/src/service/mod.rs`; `daemon/src/ipc/dispatch.rs`).
+
 ## 0.1.2 — `retry_connection` (non-breaking)
 
 Adds a tenth command, `retry_connection`, closing a gap `daemon-ipc.md`'s own link-health state machine already documented but the interface never implemented: `disconnected --(user retries)--> connecting` and `error --(user retries)--> connecting`. Before this, the Flutter UI's "Retry" affordance (`flutter/lib/features/tray/tray_popover.dart`) had no command to send at all — clicking it just showed a "Reconnected" toast with no daemon round-trip, regardless of whether the link was actually reachable. `retry_connection` only moves the link to `connecting`; it never claims `connected` itself, since real recovery still has to happen (and show up via `link_state_changed`) the normal way. New error code: `link_not_recoverable` (the link isn't `disconnected`/`error`, so there's nothing to retry). Implemented by both `MockDaemonRepository` and `flow-daemon` (`DaemonService::retry_connection`, `daemon/src/ipc/dispatch.rs`).
