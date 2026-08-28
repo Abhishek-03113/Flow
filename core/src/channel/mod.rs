@@ -78,12 +78,14 @@ pub enum ChannelMessage {
     },
     Pairing(PairingWireMessage),
     Heartbeat,
-    /// Raw bytes carried by `NoiseChannel` (`daemon/todos.json` H3):
-    /// handshake material before its wrapped transport is established,
-    /// or an encrypted, serialized `ChannelMessage` afterward. Never
-    /// constructed or matched outside `daemon::channel::noise` — every
-    /// other module only ever sees the decrypted `ChannelMessage`
-    /// `NoiseChannel`'s own `Channel` implementation yields.
+    /// Raw bytes for session establishment. Carried by `NoiseChannel`
+    /// (`daemon/todos.json` H3) for handshake material before its wrapped
+    /// transport is established, and for an encrypted serialized
+    /// `ChannelMessage` afterward; also carries the single cleartext
+    /// public-key frame of `daemon::security`'s dev-only plaintext
+    /// handshake (`FLOW_SECURITY=insecure`). Never constructed or matched
+    /// outside those two modules — every other module only ever sees the
+    /// decrypted `ChannelMessage` the session channel yields.
     Noise(Vec<u8>),
 }
 

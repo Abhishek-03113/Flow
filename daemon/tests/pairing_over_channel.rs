@@ -13,6 +13,7 @@ use flow_daemon::channel::noise::NoiseChannel;
 use flow_daemon::channel::tcp::TcpChannel;
 use flow_daemon::discovery::DiscoveredPeer;
 use flow_daemon::identity::DeviceIdentity;
+use flow_daemon::security::{Security, SecurityMode};
 use flow_daemon::service::DaemonService;
 use flow_daemon::storage::device_repo::DeviceRepo;
 use flow_daemon::storage::Storage;
@@ -205,6 +206,115 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
         a_record.public_key.as_ref().map(Vec::len),
         Some(32),
         "device A's real 32-byte ed25519 public key should be persisted, not None"
+    );
+}
+
+/// `FLOW_SECURITY=insecure` (the dev profile): two daemons pair over a
+/// plaintext channel with **no UI connected on either side** and no
+/// `respond_to_pairing_request` call — the responder auto-accepts. Both
+/// sides still end up with the other persisted, keyed by its claimed
+/// (here: genuine) ed25519 public key, exactly as the secure path does.
+/// This is what lets a headless driver script bring the two-daemon
+/// stream up without clicking anything.
+#[tokio::test]
+async fn insecure_profile_pairs_two_headless_daemons_with_no_ui() {
+    async fn insecure_daemon() -> (DaemonService, Storage) {
+        let storage = Storage::open_in_memory().await.expect("open in-memory db");
+        let service = DaemonService::new_with_security(
+            storage.clone(),
+            Security::from_mode(SecurityMode::Insecure),
+        )
+        .await;
+        (service, storage)
+    }
+
+    let (service_a, _storage_a) = insecure_daemon().await;
+    let (service_b, storage_b) = insecure_daemon().await;
+
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind b's listener");
+    let b_addr = listener.local_addr().expect("local addr");
+
+    // Deliberately NO `register_ipc_client` and NO `watch_incoming_request`
+    // task: the insecure profile's auto-accept is the whole point.
+    let responder = {
+        let service_b = service_b.clone();
+        tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await.expect("accept");
+            let channel = TcpChannel::accept(stream).await.expect("accept ws");
+            let channel: Box<dyn Channel> = Box::new(channel);
+            service_b
+                .accept_pairing_request(channel, Some(peer))
+                .await
+                .expect("responder side of the handshake");
+        })
+    };
+
+    service_a
+        .note_discovered_peer(DiscoveredPeer {
+            name: "Headless B".to_string(),
+            os: HostOs::Windows,
+            address: ChannelAddress::Tcp(b_addr),
+        })
+        .await;
+
+    let mut sessions = service_a.watch_pairing_session();
+    let _ = sessions.borrow_and_update();
+    service_a.start_pairing().await.expect("start pairing");
+
+    // Drive the session to Paired (Searching -> Found -> Requesting -> Paired).
+    let mut stage = PairingStage::Idle;
+    while stage != PairingStage::Paired {
+        sessions
+            .changed()
+            .await
+            .expect("pairing session progresses");
+        stage = sessions.borrow_and_update().stage;
+        assert_ne!(
+            stage,
+            PairingStage::Failed,
+            "insecure pairing must not fail"
+        );
+        if stage == PairingStage::Found {
+            let candidate = sessions
+                .borrow_and_update()
+                .candidates
+                .iter()
+                .find(|c| c.name == "Headless B")
+                .expect("the live candidate is offered")
+                .clone();
+            service_a
+                .pair_with_candidate(&candidate.id)
+                .await
+                .expect("pair with the live candidate");
+        }
+    }
+
+    responder.await.expect("responder task");
+
+    let a_has_b = service_a
+        .watch_devices()
+        .borrow()
+        .iter()
+        .any(|d| d.id.0.starts_with("pk:"));
+    assert!(a_has_b, "A paired with B with no UI on either side");
+
+    let a_in_b = {
+        let devices = service_b.watch_devices().borrow().clone();
+        devices
+            .into_iter()
+            .find(|d| d.id.0.starts_with("pk:"))
+            .expect("B persisted A despite no UI and no manual accept")
+    };
+    let a_record = DeviceRepo::new(storage_b)
+        .find_by_id(a_in_b.id.clone())
+        .await
+        .expect("A's record persisted on B's side");
+    assert_eq!(
+        a_record.public_key.as_ref().map(Vec::len),
+        Some(32),
+        "A's 32-byte key is persisted on B even through the plaintext dev handshake"
     );
 }
 

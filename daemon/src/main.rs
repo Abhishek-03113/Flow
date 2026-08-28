@@ -59,7 +59,7 @@ async fn main() {
         Ok(storage) => storage,
         Err(err) => fatal(&format!("failed to open the flow-daemon database: {err}")),
     };
-    let service = Arc::new(daemon_service(storage.clone()).await);
+    let service = Arc::new(daemon_service(storage.clone(), &dev).await);
     let _history_logger = history_logger::spawn(&service, storage.clone());
     let _hotkey_runner = hotkey::runner::spawn(&service);
     let _debug_logging_toggle = flow_daemon::logging::spawn_debug_logging_toggle(&service, logging);
@@ -587,17 +587,18 @@ fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
 /// against without a real daemon ever seeding fake data by default. A
 /// real deployment must never set this; nothing in this codebase sets it
 /// automatically.
-async fn daemon_service(storage: Storage) -> DaemonService {
+async fn daemon_service(storage: Storage, dev: &flow_daemon::devmode::DevMode) -> DaemonService {
     if std::env::var_os("FLOW_DAEMON_SEED_MOCK_PARITY").is_some() {
         tracing::warn!(
             "FLOW_DAEMON_SEED_MOCK_PARITY is set — seeding the mock-parity \
              test fixture instead of real state. Never set this for a real \
              deployment."
         );
-        DaemonService::new_seeded_for_test(storage).await
-    } else {
-        DaemonService::new(storage).await
+        return DaemonService::new_seeded_for_test(storage).await;
     }
+    let security = flow_daemon::security::Security::from_mode(dev.security);
+    tracing::info!("peer-connection security profile: {}", security.label());
+    DaemonService::new_with_security(storage, security).await
 }
 
 /// The database file lives under the platform data directory (via the
