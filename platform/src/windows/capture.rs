@@ -219,16 +219,18 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         // for the duration of this call, per WH_KEYBOARD_LL's contract.
         let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
         let timestamp_ms = now_ms();
-        STATE.with(|state| {
-            if let Some(state) = state.borrow_mut().as_mut() {
-                if let Some(event) =
-                    state
-                        .translator
-                        .translate_keyboard(wparam.0 as u32, info, timestamp_ms)
-                {
-                    let _ = state.sender.send(event);
+        guard_hook_body("keyboard", || {
+            STATE.with(|state| {
+                if let Some(state) = state.borrow_mut().as_mut() {
+                    if let Some(event) =
+                        state
+                            .translator
+                            .translate_keyboard(wparam.0 as u32, info, timestamp_ms)
+                    {
+                        let _ = state.sender.send(event);
+                    }
                 }
-            }
+            });
         });
     }
     // SAFETY: forwards to the next hook in the chain, as required by the
@@ -242,21 +244,40 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         // for the duration of this call, per WH_MOUSE_LL's contract.
         let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
         let timestamp_ms = now_ms();
-        STATE.with(|state| {
-            if let Some(state) = state.borrow_mut().as_mut() {
-                if let Some(event) =
-                    state
-                        .translator
-                        .translate_mouse(wparam.0 as u32, info, timestamp_ms)
-                {
-                    let _ = state.sender.send(event);
+        guard_hook_body("mouse", || {
+            STATE.with(|state| {
+                if let Some(state) = state.borrow_mut().as_mut() {
+                    if let Some(event) =
+                        state
+                            .translator
+                            .translate_mouse(wparam.0 as u32, info, timestamp_ms)
+                    {
+                        let _ = state.sender.send(event);
+                    }
                 }
-            }
+            });
         });
     }
     // SAFETY: forwards to the next hook in the chain, as required by the
     // WH_MOUSE_LL contract regardless of whether this handled the event.
     unsafe { CallNextHookEx(None, code, wparam, lparam) }
+}
+
+/// Runs one hook callback's translate-and-forward body, catching any
+/// panic before it can reach the `extern "system"` frame — where an
+/// unwinding panic becomes an immediate `abort()` and takes the whole
+/// daemon down. A bug in translation (or a hostile/degenerate hook
+/// struct) must at worst drop one event, matching how the daemon
+/// degrades everywhere else. `AssertUnwindSafe` is sound here because a
+/// caught panic leaves nothing observably broken: the `RefCell` borrow
+/// is released as its `RefMut` unwinds, and the worst outcome is a
+/// missed event or a translator whose `last_mouse_position` is one step
+/// stale.
+fn guard_hook_body(which: &str, body: impl FnOnce()) {
+    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)).is_err() {
+        // Note, don't propagate. A tracing macro is panic-safe.
+        tracing::error!("the {which} hook callback panicked; the event was dropped");
+    }
 }
 
 fn now_ms() -> u64 {
