@@ -6,7 +6,7 @@
 //! product... Users should eventually be able to choose... Custom key
 //! combinations."
 
-mod debounce;
+pub mod debounce;
 pub mod runner;
 
 use std::collections::HashSet;

@@ -488,13 +488,27 @@ async fn run_peer_pipeline(
         return;
     };
 
+    // While this pipeline runs it owns switch-key authority: once
+    // `suppress_local` starts withholding events from the OS, the
+    // standalone `hotkey::runner`'s separate hook no longer sees the
+    // switch key at all, so detection has to happen on this stream, which
+    // is still live. `spawn_pipeline_switch_filter` runs the matcher here
+    // and strips the switch key out of what's forwarded to the peer (so
+    // pressing it never types on the remote machine); `enter_peer_pipeline`
+    // stands the standalone runner down for the duration so the press
+    // doesn't switch twice.
+    let _switch_authority = service.enter_peer_pipeline();
+    let pipeline_input =
+        hotkey::runner::spawn_pipeline_switch_filter((*service).clone(), bridge_rx);
+
     // Suppression runs on the capture handle, which the pipeline can't
     // hold itself (it lives here, alongside the thread bridging capture
     // into async). A failure is logged once per transition rather than
-    // per event, and never aborts the connection: on macOS and Windows
-    // this always fails today (see `InputCapture::set_suppress_local`),
-    // and streaming input to the peer is still useful there even while
-    // it also reaches local applications.
+    // per event, and never aborts the connection: on macOS this still
+    // fails today (see `InputCapture::set_suppress_local`) and streaming
+    // is still useful there even while input also reaches local
+    // applications; on Windows it is now real
+    // (`todos-fix-physical-input-switching.md`).
     let suppression_device_id = device_id.clone();
     let suppress_local = move |suppress: bool| {
         if let Err(err) = capture.set_suppress_local(suppress) {
@@ -515,7 +529,7 @@ async fn run_peer_pipeline(
     );
     pipeline::run_paired_connection(
         channel,
-        bridge_rx,
+        pipeline_input,
         devices_rx,
         injector,
         device_id.clone(),
