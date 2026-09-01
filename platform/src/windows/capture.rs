@@ -46,6 +46,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::translate::EventTranslator;
+use super::FLOW_INJECTED_MARKER;
 
 thread_local! {
     static STATE: RefCell<Option<CaptureState>> = const { RefCell::new(None) };
@@ -244,6 +245,14 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         // SAFETY: for code >= 0, lparam points to a valid KBDLLHOOKSTRUCT
         // for the duration of this call, per WH_KEYBOARD_LL's contract.
         let info = unsafe { &*(lparam.0 as *const KBDLLHOOKSTRUCT) };
+        // This daemon's own injected output (see `super::FLOW_INJECTED_MARKER`)
+        // is observed by this hook like any other event. Skip it entirely
+        // — don't translate, forward, or gate it — or a slave machine
+        // re-forwards the peer's input straight back and the two echo.
+        if info.dwExtraInfo == FLOW_INJECTED_MARKER {
+            // SAFETY: pass-through to the next hook, WH_KEYBOARD_LL contract.
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
         let message = wparam.0 as u32;
         let vk_code = info.vkCode;
         let timestamp_ms = now_ms();
@@ -281,6 +290,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         // SAFETY: for code >= 0, lparam points to a valid MSLLHOOKSTRUCT
         // for the duration of this call, per WH_MOUSE_LL's contract.
         let info = unsafe { &*(lparam.0 as *const MSLLHOOKSTRUCT) };
+        // Skip this daemon's own injected output — see the matching note
+        // in `keyboard_proc` and `super::FLOW_INJECTED_MARKER`.
+        if info.dwExtraInfo == FLOW_INJECTED_MARKER {
+            // SAFETY: pass-through to the next hook, WH_MOUSE_LL contract.
+            return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+        }
         let message = wparam.0 as u32;
         let timestamp_ms = now_ms();
         let withhold = guard_hook_body("mouse", || {
