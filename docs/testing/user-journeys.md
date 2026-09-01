@@ -127,10 +127,11 @@ forwarded to Mac only (gated on the peer being Active) + suppressed locally
 Mac injects the keystroke (CGEventPost); Windows app does NOT see it
 ```
 
-`[~]` Forwarding + sequence/replay handling + held-key release: implemented, unit-tested.
-Windows local suppression (`SuppressionGate`, return `LRESULT(1)`): implemented and
-unit-tested, **merged**, but never run on real hardware. Never demonstrated
-Windows → Mac on two machines.
+`[~]` Forwarding + sequence/replay handling + held-key release: implemented, unit-tested,
+and exercised over real sockets by `drive_two_daemons`. Windows local suppression
+(`SuppressionGate`, return `LRESULT(1)`) + self-injection guard (`dwExtraInfo` marker, added
+iteration 3): implemented and unit-tested, but never run on real hardware. Never
+demonstrated Windows → Mac on two machines.
 
 ## Journey 7 — Use the mouse on the remote device `[~]`
 
@@ -198,7 +199,7 @@ on any callback error. **Not validated on hardware** — the two things needing 
 whether `NULL` actually drops the event on the running macOS version and whether the
 self-inject marker survives `CGEventPost`. See `physical-test-script.md` Round 2.
 
-## Journey 10 — Repeated switching `[ ]`
+## Journey 10 — Repeated switching `[~]`
 
 ```
 A → B → A → B → A → B  (many cycles)
@@ -206,11 +207,14 @@ A → B → A → B → A → B  (many cycles)
 no state drift · no stuck keys · no stuck mouse buttons · no duplicate input · no crash
 ```
 
-`[ ]` Not verified. The single-`Active` invariant is clean in code and the debounce is
-unit-tested, but rapid real switching across two machines has never been exercised, and a
-known-unresolved concern (connection-ownership teardown, "#4") could surface here. Held-key
-release on disconnect is implemented; held-key release *across a switch* relies on the
-`SuppressionGate` press/release symmetry, unit-tested on Windows only.
+`[~]` The single-`Active` invariant is clean in code, the debounce is unit-tested, and the
+`drive_two_daemons` example (two real daemons on one host, synthetic input over real
+sockets) passes: forwarding follows the active device, a switch halts the previous
+direction, and **no duplicate input** — after the iteration-3 self-injection fix, 14 sent =
+14 landed exactly, each direction. Still unverified: rapid switching across two *physical*
+machines, and whether the connection-ownership concern ("#4") surfaces there. Held-key
+release across a switch relies on the `SuppressionGate` press/release symmetry
+(unit-tested Windows + macOS).
 
 ## Journey 11 — Disconnect / reconnect `[~]`
 
@@ -265,7 +269,7 @@ is deliberately not persisted (no stale `Active` on boot).
 | — | Clean product-level logging | done | ~~P0~~ | ✅ iteration 1 — `RUST_LOG=flow=debug`, scoped, no dep noise; `[INPUT]/[SWITCH]/[PEER]/[ERROR]` lines |
 | R | Mac as master (macOS suppression) | `[~]` | ~~P0~~ | ✅ iteration 2 code-complete + unit-tested; **needs Mac hardware validation** |
 | 6–9 | Physical Win↔Mac keyboard/mouse/switch | `[~]` | **P0** | The definition of done; needs the maintainer + two machines (Round 1 + Round 2) |
-| 10 | Repeated switching, no drift | `[ ]` | P1 | Depends on 6–9 working first; may surface "#4" |
+| 10 | Repeated switching, no drift | `[~]` | P1 | No-dup-input proven on one host (`drive_two_daemons`); physical rapid-switch + "#4" still open |
 | 11 | Disconnect / reconnect | `[~]` | P1 | Depends on 6–9; may surface "#5" |
 | 5 | Windows ↔ Mac pairing | `[~]` | P1 | One manual step (Pair on the Mac); path already proven Win↔Win |
 | 12 | Link-state transitions in UI | `[~]` | P2 | Cosmetic-adjacent; validated once 11 is exercised |

@@ -83,6 +83,16 @@ maintainer's Mac with a lifeline.
 - [ ] **V4** — triage #4 (connection ownership) and #5 (WebSocket 1006) against the real
       logs from V2/V3; smallest fixes, ref-checked.
 
+## Found by running the app (iteration 3)
+
+- [x] **G1** — Windows capture re-captured the daemon's own `SendInput` output (no
+      self-injection guard; Linux skips its uinput node, macOS got one in iteration 2).
+      As a slave, re-captured events re-entered the pipeline and echoed back to the active
+      peer; relative `MouseMove` deltas compounded → 14 synthetic events became 212k+.
+      Fix: `dwExtraInfo = FLOW_INJECTED_MARKER` on every injected `INPUT`; `keyboard_proc`
+      / `mouse_proc` skip matching events. Verified: `drive_two_daemons` → ALL CHECKS
+      PASSED, 14/14 each direction (was 0 / 212771).
+
 ## P1 — follow-ups (after physical validation)
 
 - [ ] **F1** — Journey 10: repeated-switching drift check on real hardware (no stuck
@@ -114,3 +124,4 @@ maintainer's Mac with a lifeline.
 | 0 | baseline | — | — | `cargo test --workspace` | 244 pass, 0 fail; build/clippy/fmt green |
 | 1 | `RUST_LOG=flow=debug` ignored; `FLOW_TRACE` = global TRACE (tungstenite firehose) | `logging.rs` used a single global `LevelFilter` reload layer, no per-target scoping; `env-filter` feature not enabled | `EnvFilter` reload layer; scoped `flow`/`flow_daemon` default; `RUST_LOG` honored when set; `logging::product` `[INPUT]/[SWITCH]/[PEER]/[ERROR]` lines wired into pipeline/service/main | `cargo test --workspace` (245), `clippy -D`, `fmt`, 3 smoke runs | green; zero dep/frame noise at any level; product lines readable |
 | 2 | Mac-as-master types into both machines (Journey R) | `macos/capture.rs` used a `ListenOnly` `CGEventTap` (can't swallow); `set_suppress_local` returned `Err(SuppressionUnsupported)` | Active tap via raw `CGEventTapCreate` + `extern "C"` trampoline returning `NULL` to drop; `Arc<AtomicBool>` flag; `SuppressionGate` port; `TapDisabledBy*` re-arm; self-inject marker guard; fails open on panic | native `cargo test --workspace` (245), apple `cargo check`/`clippy` x2 targets, 11 gate unit tests (cfg'd, hand-verified) | code-complete + cross-checked; **2 items pending Mac hardware** (NULL-drop contract, marker survival) |
+| 3 | 14 synthetic events → 212k+ forwarded, exp. growing mouse deltas (found running `drive_two_daemons`) | Windows LL hooks re-captured the daemon's own `SendInput` output; as a slave those re-entered the pipeline and echoed to the active peer, compounding via the relative→absolute→relative move translation | `dwExtraInfo = FLOW_INJECTED_MARKER` on every injected `INPUT`; `keyboard_proc`/`mouse_proc` skip matching events (mirrors macOS M5, Linux's uinput-node skip) | `cargo test --workspace` (246), clippy -D, fmt; `drive_two_daemons` re-run | ALL CHECKS PASSED — 14/14 each direction, switch halts flow, `[INPUT]`/`[SWITCH]`/`[PEER]` logs correct |
