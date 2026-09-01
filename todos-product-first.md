@@ -20,27 +20,23 @@ The brief requires `RUST_LOG=flow=debug` to give useful product logs with **no**
 Today the daemon ignores `RUST_LOG` entirely (`LevelFilter` reload layer) and `FLOW_TRACE`
 turns on the global TRACE firehose.
 
-- [ ] **L1** — `daemon/Cargo.toml`: `tracing-subscriber` `features = ["env-filter"]`.
-- [ ] **L2** — `logging.rs`: swap `reload::Layer<LevelFilter>` → `reload::Layer<EnvFilter>`.
-      When `RUST_LOG` is set it wins verbatim; when unset, scoped default
-      `flow={lvl},flow_daemon={lvl}` where `lvl` = trace floor / debug / info.
-      `FLOW_TRACE` becomes `flow=trace,flow_daemon=trace` (scoped, no dep noise).
-- [ ] **L3** — keep the runtime `debug_logging` toggle working: `LoggingHandle::set_debug`
-      reloads a new scoped `EnvFilter`. If `RUST_LOG` was set at startup, the toggle is a
-      logged no-op (env wins). Update the 6 tests + 2 helpers in `logging.rs::tests`.
-- [ ] **L4** — `logging::product` helpers emitting `tracing::info!(target: "flow", …)`:
-      `[INPUT] <from> → <to> | <detail>`, `[SWITCH] <from> → <to>`,
-      `[PEER] <name> connected|disconnected`, `[ERROR] <context>: <err>`.
-- [ ] **L5** — call them: `[INPUT]` in `pipeline::run_paired_connection` (frame_sent /
-      injected branches, resolving ids→names from the `devices` watch);
-      `[SWITCH]` in `service::switch_active_device{,_local}`;
-      `[PEER]` in `main::run_peer_pipeline` (after `set_link_state(Connected)` / after the
-      pipeline await returns); `[ERROR]` at the inject/suppress/capture `warn!` sites.
-- [ ] **L6** — verify: `cargo test --workspace`, `clippy -D warnings`, `fmt`; run the daemon
-      with `RUST_LOG` unset, `RUST_LOG=flow=debug`, `FLOW_TRACE=1` and confirm no
-      tungstenite/tcp lines in the first two, and product lines are readable.
-- [ ] **L7** — update `daemon/README.md` logging section + `todos-fix-physical-input-switching.md`
-      §1 "logging reality check" (the `EnvFilter` follow-up it recommended is now done).
+- [x] **L1** — `daemon/Cargo.toml`: `tracing-subscriber` `features = ["env-filter"]`.
+- [x] **L2** — `logging.rs`: `reload::Layer<LevelFilter>` → `reload::Layer<EnvFilter>`.
+      `RUST_LOG` set → wins verbatim (`base` as default directive). Unset → scoped
+      `flow={lvl},flow_daemon={lvl}`. `FLOW_TRACE` → `flow=trace,flow_daemon=trace`.
+- [x] **L3** — `LoggingHandle` gained `trace_floor: bool` + `env_controlled: bool`;
+      `set_debug` reloads a scoped `EnvFilter`, or one-time no-op when `env_controlled`.
+      `current_level()` → `max_level()`. 6 tests + 2 helpers rewritten, +1 new.
+- [x] **L4** — `logging::product`: `input` (DEBUG, per-event), `switch`/`peer_connected`/
+      `peer_disconnected` (INFO), `error` (ERROR); all `target: "flow"`, ASCII `->`.
+- [x] **L5** — wired: `[INPUT]` both directions in `run_paired_connection` (+`describe_event`);
+      `[SWITCH]` in both `service` switch paths; `[PEER]` in `main::run_peer_pipeline`;
+      `[ERROR]` at inject/suppress/capture failure sites in `pipeline` + `main`.
+- [x] **L6** — `cargo test --workspace` 244→245, `clippy -D warnings`, `fmt` green.
+      Smoke runs (unset / `flow=debug` / `FLOW_TRACE=1`): readable startup, zero
+      `tungstenite`/`tokio_tungstenite`/`Framed`/byte-dump lines in all three.
+- [x] **L7** — `daemon/README.md` logging section + `todos-fix-physical-input-switching.md`
+      §1 updated.
 
 ## P0 — macOS local suppression (Journey R — the one code gap)
 
@@ -112,3 +108,4 @@ maintainer's Mac with a lifeline.
 | # | Problem | Root cause | Fix | Test | Result |
 |---|---------|-----------|-----|------|--------|
 | 0 | baseline | — | — | `cargo test --workspace` | 244 pass, 0 fail; build/clippy/fmt green |
+| 1 | `RUST_LOG=flow=debug` ignored; `FLOW_TRACE` = global TRACE (tungstenite firehose) | `logging.rs` used a single global `LevelFilter` reload layer, no per-target scoping; `env-filter` feature not enabled | `EnvFilter` reload layer; scoped `flow`/`flow_daemon` default; `RUST_LOG` honored when set; `logging::product` `[INPUT]/[SWITCH]/[PEER]/[ERROR]` lines wired into pipeline/service/main | `cargo test --workspace` (245), `clippy -D`, `fmt`, 3 smoke runs | green; zero dep/frame noise at any level; product lines readable |

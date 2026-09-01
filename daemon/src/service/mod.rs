@@ -256,6 +256,16 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
     list
 }
 
+/// Resolves a device id to its display name for a product log line,
+/// falling back to the raw id when it isn't among `devices`.
+fn device_display_name(devices: &[Device], id: &str) -> String {
+    devices
+        .iter()
+        .find(|device| device.id.0 == id)
+        .map(|device| device.name.clone())
+        .unwrap_or_else(|| id.to_string())
+}
+
 /// The device a local hotkey trigger should switch to: the first
 /// `Inactive`/`Connected` device in id order starting just after the
 /// currently active one, wrapping around — `None` if nothing else is
@@ -558,6 +568,11 @@ impl DaemonService {
             (devices_list(&state), previous_active)
         };
 
+        let to_name = device_display_name(&devices, &target_id.0);
+        let from_name = previous_active
+            .as_deref()
+            .map(|id| device_display_name(&devices, id))
+            .unwrap_or_else(|| "(none)".to_string());
         self.devices_tx.send_replace(devices);
         crate::hop_note!(
             stage = "switch",
@@ -567,6 +582,7 @@ impl DaemonService {
             trigger = "ipc",
             "active device switched — input now flows toward this device"
         );
+        crate::logging::product::switch(&from_name, &to_name);
         Ok(())
     }
 
@@ -604,6 +620,11 @@ impl DaemonService {
             (devices_list(&state), previous_active)
         };
 
+        let to_name = device_display_name(&devices, &target_id.0);
+        let from_name = previous_active
+            .as_deref()
+            .map(|id| device_display_name(&devices, id))
+            .unwrap_or_else(|| "(none)".to_string());
         self.devices_tx.send_replace(devices);
         crate::hop_note!(
             stage = "switch",
@@ -613,6 +634,7 @@ impl DaemonService {
             trigger = "hotkey",
             "active device switched by the local switch key"
         );
+        crate::logging::product::switch(&from_name, &to_name);
     }
 
     /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is

@@ -391,7 +391,6 @@ async fn run_peer_pipeline(
     device_id: DeviceId,
     connected_peers: ConnectedPeers,
 ) {
-    tracing::info!("streaming pipeline starting for peer {device_id:?}");
     flow_daemon::hop_note!(
         stage = "pipeline_up",
         role = "local",
@@ -399,12 +398,22 @@ async fn run_peer_pipeline(
         "input-streaming pipeline starting for a paired peer"
     );
     let devices_rx = service.watch_devices();
+    // A stable display name for this peer, for the product `[PEER]` /
+    // `[ERROR]` log lines — resolved once from the current device list,
+    // falling back to the raw id if it isn't listed yet.
+    let peer_name = devices_rx
+        .borrow()
+        .iter()
+        .find(|device| device.id == device_id)
+        .map(|device| device.name.clone())
+        .unwrap_or_else(|| device_id.0.clone());
 
     let (capture_tx, capture_rx) = std::sync::mpsc::channel();
     let mut capture = DefaultInputCapture::new(capture_tx);
     if let Err(err) = capture.start() {
-        tracing::warn!(
-            "peer pipeline for {device_id:?} not started: input capture failed: {err:?}"
+        flow_daemon::logging::product::error(
+            &format!("input capture would not start; pipeline for peer {peer_name} not running"),
+            &err,
         );
         flow_daemon::hop_note!(
             stage = "capture_failed",
@@ -482,7 +491,7 @@ async fn run_peer_pipeline(
     // confined to its own dedicated OS thread and hands back a `Send`,
     // channel-backed [`InjectorHandle`] instead, so the non-`Send` type
     // never enters this async function's state machine at all.
-    let Some(injector) = spawn_injector(device_id.clone()) else {
+    let Some(injector) = spawn_injector(peer_name.clone()) else {
         let _ = capture.stop();
         connected_peers.lock().await.remove(&device_id);
         return;
@@ -509,13 +518,16 @@ async fn run_peer_pipeline(
     // is still useful there even while input also reaches local
     // applications; on Windows it is now real
     // (`todos-fix-physical-input-switching.md`).
-    let suppression_device_id = device_id.clone();
+    let suppress_peer_name = peer_name.clone();
     let suppress_local = move |suppress: bool| {
         if let Err(err) = capture.set_suppress_local(suppress) {
-            tracing::warn!(
-                "could not {} local input for peer {suppression_device_id:?}: {err:?} \
-                 (input will reach this machine's own applications as well)",
-                if suppress { "suppress" } else { "restore" }
+            let action = if suppress { "suppress" } else { "restore" };
+            flow_daemon::logging::product::error(
+                &format!(
+                    "could not {action} local input for peer {suppress_peer_name} \
+                     (input will also reach this machine's own applications)"
+                ),
+                &err,
             );
         }
     };
@@ -527,6 +539,7 @@ async fn run_peer_pipeline(
         peer = %device_id.0,
         "link state set to Connected; streaming both directions now"
     );
+    flow_daemon::logging::product::peer_connected(&peer_name);
     pipeline::run_paired_connection(
         channel,
         pipeline_input,
@@ -536,7 +549,7 @@ async fn run_peer_pipeline(
         suppress_local,
     )
     .await;
-    tracing::info!("streaming pipeline ended for peer {device_id:?}");
+    flow_daemon::logging::product::peer_disconnected(&peer_name);
     flow_daemon::hop_note!(
         stage = "pipeline_down",
         role = "local",
@@ -599,7 +612,7 @@ impl InputInjector for InjectorHandle {
 /// `ready_rx.recv()` to learn whether construction succeeded before
 /// returning, mirroring `MacosInputCapture::start()`'s own
 /// ready-channel handshake for its capture thread.
-fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
+fn spawn_injector(peer_name: String) -> Option<InjectorHandle> {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let (events_tx, events_rx) = std::sync::mpsc::channel::<InputEvent>();
 
@@ -607,8 +620,11 @@ fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
         let mut injector = match new_default_input_injector() {
             Ok(injector) => injector,
             Err(err) => {
-                tracing::warn!(
-                    "peer pipeline for {device_id:?} not started: input injection failed: {err:?}"
+                flow_daemon::logging::product::error(
+                    &format!(
+                        "input injector would not start; pipeline for peer {peer_name} not running"
+                    ),
+                    &err,
                 );
                 let _ = ready_tx.send(false);
                 return;
@@ -621,7 +637,10 @@ fn spawn_injector(device_id: DeviceId) -> Option<InjectorHandle> {
         }
         for event in events_rx {
             if let Err(err) = injector.inject(&event) {
-                tracing::warn!("input injection failed for peer {device_id:?}: {err:?}");
+                flow_daemon::logging::product::error(
+                    &format!("inject input for peer {peer_name}"),
+                    &err,
+                );
             }
         }
     });

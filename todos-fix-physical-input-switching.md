@@ -31,18 +31,21 @@ validated on real hardware or across two machines. Not committed.
 
 ### Logging reality check (affects the prompt's run recipes)
 
-The daemon does **not** honor `RUST_LOG`. `daemon/src/logging.rs` installs a
-`tracing_subscriber` **`LevelFilter` reload layer**, not an `EnvFilter`. Verbosity is
-controlled by:
+The daemon did **not** honor `RUST_LOG`. `daemon/src/logging.rs` installed a
+`tracing_subscriber` **`LevelFilter` reload layer**, not an `EnvFilter`.
 
-- `FLOW_TRACE=1` → global `TRACE` floor (this also turns on `tokio_tungstenite` frame TRACE —
-  the noise the prompt asks to avoid), and
-- `settings.debug_logging` → `DEBUG` at runtime via IPC.
+**RESOLVED (product-first V1, iteration 1).** The reload layer is now an `EnvFilter`:
+- `RUST_LOG` set → wins verbatim.
+- `RUST_LOG` unset → scoped default `flow={level},flow_daemon={level}`.
+- `FLOW_TRACE=1` → `flow=trace,flow_daemon=trace` (scoped — no `tokio_tungstenite` frame
+  noise), not a global `TRACE` floor.
+- `settings.debug_logging` → still toggles `DEBUG` at runtime via IPC (inert no-op if
+  `RUST_LOG` was set at startup).
 
-The lifecycle trail is on target `flow::hop` (`hop!` = TRACE, `hop_note!` = DEBUG).
-**Recommended follow-up:** swap the reload layer for `EnvFilter` (still reload-able) so
-`RUST_LOG=flow=debug,flow_daemon=debug` works and scopes out the tungstenite firehose.
-Not done here — it is a change to a deliberately-designed module, out of this scope.
+`RUST_LOG=flow=debug` is the documented product-debug command. The lifecycle trail is still
+on target `flow::hop` (`hop!` = TRACE, `hop_note!` = DEBUG); product lines
+(`[INPUT]/[SWITCH]/[PEER]/[ERROR]`) are on the bare `flow` target via `logging::product::*`.
+See `daemon/README.md` "Structured logging".
 
 ---
 
