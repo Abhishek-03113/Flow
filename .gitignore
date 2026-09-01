@@ -5,6 +5,9 @@
 # Flutter / Dart (flutter/.gitignore, from `flutter create`, covers the rest)
 flutter/**/generated_plugin_registrant.dart
 
+# Git worktrees
+/worktrees/
+
 # Editors / OS
 .DS_Store
 .vscode/
