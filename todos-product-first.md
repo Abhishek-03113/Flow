@@ -101,9 +101,14 @@ maintainer's Mac with a lifeline.
       the Mac); confirm mutual trust persists across restart on both.
 - [ ] **F3** — Journey 11/12: exercise a real peer drop; confirm link state →
       `Reconnecting` → recovery in the UI, local input usable throughout.
-- [ ] **F4** — multi-key switch binding leaks modifier down/up to the peer
-      (`spawn_pipeline_switch_filter`). Default Scroll Lock is clean; fix or document as a
-      known limitation for non-default bindings.
+- [-] **F4** — multi-key switch binding leaks modifier down/up to the peer
+      (`spawn_pipeline_switch_filter`). **Skipped for V1:** the vision's master key is
+      Scroll Lock (single key), which is clean. Documented as a known limitation for
+      non-default multi-key bindings; fixing it is post-V1 scope.
+- [~] **F3 quick check** — attempted a disconnect/reconnect scenario with two bare local
+      daemons (no driver): they discover but don't auto-pair without a UI/driver to
+      *initiate* pairing (insecure mode only auto-*accepts*). Journey 11 recovery is a
+      genuine two-endpoint scenario — deferred to the physical test (Round 1 steps 9–10).
 
 ## Out of scope for V1 `[-]`
 
