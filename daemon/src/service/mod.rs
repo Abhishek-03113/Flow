@@ -335,6 +335,13 @@ pub struct DaemonService {
     /// stream, so a driver-injected event travels the exact same
     /// gate → sequence → channel → peer → inject path as a real keypress.
     debug_inject_tx: tokio::sync::broadcast::Sender<InputEvent>,
+    /// How many peer input-streaming pipelines are currently running.
+    /// While this is non-zero a pipeline owns switch-key authority (its
+    /// own capture stream still sees the switch key even while local
+    /// suppression withholds it from the OS), so the standalone
+    /// `hotkey::runner` stands down to avoid a double switch. Maintained
+    /// through [`Self::enter_peer_pipeline`]'s RAII guard.
+    active_peer_pipelines: Arc<AtomicUsize>,
 }
 
 impl DaemonService {
@@ -396,7 +403,26 @@ impl DaemonService {
             incoming_request_tx,
             test_hooks: false,
             debug_inject_tx,
+            active_peer_pipelines: Arc::new(AtomicUsize::new(0)),
         }
+    }
+
+    /// Marks a peer input-streaming pipeline as running for as long as
+    /// the returned guard is held. While at least one is alive,
+    /// [`Self::peer_pipeline_active`] reports `true` and the standalone
+    /// `hotkey::runner` yields switch-key authority to the pipeline (see
+    /// `active_peer_pipelines`). Dropping the guard — on any exit path,
+    /// including a panic — decrements the count.
+    pub fn enter_peer_pipeline(&self) -> PeerPipelineGuard {
+        self.active_peer_pipelines.fetch_add(1, Ordering::SeqCst);
+        PeerPipelineGuard {
+            counter: Arc::clone(&self.active_peer_pipelines),
+        }
+    }
+
+    /// Whether any peer input-streaming pipeline is currently running.
+    pub fn peer_pipeline_active(&self) -> bool {
+        self.active_peer_pipelines.load(Ordering::SeqCst) > 0
     }
 
     /// Enables the `debug_inject_input` IPC command on this service.
@@ -517,24 +543,27 @@ impl DaemonService {
 
         tokio::time::sleep(SWITCH_DEBOUNCE).await;
 
-        let devices = {
+        let (devices, previous_active) = {
             let mut state = self.state.write().await;
+            let mut previous_active = None;
             for (id, device) in state.devices.iter_mut() {
                 if *id == target_id {
                     device.state = DeviceState::Active;
                     device.last_seen = Utc::now();
                 } else if device.state == DeviceState::Active {
                     device.state = DeviceState::Inactive;
+                    previous_active = Some(id.0.clone());
                 }
             }
-            devices_list(&state)
+            (devices_list(&state), previous_active)
         };
 
         self.devices_tx.send_replace(devices);
         crate::hop_note!(
             stage = "switch",
             role = "local",
-            target = %target_id.0,
+            from = previous_active.as_deref().unwrap_or("none"),
+            to = %target_id.0,
             trigger = "ipc",
             "active device switched — input now flows toward this device"
         );
@@ -560,24 +589,27 @@ impl DaemonService {
             return;
         };
 
-        let devices = {
+        let (devices, previous_active) = {
             let mut state = self.state.write().await;
+            let mut previous_active = None;
             for (id, device) in state.devices.iter_mut() {
                 if *id == target_id {
                     device.state = DeviceState::Active;
                     device.last_seen = Utc::now();
                 } else if device.state == DeviceState::Active {
                     device.state = DeviceState::Inactive;
+                    previous_active = Some(id.0.clone());
                 }
             }
-            devices_list(&state)
+            (devices_list(&state), previous_active)
         };
 
         self.devices_tx.send_replace(devices);
         crate::hop_note!(
             stage = "switch",
             role = "local",
-            target = %target_id.0,
+            from = previous_active.as_deref().unwrap_or("none"),
+            to = %target_id.0,
             trigger = "hotkey",
             "active device switched by the local switch key"
         );
@@ -1481,6 +1513,18 @@ impl Drop for IpcClientGuard {
     }
 }
 
+/// Decrements the active-peer-pipeline count when dropped —
+/// see [`DaemonService::enter_peer_pipeline`].
+pub struct PeerPipelineGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for PeerPipelineGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// A real paired device's stable identity: derived from its proven `H1`
 /// public key, not its self-reported name — multiple machines can
 /// legitimately advertise the same display name (`daemon/todos.json`'s
@@ -2081,6 +2125,24 @@ mod tests {
         service.switch_active_device_local().await;
         let after = service.watch_devices().borrow().clone();
         assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn peer_pipeline_guard_tracks_a_nested_count() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        assert!(!service.peer_pipeline_active());
+
+        let first = service.enter_peer_pipeline();
+        assert!(service.peer_pipeline_active());
+
+        let second = service.enter_peer_pipeline();
+        drop(first);
+        // A second pipeline is still live, so authority stays taken.
+        assert!(service.peer_pipeline_active());
+
+        drop(second);
+        assert!(!service.peer_pipeline_active());
     }
 
     /// Regression: `DeviceRepo` never persists `DeviceState`, so every

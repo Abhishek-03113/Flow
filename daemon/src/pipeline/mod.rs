@@ -272,7 +272,11 @@ pub async fn run_paired_connection<I, S>(
                     stage = "send_gate",
                     role = "owner",
                     peer = %peer_id.0,
-                    forwarding,
+                    route = if forwarding { "remote" } else { "local" },
+                    forwarded = forwarding,
+                    // For the sending side, local input is suppressed
+                    // exactly while it is being forwarded away.
+                    suppressed = forwarding,
                     kind = event_kind(&event),
                     "captured event reached the send gate"
                 );
