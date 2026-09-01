@@ -25,11 +25,15 @@ pub trait InputCapture {
     /// the forwarding side has to stop its own OS from seeing the same
     /// events.
     ///
-    /// Deliberately has no default implementation, and returns an error
-    /// on platforms that can't do it yet rather than silently reporting
-    /// success: a caller that believes it suppressed local input when it
-    /// didn't produces duplicated keystrokes the user never asked for,
-    /// which is worse than a loud "this platform can't do that."
+    /// Deliberately has no default implementation. Every current adapter
+    /// (Linux `EVIOCGRAB`, Windows low-level-hook swallow, macOS active
+    /// `CGEventTap`) implements it for real; an adapter that genuinely
+    /// could not should return an error rather than silently report
+    /// success, since a caller that believes it suppressed local input
+    /// when it didn't produces duplicated keystrokes the user never asked
+    /// for — worse than a loud "this platform can't do that." The macOS
+    /// and Windows implementations are unverified on real hardware (see
+    /// `daemon/README.md`'s "Local input suppression" section).
     fn set_suppress_local(&mut self, suppress: bool) -> Result<(), Self::Error>;
 }
 

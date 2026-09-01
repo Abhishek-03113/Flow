@@ -44,28 +44,32 @@ Without this, while the Mac is master it types into **both** machines.
 Cannot be executed here (no Mac) — unit-test + cross-compile-check, then validate on the
 maintainer's Mac with a lifeline.
 
-- [ ] **M1** — `platform/src/macos/capture.rs`: add `suppress: Arc<AtomicBool>` on
-      `MacosInputCapture` (survives stop/start), cloned into the capture loop. Replace
-      `set_suppress_local`'s hard `Err` with `store(SeqCst); Ok(())`. Remove
-      `MacosCaptureError::SuppressionUnsupported`.
-- [ ] **M2** — active tap: `CGEventTapOptions::Default`; add
-      `kCGEventTapDisabledByTimeout` / `…ByUserInput` to `events_of_interest()` and re-arm
-      (`CGEventTapEnable`) the tap when they arrive.
-- [ ] **M3** — event drop: `core-graphics` 0.24's safe wrapper can't drop an event. Use a
-      raw-FFI `CGEventTapCreate` trampoline returning `NULL` for a withheld event, keeping
-      `core-graphics`/`core-foundation` for field access + the run-loop source. Isolated
-      `unsafe`, documented.
-- [ ] **M4** — `SuppressionGate` port from `windows/capture.rs` (`HashSet<CGKeyCode>` +
-      `HashSet<button>`): withhold a KeyUp/ButtonUp **iff** its down was withheld, so a
-      mid-hold toggle or the switch key's own release never strands a half-press locally.
-      Drive modifiers off the `FlagsChanged` press/release diff.
-- [ ] **M5** — self-injected-event guard: an active HID tap re-sees this machine's own
-      `CGEventPost` output. Tag injected events (source user-data) and skip them in the
-      callback so a machine that is briefly both sender and receiver doesn't loop.
-- [ ] **M6** — unit tests for `SuppressionGate` (no hardware); `cargo check`/`clippy`
-      `--target x86_64-apple-darwin` + `aarch64-apple-darwin` for `flow-platform`.
-- [ ] **M7** — update `daemon/README.md` "Local input suppression" (macOS row → real),
-      `core/src/input/mod.rs` trait doc, `todos-fix-physical-input-switching.md` §7.
+- [x] **M1** — `suppress: Arc<AtomicBool>` on `MacosInputCapture`, cloned into the capture
+      loop; `set_suppress_local` → `store(SeqCst); Ok(())`; `SuppressionUnsupported` removed.
+- [x] **M2** — active tap (`CGEventTapOptions::Default`); `TapDisabledBy{Timeout,UserInput}`
+      re-armed via `CGEventTapEnable` from inside the callback. (They're in
+      `events_of_interest()` for documentation; `event_mask()` folds them out since their
+      discriminants aren't valid shift amounts — the OS delivers them anyway.)
+- [x] **M3** — raw `mod ffi` (`CGEventTapCreate` + `extern "C"` trampoline) returning
+      `ptr::null_mut()` for a withheld event; `core-foundation` keeps the run-loop source.
+      All `unsafe` in the trampoline + `run_capture_loop` + `mod ffi`, each `SAFETY:`-doc'd.
+      Callback fails **open** (`catch_unwind` → pass the event through). Added
+      `foreign-types = "0.5"` (for `ForeignType::from_ptr` to borrow `&CGEvent`).
+- [x] **M4** — `SuppressionGate` ported (`HashSet<i64>` keycodes + `HashSet<u8>` buttons);
+      modifiers derived from the `FlagsChanged` flag bitmask like `EventTranslator`. 11 unit
+      tests (`cfg(target_os="macos")`).
+- [x] **M5** — injector stamps `EVENT_SOURCE_USER_DATA = FLOW_INJECTED_MARKER`
+      (`macos/mod.rs`); the tap passes marked events through without forwarding or gating.
+- [x] **M6** — `cargo check -p flow-core -p flow-platform --target x86_64-apple-darwin` +
+      `--target aarch64-apple-darwin` + `clippy --target x86_64-apple-darwin -D warnings`:
+      all green. Native `cargo test --workspace` unchanged (245, macOS tests are cfg'd out).
+- [x] **M7** — `daemon/README.md` "Local input suppression" (macOS row → real, unverified),
+      `core/src/input/mod.rs` trait doc, `todos-fix-physical-input-switching.md` §7 updated.
+
+  ⚠ **Two things only a real Mac can confirm:** (1) that returning `NULL` actually drops the
+  event on the running macOS version; (2) that `EVENT_SOURCE_USER_DATA` survives
+  `CGEventPost` (if not → Mac-as-master echoes its own input; fallback = a `getpid()` check).
+  Both are called out in `physical-test-script.md` Round 2 with a pre-flight probe.
 
 ## P0 — physical validation (maintainer, two machines)
 
@@ -109,3 +113,4 @@ maintainer's Mac with a lifeline.
 |---|---------|-----------|-----|------|--------|
 | 0 | baseline | — | — | `cargo test --workspace` | 244 pass, 0 fail; build/clippy/fmt green |
 | 1 | `RUST_LOG=flow=debug` ignored; `FLOW_TRACE` = global TRACE (tungstenite firehose) | `logging.rs` used a single global `LevelFilter` reload layer, no per-target scoping; `env-filter` feature not enabled | `EnvFilter` reload layer; scoped `flow`/`flow_daemon` default; `RUST_LOG` honored when set; `logging::product` `[INPUT]/[SWITCH]/[PEER]/[ERROR]` lines wired into pipeline/service/main | `cargo test --workspace` (245), `clippy -D`, `fmt`, 3 smoke runs | green; zero dep/frame noise at any level; product lines readable |
+| 2 | Mac-as-master types into both machines (Journey R) | `macos/capture.rs` used a `ListenOnly` `CGEventTap` (can't swallow); `set_suppress_local` returned `Err(SuppressionUnsupported)` | Active tap via raw `CGEventTapCreate` + `extern "C"` trampoline returning `NULL` to drop; `Arc<AtomicBool>` flag; `SuppressionGate` port; `TapDisabledBy*` re-arm; self-inject marker guard; fails open on panic | native `cargo test --workspace` (245), apple `cargo check`/`clippy` x2 targets, 11 gate unit tests (cfg'd, hand-verified) | code-complete + cross-checked; **2 items pending Mac hardware** (NULL-drop contract, marker survival) |

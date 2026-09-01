@@ -3,12 +3,13 @@
 
 use std::fmt;
 
-use core_graphics::event::CGEventTapLocation;
+use core_graphics::event::{CGEventTapLocation, EventField};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use flow_core::input::InputInjector;
 use flow_core::protocol::{InputEvent, MouseEvent};
 
 use super::inject_translate::{to_cg_event, HeldButtons};
+use super::FLOW_INJECTED_MARKER;
 
 #[derive(Debug)]
 pub enum MacosInjectError {
@@ -62,6 +63,11 @@ impl InputInjector for MacosInputInjector {
             _ => {}
         }
         if let Some(cg_event) = to_cg_event(&self.source, event, self.held) {
+            // Mark this as Flow's own output so an active capture tap in
+            // this same process (`super::capture`) recognizes it on the
+            // rebound and neither forwards it to the peer nor gates it.
+            cg_event
+                .set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, FLOW_INJECTED_MARKER);
             cg_event.post(CGEventTapLocation::HID);
         }
         Ok(())

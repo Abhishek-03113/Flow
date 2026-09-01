@@ -248,13 +248,29 @@ Acceptance checklist (unverified):
 
 ---
 
-## 7. Reverse direction (Mac → Windows suppression)
+## 7. Reverse direction (Mac → Windows suppression)  ✅ implemented + unit-tested (unverified on HW)
 
-Out of scope (no Mac hardware). The `InputCapture::set_suppress_local` trait contract and
-the pipeline wiring are already symmetric, so a `MacosInputCapture` implementation
-(active `CGEventTap` returning null + `kCGEventTapDisabledByTimeout` re-arm) drops in
-later without pipeline changes. `MacosCaptureError::SuppressionUnsupported` still returned
-today.
+`MacosInputCapture::set_suppress_local` is now real, mirroring the Windows fix. The tap is
+created active (`CGEventTapOptions::Default`) via a small raw-FFI `CGEventTapCreate` +
+`extern "C"` trampoline (the `core-graphics` 0.24 safe `CGEventTap` can't return NULL to
+drop an event); while the shared `Arc<AtomicBool>` `suppress` flag is set the trampoline
+returns a NULL `CGEventRef` for consumed events. A ported `SuppressionGate` gives the same
+press/release symmetry as Windows (a release is withheld iff its matching press was, so a
+mid-hold toggle never strands a half-pressed key and the switch key's own key-up isn't
+typed into the remote). The trampoline also re-arms the tap on
+`kCGEventTapDisabledByTimeout`/`ByUserInput` and skips Flow's own injected events, tagged
+by `injector.rs` with `EVENT_SOURCE_USER_DATA = 0x466C6F77`. Fails open on any panic
+(`catch_unwind`, like `guard_hook_body`). `MacosCaptureError::SuppressionUnsupported` is
+removed.
+
+Touched only `platform/src/macos/*` (+ a `foreign-types` dev-target dep in
+`platform/Cargo.toml` for `ForeignType::from_ptr`). 10 `SuppressionGate` unit tests
+(`cfg(target_os = "macos")`, so runnable only on a Mac); verified here by
+`cargo check`/`cargo clippy --all-targets -- -D warnings` against `x86_64-apple-darwin` and
+`aarch64-apple-darwin`. **Not verified:** the tap, the NULL-return drop, permission
+prompting, `EVENT_SOURCE_USER_DATA` surviving `CGEventPost`, or re-arm behavior against a
+real macOS window server — the maintainer must run the §6-style two-machine check with Mac
+as master.
 
 ---
 

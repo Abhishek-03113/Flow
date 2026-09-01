@@ -146,15 +146,72 @@ concern #4/#10 territory — the logs are what make it fixable.
 
 ---
 
-## Round 2 — Mac as master (after macOS suppression lands — tasks M1–M7)
+## Round 2 — Mac as master (macOS suppression — tasks M1–M7, code-complete, unverified on HW)
 
-> **Do the SSH-lifeline step from the top of this doc first.**
+macOS suppression is implemented (active `CGEventTap` + raw-FFI trampoline returning `NULL`
+to drop consumed events, `SuppressionGate`, self-inject guard, fails open on any callback
+panic). **Two things have never run on a real Mac** and this round is where they're proven:
 
-_To be finalized once macOS suppression is implemented. It mirrors Round 1 with the roles
-reversed: the Mac holds the keyboard/mouse, Windows is the target, and the checklist
-verifies the Mac suppresses its own input while forwarding, releases on switch/disconnect,
-and never strands a half-pressed key. The first run should start with a single keystroke
-and an immediate check that the Mac's own keyboard still works before proceeding._
+1. Does returning `NULL` from the tap callback actually drop the event on your macOS version?
+   (If not: you type into both machines — same symptom as no suppression, not worse.)
+2. Does `EVENT_SOURCE_USER_DATA` survive `CGEventPost`? (If not, with a paired peer the Mac
+   re-forwards its own injected input → doubled/looping characters. Fallback is a `getpid()`
+   check — report it and I'll switch the guard.)
+
+> **Lifeline — do this before anything else.** From the Windows PC:
+> `ssh you@mac.local` and leave it open. Keep this command ready in it:
+> `killall flow-daemon` — it drops the tap and restores the Mac's local input instantly.
+> Also know the fail-open behavior: any bug in the callback passes the event through, so the
+> Mac locking its own keyboard/mouse should not happen — but the SSH session is the
+> guaranteed out if it does.
+
+### Pre-flight (before the full checklist)
+
+1. [ ] Mac daemon running, paired + connected to Windows (Round 0 state).
+2. [ ] Make **Windows** the active ("Using") device so the Mac forwards to it.
+3. [ ] **One keystroke test.** Press a single key (e.g. `k`) on the Mac keyboard once.
+       - It should appear on **Windows** (in a focused text field there).
+       - It should **not** appear on the Mac.
+       - Immediately type something else on the Mac — confirm the Mac keyboard still works
+         normally (i.e. suppression released as expected between events / the daemon didn't
+         wedge). If the Mac feels unresponsive, `killall flow-daemon` over SSH.
+4. [ ] **Echo check.** With the peer connected, type `abcdef` on the Mac. On Windows you
+       should see exactly `abcdef` once — not `aabbccddeeff`, not a runaway repeat. A
+       doubled/looping result means `EVENT_SOURCE_USER_DATA` did not survive `CGEventPost`
+       — stop, report it, that's the pid-fallback case.
+
+### Full checklist (only if pre-flight passed)
+
+Mirror of Round 1 with roles reversed — Mac holds the keyboard/mouse, Windows is the target:
+
+1. [ ] **Keyboard forward.** Type `the quick brown fox` on the Mac → appears on Windows,
+       not on the Mac.
+2. [ ] **Modifiers.** `Shift`+`a` → `A` on Windows. A `Cmd`/`Ctrl` combo → note the mapping.
+3. [ ] **Mouse move / clicks / scroll.** All land on Windows at the cursor; the Mac cursor
+       does not move and Mac apps get nothing.
+4. [ ] **Switch to Mac.** Press **Scroll Lock** → `[SWITCH] <Windows> -> <Mac>` in the Mac
+       log. The Scroll Lock press itself doesn't type on Windows and doesn't leak into a Mac
+       app. Now the Mac keyboard/mouse control the Mac normally; Windows gets nothing.
+5. [ ] **Switch back.** Scroll Lock again → control returns to driving Windows.
+6. [ ] **Repeated switching** (10+ cycles): no stuck keys on either machine, no stuck mouse
+       button, no duplicate input, input always goes where the last `[SWITCH]` said, no
+       panic (`the macOS event-tap callback panicked` in the log = a fail-open event, note
+       it), UI active-device indicator never drifts.
+7. [ ] **Held key across a switch.** Hold `j` on the Mac while Windows is active; press
+       Scroll Lock while holding; release `j`. Neither machine gets a stuck `j`
+       (`SuppressionGate` press/release symmetry).
+8. [ ] **Disconnect.** Quit the Windows daemon → Mac log `[PEER] <Windows> disconnected`,
+       the Mac's own keyboard/mouse work immediately (suppression released), no stuck keys,
+       Mac UI link state → Reconnecting.
+9. [ ] **Reconnect.** Restart the Windows daemon → `[PEER] <Windows> connected`, switching
+       works again.
+10. [ ] **Tap timeout.** If you ever see input stall for ~1s then resume, that's the tap
+        being disabled by the OS and re-armed — note how often; occasional is fine, frequent
+        means `translate`/`send` should move off the callback thread.
+
+**Send back:** `flow-daemon-mac-round2.log`, `flow-daemon-windows-round2.log`, the
+pre-flight + checklist results, and specifically: did single-key suppression work, and was
+there any echo/doubling.
 
 ---
 

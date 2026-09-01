@@ -36,7 +36,7 @@ is sent *to*. `Connected` = paired/reachable. These three are separate, delibera
 | Pairing | `daemon/src/channel/handshake.rs`, `service/mod.rs` (`note_discovered_peer`, `pair_with_candidate`, `accept_pairing_request`), `trust/mod.rs` | `PairingRequest`/`PairingDecision` over a `Channel`. Untrusted inbound → `IncomingPairingRequest` prompt to the UI, handshake blocks on consent. |
 | Transport (Channels) | `core/src/channel/mod.rs` (trait), `daemon/src/channel/{tcp,noise,negotiate}.rs` | `TcpChannel` (WebSocket) + `NoiseChannel` (ed25519-bound Noise). `connect_best_available` picks TCP. Bluetooth exists behind a feature, **not wired** — ignore for V1. |
 | Physical capture | `platform/src/{linux,macos,windows}/capture.rs` behind `core/src/input/mod.rs::InputCapture` | Linux evdev · macOS `CGEventTap` · Windows `WH_KEYBOARD_LL`/`WH_MOUSE_LL`. `DefaultInputCapture` = the adapter this binary was built for. |
-| Local suppression | `InputCapture::set_suppress_local` | **Linux:** real (`EVIOCGRAB`). **Windows:** real (`SuppressionGate`, returns `LRESULT(1)`) — merged, unvalidated on HW. **macOS:** `Err(SuppressionUnsupported)` — the V1 gap. |
+| Local suppression | `InputCapture::set_suppress_local` | **Linux:** real (`EVIOCGRAB`). **Windows:** real (`SuppressionGate`, returns `LRESULT(1)`) — merged, unvalidated on HW. **macOS:** real (active tap + raw-FFI trampoline returns `NULL` to drop; `SuppressionGate` port; self-inject guard) — product-first V1 iteration 2, unvalidated on HW. |
 | Remote injection | `platform/src/{linux,macos,windows}/injector.rs` behind `InputInjector` | macOS injected mouse-move/left-click fixed in `7673651` (absolute target = current + delta). |
 | Routing gate | `daemon/src/pipeline/mod.rs` `is_peer_receiving_input` | Forward a captured event to peer P **iff P is `Active`**. Gates per-peer so a third device gets nothing. Unit-tested, direction confirmed. |
 | Full-duplex pipeline | `pipeline/mod.rs` `run_paired_connection` | One `tokio::select!` task: send-while-peer-active + recv-and-inject + suppress toggle on switch + `HeldInputTracker` release on disconnect. |
@@ -62,16 +62,32 @@ is sent *to*. `Connected` = paired/reachable. These three are separate, delibera
   connection, a later connection's detection of a killed daemon can take >40 s. Pre-existing,
   reproduced with raw sockets. Worth its own look if reconnect UX feels wrong.
 
-## macOS suppression — the mechanism constraint
+## macOS suppression — how it works, and what's unverified
 
 `core-graphics` 0.24's safe `CGEventTap` callback returns `Option<CGEvent>`; its trampoline
 maps `None` → pass the **original** event through and never returns a null pointer — so it
-**cannot drop an event**. Real suppression requires either a raw-FFI `CGEventTapCreate`
-trampoline that returns `NULL` for a withheld event (the standard approach), or setting the
-event's type to `kCGEventNull` before returning it (a workaround). Plus: an active tap
-(`CGEventTapOptions::Default`), `kCGEventTapDisabledByTimeout` re-arm handling, a
-cross-thread `Arc<AtomicBool>` suppress flag (mirror Windows), and a `SuppressionGate`
-port for press/release symmetry across a switch. This code cannot be executed in the
-development environment (no Mac) — unit-test the hardware-independent parts, cross-compile
-check the rest, validate on the maintainer's Mac with a lifeline (SSH session +
-`killall flow-daemon` ready) on first run.
+**cannot drop an event**. `platform/src/macos/capture.rs` therefore calls `CGEventTapCreate`
+directly (private `mod ffi`) with its own `extern "C"` trampoline that returns a `NULL`
+`CGEventRef` for a withheld event. Supporting pieces:
+
+- active tap (`CGEventTapOptions::Default`), `TapDisabledBy{Timeout,UserInput}` re-arm from
+  inside the callback;
+- a cross-thread `Arc<AtomicBool>` suppress flag on `MacosInputCapture` (mirrors Windows),
+  read every callback;
+- `SuppressionGate` (ported from `windows/capture.rs`): withhold a release **iff** its press
+  was withheld, so a mid-hold toggle or the switch key's own key-up never strands a
+  half-press locally;
+- self-inject guard: injected events carry `EVENT_SOURCE_USER_DATA = FLOW_INJECTED_MARKER`
+  (`macos/mod.rs`), and the tap passes them through without forwarding or gating.
+
+The callback **fails open**: any panic / borrow conflict / null ctx → the event passes
+through untouched (`catch_unwind`), so a bug here never traps the user's own keyboard.
+
+**Unverified on hardware** (no Mac in the dev environment): the `SuppressionGate` is
+unit-tested and everything cross-compile-checks + clippy-clean for both apple targets, but
+two things can only be confirmed on a real Mac — (1) that returning `NULL` from the raw
+callback actually drops the event on the running macOS version, and (2) that
+`EVENT_SOURCE_USER_DATA` survives `CGEventPost` (if not, the self-inject guard misses and
+Mac-as-master echoes its own input to the peer; fallback is a pid check). Validate on the
+maintainer's Mac with a lifeline (SSH session + `killall flow-daemon` ready) — see
+`docs/testing/physical-test-script.md` Round 2.

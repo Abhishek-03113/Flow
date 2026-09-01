@@ -180,24 +180,23 @@ Windows → master, Mac → slave
 correct master, macOS local suppression must work — today it does not, so while "Mac is
 master" the Mac types into *both* machines.
 
-## Journey R — Reverse direction: Mac as master `[ ]`
+## Journey R — Reverse direction: Mac as master `[~]`
 
 ```
 Mac is master (Windows is the Active destination)
   ↓
 physical input on Mac → forwarded to Windows
   ↓
-BUT: macOS set_suppress_local returns SuppressionUnsupported
-  ↓
-Mac's own applications ALSO receive the input  ← broken
+active CGEventTap callback returns NULL for consumed events → Mac's own apps do NOT see them
 ```
 
-`[ ]` **The one genuine V1 code gap.** `platform/src/macos/capture.rs` creates a
-`ListenOnly` `CGEventTap`, which by definition cannot swallow an event; `set_suppress_local`
-deliberately returns an error rather than a silent no-op. Needs an active tap whose callback
-returns null while suppressing, `kCGEventTapDisabledByTimeout` re-arm handling, and a
-cross-thread suppress flag (mirroring the Windows `Arc<AtomicBool>` approach). Forwarding
-Mac → Windows otherwise works on the same tested pipeline.
+`[~]` **Implemented** (product-first V1 iteration 2). `platform/src/macos/capture.rs` now
+uses an active tap with a raw-FFI trampoline that returns `NULL` to drop a withheld event,
+a cross-thread `Arc<AtomicBool>` suppress flag, a `SuppressionGate` port (press/release
+symmetry, unit-tested), `TapDisabledBy*` re-arm, and a self-injected-event guard. Fails open
+on any callback error. **Not validated on hardware** — the two things needing a real Mac are
+whether `NULL` actually drops the event on the running macOS version and whether the
+self-inject marker survives `CGEventPost`. See `physical-test-script.md` Round 2.
 
 ## Journey 10 — Repeated switching `[ ]`
 
@@ -263,9 +262,9 @@ is deliberately not persisted (no stale `Active` on boot).
 
 | # | Journey | Status | Priority | Why |
 |---|---------|--------|----------|-----|
-| R | Mac as master (macOS suppression) | `[ ]` | **P0** | Only genuine code gap; half the product (Mac→Win) is wrong without it |
-| — | Clean product-level logging | n/a | **P0** | Explicit brief requirement; also the prerequisite for diagnosing #4/#5 on a real run |
-| 6–9 | Physical Win↔Mac keyboard/mouse/switch | `[~]` | **P0** | The definition of done; needs the maintainer + two machines |
+| — | Clean product-level logging | done | ~~P0~~ | ✅ iteration 1 — `RUST_LOG=flow=debug`, scoped, no dep noise; `[INPUT]/[SWITCH]/[PEER]/[ERROR]` lines |
+| R | Mac as master (macOS suppression) | `[~]` | ~~P0~~ | ✅ iteration 2 code-complete + unit-tested; **needs Mac hardware validation** |
+| 6–9 | Physical Win↔Mac keyboard/mouse/switch | `[~]` | **P0** | The definition of done; needs the maintainer + two machines (Round 1 + Round 2) |
 | 10 | Repeated switching, no drift | `[ ]` | P1 | Depends on 6–9 working first; may surface "#4" |
 | 11 | Disconnect / reconnect | `[~]` | P1 | Depends on 6–9; may surface "#5" |
 | 5 | Windows ↔ Mac pairing | `[~]` | P1 | One manual step (Pair on the Mac); path already proven Win↔Win |

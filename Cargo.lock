@@ -658,6 +658,7 @@ dependencies = [
  "core-graphics",
  "evdev",
  "flow-core",
+ "foreign-types",
  "tracing",
  "windows",
 ]
