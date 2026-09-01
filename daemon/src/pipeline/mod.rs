@@ -128,7 +128,7 @@ where
                 last_sequence = Some(sequence);
                 match injector.inject(&event) {
                     Ok(()) => held.observe(&event),
-                    Err(err) => tracing::warn!("input injection failed: {err:?}"),
+                    Err(err) => crate::logging::product::error("inject input", &err),
                 }
             }
             Ok(_) => continue,
@@ -191,7 +191,7 @@ impl HeldInputTracker {
                 timestamp_ms,
             });
             if let Err(err) = injector.inject(&event) {
-                tracing::warn!("failed to release a held key on disconnect: {err:?}");
+                crate::logging::product::error("release held key on disconnect", &err);
             }
         }
         for button in self.buttons.drain() {
@@ -200,7 +200,7 @@ impl HeldInputTracker {
                 timestamp_ms,
             });
             if let Err(err) = injector.inject(&event) {
-                tracing::warn!("failed to release a held mouse button on disconnect: {err:?}");
+                crate::logging::product::error("release held mouse button on disconnect", &err);
             }
         }
     }
@@ -282,6 +282,7 @@ pub async fn run_paired_connection<I, S>(
                 );
                 if forwarding {
                     send_sequence += 1;
+                    let detail = describe_event(&event);
                     if channel.send(ChannelMessage::Input { sequence: send_sequence, event }).await.is_err() {
                         crate::hop_note!(
                             stage = "send_failed",
@@ -298,6 +299,12 @@ pub async fn run_paired_connection<I, S>(
                         peer = %peer_id.0,
                         seq = send_sequence,
                         "input frame sent to the active peer"
+                    );
+                    let snapshot = devices.borrow();
+                    crate::logging::product::input(
+                        &device_name(&snapshot, crate::service::LOCAL_DEVICE_ID),
+                        &device_name(&snapshot, &peer_id.0),
+                        &detail,
                     );
                 }
             }
@@ -350,9 +357,16 @@ pub async fn run_paired_connection<I, S>(
                                     seq = sequence,
                                     "event injected into this machine"
                                 );
+                                let snapshot = devices.borrow();
+                                crate::logging::product::input(
+                                    &device_name(&snapshot, &peer_id.0),
+                                    &device_name(&snapshot, crate::service::LOCAL_DEVICE_ID),
+                                    &describe_event(&event),
+                                );
+                                drop(snapshot);
                                 held.observe(&event)
                             }
-                            Err(err) => tracing::warn!("input injection failed: {err:?}"),
+                            Err(err) => crate::logging::product::error("inject input", &err),
                         }
                     }
                     Ok(_) => continue,
@@ -390,6 +404,44 @@ pub fn event_kind(event: &InputEvent) -> &'static str {
         InputEvent::Mouse(MouseEvent::ButtonUp { .. }) => "mouse_button_up",
         InputEvent::Mouse(MouseEvent::Scroll { .. }) => "mouse_scroll",
     }
+}
+
+/// A short, human-readable description of one event for the `[INPUT]`
+/// product log line — "KeyDown A", "MouseMove dx=12 dy=-4", "LeftClick
+/// down", "Scroll dx=0 dy=-3". Unlike [`event_kind`]'s machine-stable
+/// token, this is written for a person eyeballing the log.
+fn describe_event(event: &InputEvent) -> String {
+    match event {
+        InputEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) => format!("KeyDown {key}"),
+        InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => format!("KeyUp {key}"),
+        InputEvent::Mouse(MouseEvent::Move { dx, dy, .. }) => format!("MouseMove dx={dx} dy={dy}"),
+        InputEvent::Mouse(MouseEvent::ButtonDown { button, .. }) => {
+            format!("{} down", mouse_button_label(button))
+        }
+        InputEvent::Mouse(MouseEvent::ButtonUp { button, .. }) => {
+            format!("{} up", mouse_button_label(button))
+        }
+        InputEvent::Mouse(MouseEvent::Scroll { dx, dy, .. }) => format!("Scroll dx={dx} dy={dy}"),
+    }
+}
+
+fn mouse_button_label(button: &MouseButton) -> &'static str {
+    match button {
+        MouseButton::Left => "LeftClick",
+        MouseButton::Right => "RightClick",
+        MouseButton::Middle => "MiddleClick",
+    }
+}
+
+/// Resolves a device id to its display name from the current `devices`
+/// snapshot, falling back to the raw id when the device isn't listed
+/// (e.g. it was just unpaired).
+fn device_name(devices: &[Device], id: &str) -> String {
+    devices
+        .iter()
+        .find(|device| device.id.0 == id)
+        .map(|device| device.name.clone())
+        .unwrap_or_else(|| id.to_string())
 }
 
 #[cfg(test)]

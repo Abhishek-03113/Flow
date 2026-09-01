@@ -46,6 +46,9 @@ fn keyboard_to_input(event: &KeyboardEvent) -> Option<INPUT> {
         } else {
             KEYEVENTF_KEYUP
         },
+        // Tag as this daemon's own output so the capture hooks skip it
+        // instead of re-forwarding it — see `super::FLOW_INJECTED_MARKER`.
+        dwExtraInfo: super::FLOW_INJECTED_MARKER,
         ..Default::default()
     };
     Some(INPUT {
@@ -94,7 +97,16 @@ fn mouse_to_input(event: &MouseEvent) -> Vec<INPUT> {
 fn mouse_input(mi: MOUSEINPUT) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
-        Anonymous: INPUT_0 { mi },
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                // Tag every injected mouse event as this daemon's own —
+                // see `super::FLOW_INJECTED_MARKER`. Set here, in the one
+                // place all mouse `INPUT`s are wrapped, rather than at
+                // each `MOUSEINPUT` literal above.
+                dwExtraInfo: super::FLOW_INJECTED_MARKER,
+                ..mi
+            },
+        },
     }
 }
 
@@ -332,6 +344,57 @@ mod tests {
         assert_eq!(inputs.len(), 2);
         assert_eq!(as_mouse(&inputs[0]).dwFlags, MOUSEEVENTF_WHEEL);
         assert_eq!(as_mouse(&inputs[1]).dwFlags, MOUSEEVENTF_HWHEEL);
+    }
+
+    #[test]
+    fn every_injected_input_carries_the_self_injection_marker() {
+        // The capture hooks skip events whose dwExtraInfo == FLOW_INJECTED_MARKER;
+        // if the injector ever stops stamping it, a slave machine re-forwards
+        // the peer's input back and the two echo (see super::FLOW_INJECTED_MARKER).
+        let key = to_input(&InputEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: "A".to_string(),
+            modifiers: vec![],
+            timestamp_ms: 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            as_keybd(&key[0]).dwExtraInfo,
+            super::super::FLOW_INJECTED_MARKER
+        );
+
+        let moved = to_input(&InputEvent::Mouse(MouseEvent::Move {
+            dx: 1,
+            dy: 1,
+            timestamp_ms: 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            as_mouse(&moved[0]).dwExtraInfo,
+            super::super::FLOW_INJECTED_MARKER
+        );
+
+        let scroll = to_input(&InputEvent::Mouse(MouseEvent::Scroll {
+            dx: 3,
+            dy: -2,
+            timestamp_ms: 0,
+        }))
+        .unwrap();
+        for input in &scroll {
+            assert_eq!(
+                as_mouse(input).dwExtraInfo,
+                super::super::FLOW_INJECTED_MARKER
+            );
+        }
+
+        let button = to_input(&InputEvent::Mouse(MouseEvent::ButtonDown {
+            button: MouseButton::Left,
+            timestamp_ms: 0,
+        }))
+        .unwrap();
+        assert_eq!(
+            as_mouse(&button[0]).dwExtraInfo,
+            super::super::FLOW_INJECTED_MARKER
+        );
     }
 
     #[test]
