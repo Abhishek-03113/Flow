@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::pairing::{PairingDecision, PairingRequest};
-use crate::protocol::InputEvent;
+use crate::protocol::{InputEvent, InputRole};
 
 /// Which medium backs a [`Channel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +78,16 @@ pub enum ChannelMessage {
     },
     Pairing(PairingWireMessage),
     Heartbeat,
+    /// Hands the input-ownership baton across the *same* persistent
+    /// connection input events travel over — never a reconnect. Sent by
+    /// whichever daemon just changed its own role (`sender_role` is that
+    /// daemon's role *after* the change); the receiver takes
+    /// `sender_role.opposite()`. This is the only cross-daemon ownership
+    /// signal: a peer never learns of a switch by "also detecting Scroll
+    /// Lock," per `docs/product/vision.md` §12.
+    SwitchOwnership {
+        sender_role: InputRole,
+    },
     /// Raw bytes for session establishment. Carried by `NoiseChannel`
     /// (`daemon/todos.json` H3) for handshake material before its wrapped
     /// transport is established, and for an encrypted serialized
@@ -208,6 +218,18 @@ mod tests {
             timestamp_ms: 0,
         });
         let message = ChannelMessage::Input { sequence: 1, event };
+        a.send(message.clone()).await.expect("send");
+        let received = b.recv().await.expect("recv");
+        assert_eq!(received, message);
+    }
+
+    #[tokio::test]
+    async fn a_switch_ownership_message_round_trips() {
+        use crate::protocol::InputRole;
+        let (mut a, mut b) = ChannelPair::new_pair();
+        let message = ChannelMessage::SwitchOwnership {
+            sender_role: InputRole::Secondary,
+        };
         a.send(message.clone()).await.expect("send");
         let received = b.recv().await.expect("recv");
         assert_eq!(received, message);
