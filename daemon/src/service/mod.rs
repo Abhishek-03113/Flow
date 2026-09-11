@@ -23,7 +23,7 @@ use flow_core::pairing::{
     PairingStage,
 };
 use flow_core::permission::PermissionStatus;
-use flow_core::protocol::InputEvent;
+use flow_core::protocol::{InputEvent, InputRole};
 use flow_core::settings::{FlowSettings, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
 use tokio::sync::{oneshot, watch, Mutex, RwLock};
@@ -633,6 +633,70 @@ impl DaemonService {
             to = %target_id.0,
             trigger = "hotkey",
             "active device switched by the local switch key"
+        );
+        crate::logging::product::switch(&from_name, &to_name);
+    }
+
+    /// Applies an ownership change the peer just told us about over the
+    /// live connection (`ChannelMessage::SwitchOwnership`) — the receiving
+    /// half of the switch the task's V1 model hands across without a
+    /// reconnect.
+    ///
+    /// `role` is *this* daemon's role after the change:
+    /// - [`InputRole::Primary`] ⇒ `peer_id` becomes the sole `Active`
+    ///   device (this machine now captures + forwards to it);
+    /// - [`InputRole::Secondary`] ⇒ [`LOCAL_DEVICE_ID`] becomes the sole
+    ///   `Active` device (this machine goes back to keeping its own input).
+    ///
+    /// No debounce and no switchability check: the peer has already
+    /// decided, and a `Connected`-but-not-`Inactive` peer is still a valid
+    /// target here (unlike the user-driven `switch_active_device`). Idempotent.
+    pub async fn apply_peer_ownership(&self, peer_id: &DeviceId, role: InputRole) {
+        let target_id = match role {
+            InputRole::Primary => peer_id.clone(),
+            InputRole::Secondary => DeviceId(LOCAL_DEVICE_ID.to_string()),
+        };
+
+        let (devices, previous_active, changed) = {
+            let mut state = self.state.write().await;
+            if !state.devices.contains_key(&target_id) {
+                return;
+            }
+            let already = state
+                .devices
+                .get(&target_id)
+                .is_some_and(|d| d.state == DeviceState::Active);
+            let mut previous_active = None;
+            for (id, device) in state.devices.iter_mut() {
+                if *id == target_id {
+                    device.state = DeviceState::Active;
+                    device.last_seen = Utc::now();
+                } else if device.state == DeviceState::Active {
+                    device.state = DeviceState::Inactive;
+                    previous_active = Some(id.0.clone());
+                }
+            }
+            (devices_list(&state), previous_active, !already)
+        };
+
+        if !changed {
+            return;
+        }
+
+        let to_name = device_display_name(&devices, &target_id.0);
+        let from_name = previous_active
+            .as_deref()
+            .map(|id| device_display_name(&devices, id))
+            .unwrap_or_else(|| "(none)".to_string());
+        self.devices_tx.send_replace(devices);
+        crate::hop_note!(
+            stage = "input_role_changed",
+            role = "local",
+            from = previous_active.as_deref().unwrap_or("none"),
+            to = %target_id.0,
+            trigger = "peer",
+            new_role = ?role,
+            "peer handed the ownership baton over the live connection"
         );
         crate::logging::product::switch(&from_name, &to_name);
     }
@@ -2147,6 +2211,45 @@ mod tests {
         service.switch_active_device_local().await;
         let after = service.watch_devices().borrow().clone();
         assert_eq!(before, after);
+    }
+
+    #[tokio::test]
+    async fn apply_peer_ownership_primary_makes_the_named_peer_the_only_active_device() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+
+        service
+            .apply_peer_ownership(&DeviceId("d2".to_string()), InputRole::Primary)
+            .await;
+
+        let devices = service.watch_devices().borrow().clone();
+        let active: Vec<String> = devices
+            .iter()
+            .filter(|d| d.state == DeviceState::Active)
+            .map(|d| d.id.0.clone())
+            .collect();
+        assert_eq!(active, vec!["d2".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn apply_peer_ownership_secondary_makes_the_local_device_active() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+
+        service
+            .apply_peer_ownership(&DeviceId("d2".to_string()), InputRole::Primary)
+            .await;
+        service
+            .apply_peer_ownership(&DeviceId("d2".to_string()), InputRole::Secondary)
+            .await;
+
+        let devices = service.watch_devices().borrow().clone();
+        let active: Vec<String> = devices
+            .iter()
+            .filter(|d| d.state == DeviceState::Active)
+            .map(|d| d.id.0.clone())
+            .collect();
+        assert_eq!(active, vec![LOCAL_DEVICE_ID.to_string()]);
     }
 
     #[tokio::test]

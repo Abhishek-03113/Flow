@@ -45,6 +45,26 @@ cargo run -p flow-daemon
 websocket/TCP frame noise. If you need the full firehose for a specific bug, use
 `RUST_LOG=flow=trace` instead (still scoped — no dependency noise) or `FLOW_TRACE=1`.
 
+### Ownership model (what a switch now does)
+
+A switch no longer just makes the local machine stop forwarding. Whichever daemon detects
+the switch key (or gets an IPC `switch_active_device`) flips its own active device **and
+sends `ChannelMessage::SwitchOwnership` over the existing connection** — no reconnect. The
+peer applies the opposite role (`DaemonService::apply_peer_ownership`), so both device
+lists, both send gates, and both UIs stay consistent. Exactly one machine is **Primary**
+(captures + forwards + suppresses locally) and one is **Secondary** (injects) at all times.
+
+`RUST_LOG=flow=trace` markers to grep for on a switch:
+- Presser: `stage=input_role_changed trigger=local … "local switch relayed to the peer"`.
+- Other machine: `stage=switch_key … "peer handed the ownership baton over the live connection"`
+  then `stage=input_role_changed trigger=peer`.
+- Held keys/buttons mid-switch: `KeyUp`/`ButtonUp` frames are flushed to the peer *before*
+  the `SwitchOwnership` frame — the far machine must never be left holding a key.
+
+Because the baton travels the wire, pressing **Scroll Lock on the Windows keyboard alone
+toggles the full Windows-Primary ↔ Mac-Primary cycle** — you do not need a keyboard on the
+Mac to hand control back (see Round 2).
+
 > If `cargo run` rebuilds slowly each start, build once (`cargo build -p flow-daemon`) and
 > run `./target/debug/flow-daemon` (Mac) / `.\target\debug\flow-daemon.exe` (Windows)
 > directly with the same env vars.
@@ -114,13 +134,18 @@ check which way it went.
        at the cursor position. None leak to Windows.
 5. [ ] **Scroll.** Scroll wheel up/down over a Mac scroll view. → Scrolls on the Mac.
 6. [ ] **Switch to Windows.** Press **Scroll Lock** once.
-       - Log (Windows): `[SWITCH] <Mac> -> <Windows>`, `stage=switch trigger=hotkey`.
+       - Log (Windows): `[SWITCH] <Mac> -> <Windows>`, `stage=input_role_changed trigger=local`.
+       - Log (Mac): `stage=switch_key … "peer handed the ownership baton"`, then
+         `[SWITCH] … -> <Windows>` and `stage=input_role_changed trigger=peer`.
        - The Scroll Lock press itself does **not** type anything on the Mac and does
          **not** toggle the Windows Scroll Lock indicator into an app.
        - Now typing/moving on the Windows keyboard/mouse controls **Windows** normally.
          The Mac receives nothing.
-7. [ ] **Switch back.** Press **Scroll Lock** again → `[SWITCH] <Windows> -> <Mac>` → back
-       to controlling the Mac.
+       - **The Mac UI's active device flips to <Windows>** (Mac is now Primary toward
+         Windows) — with no reconnect, link state stays **Connected** throughout.
+7. [ ] **Switch back.** Press **Scroll Lock** again → `[SWITCH] <Windows> -> <Mac>` on
+       Windows + the mirror `switch_key` / `input_role_changed trigger=peer` on the Mac →
+       back to controlling the Mac. Both UIs' active-device indicators flip together.
 8. [ ] **Repeated switching.** Alternate Scroll Lock 10+ times, typing a few characters and
        moving the mouse after each switch. Confirm every time:
        - no stuck keys (no character repeating forever on either machine),
@@ -146,7 +171,15 @@ concern #4/#10 territory — the logs are what make it fixable.
 
 ---
 
-## Round 2 — Mac as master (macOS suppression — tasks M1–M7, code-complete, unverified on HW)
+## Round 2 — Mac as master (macOS suppression — code-complete, unverified on HW)
+
+> **V1 scope note.** For the current V1 acceptance pass, Round 0 + Round 1 are the gate.
+> Round 2 is where macOS *local suppression* first runs on real hardware; it is optional
+> for this pass and can be scheduled separately. With the ownership baton, you no longer
+> need a Mac keyboard to enter/exit this state — pressing **Scroll Lock on the Windows
+> keyboard** toggles Windows-Primary ↔ Mac-Primary, so you can drive the whole round from
+> Windows and just observe the Mac. A Mac keyboard press is only needed to test that the
+> Mac's *own* switch key also relays (step 4).
 
 macOS suppression is implemented (active `CGEventTap` + raw-FFI trampoline returning `NULL`
 to drop consumed events, `SuppressionGate`, self-inject guard, fails open on any callback

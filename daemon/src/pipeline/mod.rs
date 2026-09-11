@@ -20,7 +20,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use flow_core::channel::{Channel, ChannelMessage};
 use flow_core::device::{Device, DeviceId, DeviceState};
 use flow_core::input::InputInjector;
-use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
+use flow_core::protocol::{InputEvent, InputRole, KeyboardEvent, MouseButton, MouseEvent};
 use tokio::sync::{mpsc, watch};
 
 /// Whether `peer_id` is the device currently receiving input — i.e.
@@ -174,6 +174,31 @@ impl HeldInputTracker {
         }
     }
 
+    /// Synthetic `KeyUp`/`ButtonUp` events for everything currently tracked
+    /// as held, clearing the tracker in the process. Shared by
+    /// [`Self::release_all`] (inject the releases locally on disconnect)
+    /// and the send side of [`run_paired_connection`] (forward the
+    /// releases to the peer when this machine hands the ownership baton
+    /// away mid-hold, so the peer isn't left with a stuck key).
+    fn drain_releases(&mut self) -> Vec<InputEvent> {
+        let timestamp_ms = now_ms();
+        let mut releases = Vec::with_capacity(self.keys.len() + self.buttons.len());
+        for key in self.keys.drain() {
+            releases.push(InputEvent::Keyboard(KeyboardEvent::KeyUp {
+                key,
+                modifiers: Vec::new(),
+                timestamp_ms,
+            }));
+        }
+        for button in self.buttons.drain() {
+            releases.push(InputEvent::Mouse(MouseEvent::ButtonUp {
+                button,
+                timestamp_ms,
+            }));
+        }
+        releases
+    }
+
     /// Synthesizes and injects a `KeyUp`/`ButtonUp` for everything still
     /// tracked as held, then clears. A failure releasing one held
     /// key/button doesn't stop the rest from being attempted — a partial
@@ -183,24 +208,9 @@ impl HeldInputTracker {
         I: InputInjector,
         I::Error: std::fmt::Debug,
     {
-        let timestamp_ms = now_ms();
-        for key in self.keys.drain() {
-            let event = InputEvent::Keyboard(KeyboardEvent::KeyUp {
-                key,
-                modifiers: Vec::new(),
-                timestamp_ms,
-            });
+        for event in self.drain_releases() {
             if let Err(err) = injector.inject(&event) {
-                crate::logging::product::error("release held key on disconnect", &err);
-            }
-        }
-        for button in self.buttons.drain() {
-            let event = InputEvent::Mouse(MouseEvent::ButtonUp {
-                button,
-                timestamp_ms,
-            });
-            if let Err(err) = injector.inject(&event) {
-                crate::logging::product::error("release held mouse button on disconnect", &err);
+                crate::logging::product::error("release held input on disconnect", &err);
             }
         }
     }
@@ -225,49 +235,69 @@ impl HeldInputTracker {
 /// uses to race its `capture_events`/`devices` inputs against each
 /// other, just extended to a third branch reading off `channel` too.
 ///
-/// `suppress_local` is called whenever the active device changes, with
-/// `true` while input is being forwarded away from this machine. Without
-/// it, capture is purely passive on every platform and a forwarded
-/// keystroke would land on *both* machines — see
-/// `flow_core::input::InputCapture::set_suppress_local`. It's passed as
-/// a closure rather than an `InputCapture` handle because the capture
+/// `suppress_local` is called whenever this side's [`InputRole`] changes,
+/// with `true` while input is being forwarded away from this machine
+/// (i.e. this side is [`InputRole::Primary`]). Without it, capture is
+/// purely passive on every platform and a forwarded keystroke would land
+/// on *both* machines — see
+/// `flow_core::input::InputCapture::set_suppress_local`. It's passed as a
+/// closure rather than an `InputCapture` handle because the capture
 /// object lives on the caller's side of a thread boundary; the caller
 /// decides how to reach it, and reports failures (a platform that can't
 /// suppress) however it sees fit.
-pub async fn run_paired_connection<I, S>(
+///
+/// `on_peer_ownership` is called with this daemon's new [`InputRole`]
+/// whenever the *peer* hands the ownership baton across
+/// (`ChannelMessage::SwitchOwnership`) — the caller wires it to
+/// `DaemonService::apply_peer_ownership` so the local device list follows
+/// the peer's switch without a reconnect. A switch initiated *here*
+/// (Scroll Lock on this machine, or an IPC `switch_active_device`) is
+/// observed through `devices` instead and relayed to the peer over the
+/// same connection; ownership is never inferred from both machines
+/// independently detecting the switch key.
+pub async fn run_paired_connection<I, S, O>(
     mut channel: Box<dyn Channel>,
     mut capture_events: mpsc::UnboundedReceiver<InputEvent>,
     mut devices: watch::Receiver<Vec<Device>>,
     mut injector: I,
     peer_id: DeviceId,
     mut suppress_local: S,
+    mut on_peer_ownership: O,
 ) where
     I: InputInjector,
     I::Error: std::fmt::Debug,
     S: FnMut(bool),
+    O: FnMut(InputRole),
 {
     let mut send_sequence: u64 = 0;
     let mut last_received_sequence: Option<u64> = None;
+    // Held input this side has *injected* from the peer (released locally
+    // on disconnect) and held input this side has *forwarded* to the peer
+    // (released to the peer when this side hands the baton away mid-hold,
+    // task §11).
     let mut held = HeldInputTracker::default();
+    let mut sent_held = HeldInputTracker::default();
 
     // Apply the current state up front rather than waiting for the first
     // change: this connection may well be established while the peer is
-    // already the active device.
-    let mut suppressing = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
-    suppress_local(suppressing);
+    // already the active device. `forwarding` is the single source of
+    // truth for this side's role for the rest of the loop — it is updated
+    // the instant a `SwitchOwnership` arrives, so the send gate is never
+    // one `devices` tick behind during a handoff.
+    let mut forwarding = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
+    suppress_local(forwarding);
     crate::hop_note!(
         stage = "pipeline_gate_init",
         role = "owner",
         peer = %peer_id.0,
-        forwarding = suppressing,
+        forwarding = forwarding,
         "initial send-gate state for this connection"
     );
 
-    loop {
+    'conn: loop {
         tokio::select! {
             event = capture_events.recv() => {
-                let Some(event) = event else { break; };
-                let forwarding = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
+                let Some(event) = event else { break 'conn; };
                 crate::hop!(
                     stage = "send_gate",
                     role = "owner",
@@ -283,6 +313,7 @@ pub async fn run_paired_connection<I, S>(
                 if forwarding {
                     send_sequence += 1;
                     let detail = describe_event(&event);
+                    sent_held.observe(&event);
                     if channel.send(ChannelMessage::Input { sequence: send_sequence, event }).await.is_err() {
                         crate::hop_note!(
                             stage = "send_failed",
@@ -291,7 +322,7 @@ pub async fn run_paired_connection<I, S>(
                             seq = send_sequence,
                             "channel send failed; ending pipeline"
                         );
-                        break;
+                        break 'conn;
                     }
                     crate::hop!(
                         stage = "frame_sent",
@@ -310,21 +341,51 @@ pub async fn run_paired_connection<I, S>(
             }
             changed = devices.changed() => {
                 if changed.is_err() {
-                    break;
+                    break 'conn;
                 }
-                let should_suppress =
+                let now_forwarding =
                     is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
-                if should_suppress != suppressing {
-                    suppressing = should_suppress;
+                if now_forwarding == forwarding {
+                    // Some other device field changed — role is unaffected.
+                    continue;
+                }
+                // A switch initiated on *this* machine (Scroll Lock here,
+                // or an IPC `switch_active_device`). Relay it to the peer
+                // over the same connection so the two stay consistent
+                // without a reconnect — and don't strand anything we were
+                // mid-forward when we stop being Primary.
+                let new_role = role_of(now_forwarding);
+                if forwarding && !now_forwarding
+                    && forward_releases(&mut channel, &mut send_sequence, sent_held.drain_releases()).await.is_err()
+                {
+                    break 'conn;
+                }
+                if channel.send(ChannelMessage::SwitchOwnership { sender_role: new_role }).await.is_err() {
                     crate::hop_note!(
-                        stage = "suppress_toggle",
+                        stage = "send_failed",
                         role = "owner",
                         peer = %peer_id.0,
-                        forwarding = should_suppress,
-                        "active-device change flipped the send gate"
+                        "channel send failed handing the ownership baton; ending pipeline"
                     );
-                    suppress_local(suppressing);
+                    break 'conn;
                 }
+                forwarding = now_forwarding;
+                // Going Secondary -> Primary: release anything we were
+                // injecting from the peer. The peer's own hand-off flush
+                // covers this too, but reconciling both sides keeps a
+                // missed frame from stranding a key (task §11).
+                if now_forwarding {
+                    held.release_all(&mut injector);
+                }
+                crate::hop_note!(
+                    stage = "input_role_changed",
+                    role = "owner",
+                    peer = %peer_id.0,
+                    trigger = "local",
+                    new_role = ?new_role,
+                    "local switch relayed to the peer over the live connection"
+                );
+                suppress_local(forwarding);
             }
             received = channel.recv() => {
                 match received {
@@ -369,8 +430,41 @@ pub async fn run_paired_connection<I, S>(
                             Err(err) => crate::logging::product::error("inject input", &err),
                         }
                     }
+                    Ok(ChannelMessage::SwitchOwnership { sender_role }) => {
+                        let my_role = sender_role.opposite();
+                        let now_forwarding = matches!(my_role, InputRole::Primary);
+                        crate::hop_note!(
+                            stage = "switch_key",
+                            role = "receiver",
+                            peer = %peer_id.0,
+                            sender_role = ?sender_role,
+                            new_role = ?my_role,
+                            "peer handed the ownership baton over the live connection"
+                        );
+                        // Were forwarding, now Secondary: flush what we
+                        // had mid-forward so the peer isn't left holding a
+                        // key we will never release (task §11).
+                        if forwarding && !now_forwarding
+                            && forward_releases(&mut channel, &mut send_sequence, sent_held.drain_releases()).await.is_err()
+                        {
+                            break 'conn;
+                        }
+                        // Release anything we injected as the former
+                        // Secondary — the peer that pressed those keys is
+                        // no longer our input source.
+                        held.release_all(&mut injector);
+                        // Apply immediately so the send gate is correct in
+                        // the gap before `on_peer_ownership`'s device-list
+                        // update lands; that update then matches
+                        // `forwarding` and is a no-op in the `devices`
+                        // arm, so it is never echoed back as a second
+                        // handoff.
+                        forwarding = now_forwarding;
+                        suppress_local(forwarding);
+                        on_peer_ownership(my_role);
+                    }
                     Ok(_) => continue,
-                    Err(_) => break,
+                    Err(_) => break 'conn,
                 }
             }
         }
@@ -379,9 +473,43 @@ pub async fn run_paired_connection<I, S>(
     // Never leave this machine's own input suppressed once the
     // connection it was being forwarded over is gone — otherwise a
     // dropped link would take the user's keyboard with it.
-    if suppressing {
+    if forwarding {
         suppress_local(false);
     }
+}
+
+/// This side's role given whether it is currently forwarding captured
+/// input to the peer.
+fn role_of(forwarding: bool) -> InputRole {
+    if forwarding {
+        InputRole::Primary
+    } else {
+        InputRole::Secondary
+    }
+}
+
+/// Forwards a batch of synthesized release events to the peer as ordinary
+/// sequenced `Input` frames. `Err(())` if the channel send fails, so the
+/// caller can end the connection the same way any other send failure does.
+async fn forward_releases(
+    channel: &mut Box<dyn Channel>,
+    send_sequence: &mut u64,
+    releases: Vec<InputEvent>,
+) -> Result<(), ()> {
+    for event in releases {
+        *send_sequence += 1;
+        if channel
+            .send(ChannelMessage::Input {
+                sequence: *send_sequence,
+                event,
+            })
+            .await
+            .is_err()
+        {
+            return Err(());
+        }
+    }
+    Ok(())
 }
 
 fn now_ms() -> u64 {
@@ -507,6 +635,11 @@ mod tests {
 
     /// A `suppress_local` sink for tests that don't assert on it.
     fn ignore_suppression() -> impl FnMut(bool) {
+        |_| {}
+    }
+
+    /// An `on_peer_ownership` sink for tests that don't assert on it.
+    fn ignore_ownership() -> impl FnMut(InputRole) {
         |_| {}
     }
 
@@ -1020,6 +1153,7 @@ mod tests {
             injector,
             peer_id(),
             ignore_suppression(),
+            ignore_ownership(),
         ));
 
         // The peer is the active device, so captured input is forwarded
@@ -1073,6 +1207,7 @@ mod tests {
             injector,
             peer_id(),
             ignore_suppression(),
+            ignore_ownership(),
         ));
 
         peer_side
@@ -1111,6 +1246,7 @@ mod tests {
             move |suppress| {
                 let _ = suppress_tx.send(suppress);
             },
+            ignore_ownership(),
         ));
 
         // The peer is already active when the connection opens, so
@@ -1155,6 +1291,7 @@ mod tests {
             move |suppress| {
                 let _ = suppress_tx.send(suppress);
             },
+            ignore_ownership(),
         ));
 
         // One initial `false` for the starting state, then nothing.
@@ -1168,5 +1305,211 @@ mod tests {
             None,
             "no further suppression calls once the channel's sender drops"
         );
+    }
+
+    /// Mimics `DaemonService::apply_peer_ownership` for the pipeline
+    /// tests: an `on_peer_ownership` callback that flips a `devices` watch
+    /// to match the role the peer just handed this side.
+    fn apply_ownership_to(devices_tx: watch::Sender<Vec<Device>>) -> impl FnMut(InputRole) {
+        move |role| {
+            let list = if role == InputRole::Primary {
+                devices_with_active_peer()
+            } else {
+                devices_with_active_local()
+            };
+            devices_tx.send_replace(list);
+        }
+    }
+
+    /// The receiving half of the ownership baton: a peer's
+    /// `SwitchOwnership` making this side `Primary` must start forwarding
+    /// captured input and suppress it locally — over the same connection,
+    /// no reconnect.
+    #[tokio::test]
+    async fn a_received_switch_ownership_making_this_side_primary_starts_forwarding() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+        let (suppress_tx, mut suppress_rx) = mpsc::unbounded_channel();
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            move |suppress| {
+                let _ = suppress_tx.send(suppress);
+            },
+            apply_ownership_to(devices_tx),
+        ));
+
+        // Starts Secondary.
+        assert_eq!(suppress_rx.recv().await, Some(false));
+
+        // The peer says it is now Secondary, so this side becomes Primary.
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Secondary,
+            })
+            .await
+            .expect("send handoff");
+        assert_eq!(suppress_rx.recv().await, Some(true));
+
+        // Captured input now flows to the peer.
+        capture_tx.send(a_key_event("A")).expect("send capture");
+        match peer_side.recv().await.expect("recv") {
+            ChannelMessage::Input { event, .. } => assert_eq!(event, a_key_event("A")),
+            other => panic!("expected a forwarded Input frame, got {other:?}"),
+        }
+
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+    }
+
+    /// A switch initiated on *this* machine (a `devices` change) while a
+    /// key is held forwarded: the peer must get the synthesized release
+    /// first, then the `SwitchOwnership` handoff — never a stuck key.
+    #[tokio::test]
+    async fn a_local_switch_flushes_held_forwarded_input_then_relays_the_handoff() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+            ignore_ownership(),
+        ));
+
+        capture_tx.send(key_down("A")).expect("send keydown");
+        assert_eq!(
+            peer_side.recv().await.expect("recv"),
+            ChannelMessage::Input {
+                sequence: 1,
+                event: key_down("A")
+            }
+        );
+
+        // Switch control back to this machine.
+        devices_tx.send_replace(devices_with_active_local());
+
+        match peer_side.recv().await.expect("recv") {
+            ChannelMessage::Input {
+                sequence,
+                event: InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }),
+            } => {
+                assert_eq!(sequence, 2, "the flushed release keeps the sequence going");
+                assert_eq!(key, "A");
+            }
+            other => panic!("expected a synthesized KeyUp frame first, got {other:?}"),
+        }
+        match peer_side.recv().await.expect("recv") {
+            ChannelMessage::SwitchOwnership { sender_role } => {
+                assert_eq!(sender_role, InputRole::Secondary);
+            }
+            other => panic!("expected the ownership handoff after the flush, got {other:?}"),
+        }
+
+        drop(capture_tx);
+        drop(devices_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+    }
+
+    /// Applying a handoff the peer sent must not bounce a second
+    /// `SwitchOwnership` straight back — that would ping-pong ownership
+    /// forever.
+    #[tokio::test]
+    async fn a_peer_initiated_handoff_is_not_echoed_back() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+            apply_ownership_to(devices_tx),
+        ));
+
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Secondary,
+            })
+            .await
+            .expect("send handoff");
+
+        // The next frame the peer sees must be this side's forwarded
+        // capture event, not an echoed handoff.
+        capture_tx.send(a_key_event("Z")).expect("send capture");
+        match peer_side.recv().await.expect("recv") {
+            ChannelMessage::Input { event, .. } => assert_eq!(event, a_key_event("Z")),
+            other => panic!("the peer's handoff was echoed back or reordered: {other:?}"),
+        }
+
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+    }
+
+    /// Held input this side had *injected* from the peer is released the
+    /// moment the peer hands ownership away — the machine that pressed
+    /// those keys is no longer the input source (task §11).
+    #[tokio::test]
+    async fn a_received_handoff_releases_input_this_side_had_injected() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, mut inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+            apply_ownership_to(devices_tx),
+        ));
+
+        peer_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: key_down("A"),
+            })
+            .await
+            .expect("send keydown");
+        assert_eq!(
+            inj_rx.recv().await.expect("keydown injected"),
+            key_down("A")
+        );
+
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Secondary,
+            })
+            .await
+            .expect("send handoff");
+        expect_next_is_key_up(&mut inj_rx, "A").await;
+
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
     }
 }

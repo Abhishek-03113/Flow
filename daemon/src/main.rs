@@ -15,7 +15,7 @@ use flow_core::device::DeviceId;
 use flow_core::input::{InputCapture, InputInjector};
 use flow_core::ipc::IPC_PORT;
 use flow_core::link::DaemonLinkState;
-use flow_core::protocol::InputEvent;
+use flow_core::protocol::{InputEvent, InputRole};
 use flow_daemon::channel::tcp::TcpChannel;
 use flow_daemon::discovery::tcp::{DiscoveryService, DISCOVERY_PORT};
 use flow_daemon::discovery::DiscoveredPeer;
@@ -532,6 +532,21 @@ async fn run_peer_pipeline(
         }
     };
 
+    // The receiving half of the ownership baton: when the *peer* switches
+    // (its Scroll Lock, or an IPC command on its side), it sends
+    // `ChannelMessage::SwitchOwnership` over this same connection and the
+    // pipeline calls this with our new role. Applying it here keeps this
+    // daemon's device list — and therefore the send gate and the UI — in
+    // step with the peer's switch, with no reconnect and without this
+    // machine having to detect the peer's Scroll Lock itself.
+    let ownership_service = Arc::clone(&service);
+    let ownership_peer = device_id.clone();
+    let on_peer_ownership = move |role: InputRole| {
+        let service = Arc::clone(&ownership_service);
+        let peer = ownership_peer.clone();
+        tokio::spawn(async move { service.apply_peer_ownership(&peer, role).await });
+    };
+
     service.set_link_state(DaemonLinkState::Connected);
     flow_daemon::hop_note!(
         stage = "link_connected",
@@ -547,6 +562,7 @@ async fn run_peer_pipeline(
         injector,
         device_id.clone(),
         suppress_local,
+        on_peer_ownership,
     )
     .await;
     flow_daemon::logging::product::peer_disconnected(&peer_name);
