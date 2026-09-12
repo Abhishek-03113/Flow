@@ -38,11 +38,11 @@ use flow_core::protocol::InputEvent;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, GetMessageW, PostThreadMessageW, SetWindowsHookExW,
-    TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN,
-    WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
+    CallNextHookEx, DispatchMessageW, GetMessageW, GetSystemMetrics, PostThreadMessageW,
+    SetCursorPos, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT,
+    MSG, MSLLHOOKSTRUCT, SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
+    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEMOVE, WM_QUIT,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
 };
 
 use super::translate::EventTranslator;
@@ -298,6 +298,7 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         }
         let message = wparam.0 as u32;
         let timestamp_ms = now_ms();
+        let anchor = screen_center();
         let withhold = guard_hook_body("mouse", || {
             STATE.with(|state| {
                 let mut slot = state.borrow_mut();
@@ -311,10 +312,23 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                     let _ = state.sender.send(event);
                 }
                 let suppress = state.suppress.load(Ordering::SeqCst);
-                state.gate.on_mouse(suppress, message)
+                let withhold = state.gate.on_mouse(suppress, message);
+                if withhold && message == WM_MOUSEMOVE {
+                    state.translator.reset_move_anchor(anchor.0, anchor.1);
+                }
+                withhold
             })
         });
         if withhold {
+            if message == WM_MOUSEMOVE {
+                // Recenter the real (withheld-from-apps, so effectively
+                // invisible) cursor back to a fixed anchor point — see
+                // `screen_center`'s doc comment for why plain withholding
+                // alone isn't enough to keep relative motion meaningful.
+                // SAFETY: SetCursorPos takes plain screen coordinates, no
+                // aliasing/lifetime concerns.
+                let _ = unsafe { SetCursorPos(anchor.0, anchor.1) };
+            }
             return LRESULT(1);
         }
     }
@@ -346,6 +360,46 @@ fn guard_hook_body(which: &str, body: impl FnOnce() -> bool) -> bool {
             false
         }
     }
+}
+
+/// The primary display's center point, in screen coordinates — the fixed
+/// anchor [`mouse_proc`] warps the real cursor back to (`SetCursorPos`)
+/// every time it withholds a `WM_MOUSEMOVE` from local delivery.
+///
+/// Withholding alone (`LRESULT(1)`, never chaining to `CallNextHookEx`)
+/// does not keep `MSLLHOOKSTRUCT.pt` meaningful: verified empirically
+/// (`WH_MOUSE_LL` always returning 1 for `WM_MOUSEMOVE`, driven with
+/// synthetic `SendInput` motion far larger than one screen), `pt` freezes
+/// at wherever the real, on-screen cursor was standing when withholding
+/// began and only wobbles by a stray pixel of noise afterward — nowhere
+/// close to a genuine display edge — no matter how much further motion
+/// keeps arriving. Windows never advances the position it hands back to
+/// the hook once nothing actually moves the visible cursor. Diffing that
+/// frozen `pt` (`translate::EventTranslator::translate_move`) collapses
+/// every subsequent move to a near-zero delta, which is why forwarded
+/// mouse movement dies completely while keyboard forwarding (carrying no
+/// positional state) keeps working.
+///
+/// Warping the real cursor back to a known point after each withheld move
+/// — the same fix `SetCursorPos`-based KVM tools (Barrier/Synergy/
+/// Deskflow) apply on their capturing side — keeps genuine relative
+/// motion flowing: each move is measured from the anchor, not from an
+/// ever-more-stale frozen position, so it can never approach a real edge.
+/// [`translate::EventTranslator::reset_move_anchor`] tells the translator
+/// to expect that jump rather than diff against it. Confirmed against
+/// the same synthetic-drive harness: every subsequent move reports its
+/// true delta instead of collapsing to noise.
+///
+/// A side effect shared with those same reference implementations: the
+/// local cursor is left sitting at this anchor point once suppression
+/// ends, not wherever the physical mouse actually is — a documented,
+/// accepted trade-off of the technique, not something this fix attempts
+/// to hide.
+fn screen_center() -> (i32, i32) {
+    // SAFETY: GetSystemMetrics has no preconditions; SM_CXSCREEN/
+    // SM_CYSCREEN are always valid indices.
+    let (width, height) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    (width / 2, height / 2)
 }
 
 fn now_ms() -> u64 {

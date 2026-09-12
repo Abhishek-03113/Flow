@@ -14,9 +14,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     VK_0, VK_9, VK_A, VK_APPS, VK_BACK, VK_CAPITAL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
     VK_F24, VK_HELP, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NEXT,
     VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA,
-    VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT,
-    VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB, VK_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE,
-    VK_VOLUME_UP, VK_Z,
+    VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU,
+    VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB, VK_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
+    VK_Z,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, WHEEL_DELTA, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
@@ -113,6 +113,18 @@ impl EventTranslator {
             })),
             _ => None,
         }
+    }
+
+    /// Overrides the position the *next* `translate_move` diffs against,
+    /// without emitting an event. [`super::capture`]'s local-suppression
+    /// path calls this right after warping the real cursor back to a
+    /// fixed anchor point with `SetCursorPos` — see its call site for why:
+    /// `MSLLHOOKSTRUCT.pt` stops reflecting genuine relative motion once
+    /// this machine's own hook starts withholding `WM_MOUSEMOVE`, so the
+    /// anchor point, not wherever `pt` last raw-reported, has to be what
+    /// the next real move's delta is computed from.
+    pub fn reset_move_anchor(&mut self, x: i32, y: i32) {
+        self.last_mouse_position = Some((x, y));
     }
 
     /// The first move after (re)start has no prior position to diff
@@ -416,6 +428,39 @@ mod tests {
         assert!(translator
             .translate_mouse(WM_MOUSEMOVE, &mouse_info(10, 10, 0), 0)
             .is_none());
+    }
+
+    /// `capture::mouse_proc`'s recentering fix depends on this: once the
+    /// real cursor has been warped back to a fixed anchor (because the
+    /// prior move was withheld from local delivery), the *next* move must
+    /// diff against that anchor — not against wherever the just-withheld
+    /// event's raw, now-stale `pt` was — or the very next reported delta
+    /// would be a bogus jump of roughly `anchor - stale_pt` instead of the
+    /// real motion since the warp.
+    #[test]
+    fn reset_move_anchor_makes_the_next_move_diff_from_the_anchor_not_the_last_raw_position() {
+        let mut translator = EventTranslator::new();
+        assert!(translator
+            .translate_mouse(WM_MOUSEMOVE, &mouse_info(10, 10, 0), 0)
+            .is_none());
+        // This move's raw position (1000, 1000) is far from where the
+        // cursor was actually warped back to.
+        translator
+            .translate_mouse(WM_MOUSEMOVE, &mouse_info(1000, 1000, 0), 0)
+            .unwrap();
+        translator.reset_move_anchor(500, 500);
+
+        let moved = translator
+            .translate_mouse(WM_MOUSEMOVE, &mouse_info(506, 495, 0), 0)
+            .unwrap();
+        assert_eq!(
+            moved,
+            InputEvent::Mouse(MouseEvent::Move {
+                dx: 6,
+                dy: -5,
+                timestamp_ms: 0,
+            })
+        );
     }
 
     #[test]
