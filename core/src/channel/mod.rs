@@ -16,8 +16,9 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::device::DeviceId;
 use crate::pairing::{PairingDecision, PairingRequest};
-use crate::protocol::{InputEvent, InputRole};
+use crate::protocol::InputEvent;
 
 /// Which medium backs a [`Channel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,28 +79,40 @@ pub enum ChannelMessage {
     },
     Pairing(PairingWireMessage),
     Heartbeat,
-    /// Hands the input-ownership baton across the *same* persistent
-    /// connection input events travel over — never a reconnect. Sent by
-    /// whichever daemon just changed its own role (`sender_role` is that
-    /// daemon's role *after* the change); the receiver takes
-    /// `sender_role.opposite()`. This is the only cross-daemon ownership
-    /// signal: a peer never learns of a switch by "also detecting Scroll
-    /// Lock," per `docs/product/vision.md` §12.
+    /// The single ownership-authority message, serving two purposes so a
+    /// second message type isn't needed for either:
     ///
-    /// `generation` is a per-connection monotonic counter the sender
-    /// bumps every time it emits one of these (`daemon::ownership::OwnershipHandle::bump_generation`).
-    /// A receiver applies the message only if `generation` is strictly
-    /// greater than the last one it accepted
-    /// (`OwnershipHandle::try_advance_generation`); an equal or lower
-    /// value is a stale retransmit or an exact duplicate and is ignored
-    /// — the "Complete Flow V1" task's idempotent-ownership-update
-    /// requirement. There is deliberately no `primary_device_id` field:
-    /// the peer's identity already comes from the Noise-authenticated
-    /// connection itself, never from message content, so naming a
-    /// device here would only add a field that has to be validated
-    /// against something the connection already guarantees.
-    SwitchOwnership {
-        sender_role: InputRole,
+    /// 1. **Live handoff** — hands the input-ownership baton across the
+    ///    *same* persistent connection input events travel over, never a
+    ///    reconnect. Sent by whichever daemon just changed its own role.
+    /// 2. **Reconnect/first-connection handshake** — the very first message
+    ///    each side sends on a brand-new connection (`daemon::pipeline::
+    ///    run_paired_connection`), stating what it currently believes,
+    ///    before either side touches local forwarding/suppression state.
+    ///
+    /// `primary_device_id` is the **absolute** id of whichever device is
+    /// Primary — never a sender-relative role a receiver has to invert
+    /// (`sender_role.opposite()`), which cannot tell two independently
+    /// diverged peers apart (`"Fix Flow V1 Ownership Synchronization"`
+    /// task's core split-brain complaint). A receiver rejects a
+    /// `primary_device_id` that names neither itself nor its peer — the
+    /// only two devices it actually knows about in this V1 model.
+    ///
+    /// `generation` orders these messages across this daemon pair's whole
+    /// lifetime, not just one TCP connection: monotonically bumped by the
+    /// sender on every locally-initiated change
+    /// (`daemon::ownership::OwnershipHandle::bump_generation`) and never
+    /// reset across a reconnect. A receiver applies a live handoff only if
+    /// `generation` is strictly greater than the last one it accepted
+    /// (`OwnershipHandle::try_advance_generation`); an equal or lower value
+    /// is a stale retransmit or exact duplicate and is ignored. The
+    /// handshake case instead *reconciles* both sides' generations
+    /// (`OwnershipHandle::reconcile`) — see
+    /// `daemon::pipeline::resolve_ownership` for the deterministic rule
+    /// that keeps two peers from ever both landing on Primary after a
+    /// disconnect.
+    OwnershipChanged {
+        primary_device_id: DeviceId,
         generation: u64,
     },
     /// Raw bytes for session establishment. Carried by `NoiseChannel`
@@ -238,11 +251,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_switch_ownership_message_round_trips() {
-        use crate::protocol::InputRole;
+    async fn an_ownership_changed_message_round_trips() {
         let (mut a, mut b) = ChannelPair::new_pair();
-        let message = ChannelMessage::SwitchOwnership {
-            sender_role: InputRole::Secondary,
+        let message = ChannelMessage::OwnershipChanged {
+            primary_device_id: DeviceId("d1".to_string()),
             generation: 7,
         };
         a.send(message.clone()).await.expect("send");

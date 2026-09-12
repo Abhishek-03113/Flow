@@ -1,9 +1,11 @@
 //! The session-local ownership state a paired connection's pipeline and
 //! the switch-key runner both need: this daemon's own [`InputRole`] and
-//! the monotonic generation guarding `ChannelMessage::SwitchOwnership`
+//! the monotonic generation guarding `ChannelMessage::OwnershipChanged`
 //! against stale/duplicate delivery ("Complete Flow V1" task §5's
 //! idempotent ownership update: "incoming generation <= current
-//! generation -> ignore").
+//! generation -> ignore") *and*, since the "Fix Flow V1 Ownership
+//! Synchronization" pass, against split-brain on reconnect: see
+//! [`Self::reconcile`] and `pipeline::resolve_ownership`.
 //!
 //! Deliberately *not* derived from `DaemonService`'s `devices` list: a
 //! local device's own `Active` flag can't tell "no peer pipeline has
@@ -75,17 +77,17 @@ impl OwnershipHandle {
             .store(matches!(role, InputRole::Primary), Ordering::SeqCst);
     }
 
-    /// Call before sending a locally-initiated `SwitchOwnership` — bumps
+    /// Call before sending a locally-initiated `OwnershipChanged` — bumps
     /// and returns the new generation to embed in the outgoing message.
     pub fn bump_generation(&self) -> u64 {
         self.generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 
-    /// Call on receiving a `SwitchOwnership`: applies `incoming` iff it
-    /// is strictly greater than the last generation this side accepted,
-    /// atomically advancing to it. `false` means the message was a
-    /// stale retransmit or an exact duplicate and the caller must not
-    /// apply anything else from it (role, forwarding, suppression).
+    /// Call on receiving a live `OwnershipChanged` handoff: applies
+    /// `incoming` iff it is strictly greater than the last generation this
+    /// side accepted, atomically advancing to it. `false` means the
+    /// message was a stale retransmit or an exact duplicate and the caller
+    /// must not apply anything else from it (role, forwarding, suppression).
     pub fn try_advance_generation(&self, incoming: u64) -> bool {
         loop {
             let current = self.generation.load(Ordering::SeqCst);
@@ -100,6 +102,43 @@ impl OwnershipHandle {
                 return true;
             }
         }
+    }
+
+    /// This side's current generation, for building the handshake message
+    /// a new connection opens with (`pipeline::run_paired_connection`).
+    pub fn generation_now(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
+    }
+
+    /// Applies the outcome of `pipeline::resolve_ownership` — the
+    /// connection-opening handshake that reconciles this side's belief
+    /// with the peer's — unconditionally, unlike [`Self::try_advance_generation`].
+    /// This is deliberately *not* gated the same way: the handshake already
+    /// picked the one deterministic answer both sides independently agree
+    /// on, so there is nothing left to arbitrate here, only to apply.
+    ///
+    /// The generation floor is raised to `max(current, resolved_generation)`
+    /// — never lowered — so a stale live handoff from before the reconnect
+    /// still can't re-apply afterward. Returns whether the role actually
+    /// changed (for logging).
+    pub fn reconcile(&self, resolved_primary_is_local: bool, resolved_generation: u64) -> bool {
+        let changed = self.is_primary() != resolved_primary_is_local;
+        self.is_primary
+            .store(resolved_primary_is_local, Ordering::SeqCst);
+
+        let mut current = self.generation.load(Ordering::SeqCst);
+        while resolved_generation > current {
+            match self.generation.compare_exchange(
+                current,
+                resolved_generation,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
+        changed
     }
 }
 
@@ -159,6 +198,64 @@ mod tests {
         // Confirms rejection didn't corrupt state: a later, genuinely
         // higher generation still applies.
         assert!(handle.try_advance_generation(6));
+    }
+
+    #[test]
+    fn generation_now_reads_without_mutating() {
+        let handle = OwnershipHandle::new();
+        assert_eq!(handle.generation_now(), 0);
+        handle.bump_generation();
+        assert_eq!(handle.generation_now(), 1);
+        assert_eq!(
+            handle.generation_now(),
+            1,
+            "reading again doesn't advance it"
+        );
+    }
+
+    #[test]
+    fn reconcile_applies_the_resolved_role_and_raises_the_generation_floor() {
+        let handle = OwnershipHandle::new();
+        assert!(handle.is_primary());
+
+        let changed = handle.reconcile(false, 5);
+        assert!(changed, "role actually flipped");
+        assert!(handle.is_secondary());
+        assert_eq!(handle.generation_now(), 5);
+    }
+
+    #[test]
+    fn reconcile_to_the_same_role_reports_no_change() {
+        let handle = OwnershipHandle::new();
+        let changed = handle.reconcile(true, 3);
+        assert!(!changed, "already Primary; nothing flipped");
+        assert_eq!(handle.generation_now(), 3);
+    }
+
+    #[test]
+    fn reconcile_never_lowers_the_generation_floor() {
+        let handle = OwnershipHandle::new();
+        handle.bump_generation(); // generation 1
+        handle.reconcile(false, 0);
+        assert_eq!(
+            handle.generation_now(),
+            1,
+            "a lower resolved generation must not erase a higher one already seen"
+        );
+        assert!(
+            handle.is_secondary(),
+            "the resolved role still applies even when the generation floor doesn't move"
+        );
+    }
+
+    #[test]
+    fn a_stale_live_handoff_cannot_reapply_after_a_reconcile_raised_the_floor() {
+        let handle = OwnershipHandle::new();
+        handle.reconcile(false, 10);
+        // A live handoff at a generation below the reconciled floor must be
+        // rejected exactly like any other stale message.
+        assert!(!handle.try_advance_generation(4));
+        assert!(handle.try_advance_generation(11));
     }
 
     #[test]

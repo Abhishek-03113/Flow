@@ -680,7 +680,7 @@ impl DaemonService {
     }
 
     /// Applies an ownership change the peer just told us about over the
-    /// live connection (`ChannelMessage::SwitchOwnership`) — the receiving
+    /// live connection (`ChannelMessage::OwnershipChanged`) — the receiving
     /// half of the switch the task's V1 model hands across without a
     /// reconnect.
     ///
