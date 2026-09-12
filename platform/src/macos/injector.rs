@@ -6,7 +6,7 @@ use std::fmt;
 use core_graphics::event::{CGEventTapLocation, EventField};
 use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use flow_core::input::InputInjector;
-use flow_core::protocol::{InputEvent, MouseEvent};
+use flow_core::protocol::{InputEvent, KeyboardEvent, MouseEvent};
 
 use super::inject_translate::{to_cg_event, HeldButtons};
 use super::FLOW_INJECTED_MARKER;
@@ -15,12 +15,21 @@ use super::FLOW_INJECTED_MARKER;
 pub enum MacosInjectError {
     /// `CGEventSourceCreate` returned null.
     SourceCreationFailed,
+    /// `to_cg_event` had no `CGKeyCode` for this key name — a key from a
+    /// peer that sent something outside the shared vocabulary
+    /// (`flow_core::protocol::key_names`) and macOS' own hex fallback.
+    /// Surfaced as an error rather than silently doing nothing, per
+    /// `InputCapture::set_suppress_local`'s stated philosophy in
+    /// `core/src/input/mod.rs`: a caller that believes a key was
+    /// injected when it wasn't is worse than a loud failure.
+    UnmappedKey(String),
 }
 
 impl fmt::Display for MacosInjectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SourceCreationFailed => write!(f, "CGEventSourceCreate failed"),
+            Self::UnmappedKey(key) => write!(f, "no CGKeyCode for key {key:?}"),
         }
     }
 }
@@ -62,14 +71,19 @@ impl InputInjector for MacosInputInjector {
             InputEvent::Mouse(MouseEvent::ButtonUp { button, .. }) => self.held.release(*button),
             _ => {}
         }
-        if let Some(cg_event) = to_cg_event(&self.source, event, self.held) {
-            // Mark this as Flow's own output so an active capture tap in
-            // this same process (`super::capture`) recognizes it on the
-            // rebound and neither forwards it to the peer nor gates it.
-            cg_event
-                .set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, FLOW_INJECTED_MARKER);
-            cg_event.post(CGEventTapLocation::HID);
-        }
+        let Some(cg_event) = to_cg_event(&self.source, event, self.held) else {
+            return match event {
+                InputEvent::Keyboard(
+                    KeyboardEvent::KeyDown { key, .. } | KeyboardEvent::KeyUp { key, .. },
+                ) => Err(MacosInjectError::UnmappedKey(key.clone())),
+                InputEvent::Mouse(_) => Ok(()),
+            };
+        };
+        // Mark this as Flow's own output so an active capture tap in
+        // this same process (`super::capture`) recognizes it on the
+        // rebound and neither forwards it to the peer nor gates it.
+        cg_event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, FLOW_INJECTED_MARKER);
+        cg_event.post(CGEventTapLocation::HID);
         Ok(())
     }
 }

@@ -7,7 +7,7 @@
 use std::str::FromStr;
 
 use evdev::{EventType, KeyCode, RelativeAxisCode};
-use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
+use flow_core::protocol::{key_names, InputEvent, KeyboardEvent, MouseButton, MouseEvent};
 
 use super::translate::{KEY_DOWN, KEY_UP};
 
@@ -65,11 +65,81 @@ fn button_event(button: MouseButton, value: i32) -> evdev::InputEvent {
     evdev::InputEvent::new(EventType::KEY.0, code.0, value)
 }
 
-/// Reverses `translate::key_name`: `"A"` -> `KeyCode::KEY_A`. Any key name
-/// this crate itself produced round-trips; a name from elsewhere that
-/// doesn't match a known evdev key code is simply not injectable.
+/// The canonical-name half of `key_code_for`'s reverse mapping — must be
+/// checked before the generic passthrough, since a shared name like
+/// `"RETURN"` does not match evdev's own `KEY_ENTER` by naive
+/// `KEY_`-prefixing.
+fn canonical_code_for(name: &str) -> Option<KeyCode> {
+    Some(match name {
+        n if n == key_names::RETURN => KeyCode::KEY_ENTER,
+        n if n == key_names::TAB => KeyCode::KEY_TAB,
+        n if n == key_names::SPACE => KeyCode::KEY_SPACE,
+        n if n == key_names::DELETE => KeyCode::KEY_BACKSPACE,
+        n if n == key_names::FORWARD_DELETE => KeyCode::KEY_DELETE,
+        n if n == key_names::ESCAPE => KeyCode::KEY_ESC,
+        n if n == key_names::SHIFT => KeyCode::KEY_LEFTSHIFT,
+        n if n == key_names::RIGHT_SHIFT => KeyCode::KEY_RIGHTSHIFT,
+        n if n == key_names::CONTROL => KeyCode::KEY_LEFTCTRL,
+        n if n == key_names::RIGHT_CONTROL => KeyCode::KEY_RIGHTCTRL,
+        n if n == key_names::OPTION => KeyCode::KEY_LEFTALT,
+        n if n == key_names::RIGHT_OPTION => KeyCode::KEY_RIGHTALT,
+        n if n == key_names::COMMAND => KeyCode::KEY_LEFTMETA,
+        n if n == key_names::RIGHT_COMMAND => KeyCode::KEY_RIGHTMETA,
+        n if n == key_names::CAPS_LOCK => KeyCode::KEY_CAPSLOCK,
+        n if n == key_names::FUNCTION => KeyCode::KEY_FN,
+        n if n == key_names::HOME => KeyCode::KEY_HOME,
+        n if n == key_names::END => KeyCode::KEY_END,
+        n if n == key_names::PAGE_UP => KeyCode::KEY_PAGEUP,
+        n if n == key_names::PAGE_DOWN => KeyCode::KEY_PAGEDOWN,
+        n if n == key_names::LEFT_ARROW => KeyCode::KEY_LEFT,
+        n if n == key_names::RIGHT_ARROW => KeyCode::KEY_RIGHT,
+        n if n == key_names::UP_ARROW => KeyCode::KEY_UP,
+        n if n == key_names::DOWN_ARROW => KeyCode::KEY_DOWN,
+        n if n == key_names::HELP => KeyCode::KEY_HELP,
+        n if n == key_names::VOLUME_UP => KeyCode::KEY_VOLUMEUP,
+        n if n == key_names::VOLUME_DOWN => KeyCode::KEY_VOLUMEDOWN,
+        n if n == key_names::MUTE => KeyCode::KEY_MUTE,
+        n if n == key_names::MINUS => KeyCode::KEY_MINUS,
+        n if n == key_names::EQUAL => KeyCode::KEY_EQUAL,
+        n if n == key_names::LEFT_BRACKET => KeyCode::KEY_LEFTBRACE,
+        n if n == key_names::RIGHT_BRACKET => KeyCode::KEY_RIGHTBRACE,
+        n if n == key_names::SEMICOLON => KeyCode::KEY_SEMICOLON,
+        n if n == key_names::QUOTE => KeyCode::KEY_APOSTROPHE,
+        n if n == key_names::COMMA => KeyCode::KEY_COMMA,
+        n if n == key_names::PERIOD => KeyCode::KEY_DOT,
+        n if n == key_names::SLASH => KeyCode::KEY_SLASH,
+        n if n == key_names::BACKSLASH => KeyCode::KEY_BACKSLASH,
+        n if n == key_names::GRAVE => KeyCode::KEY_GRAVE,
+        n if n == key_names::function_key(1) => KeyCode::KEY_F1,
+        n if n == key_names::function_key(2) => KeyCode::KEY_F2,
+        n if n == key_names::function_key(3) => KeyCode::KEY_F3,
+        n if n == key_names::function_key(4) => KeyCode::KEY_F4,
+        n if n == key_names::function_key(5) => KeyCode::KEY_F5,
+        n if n == key_names::function_key(6) => KeyCode::KEY_F6,
+        n if n == key_names::function_key(7) => KeyCode::KEY_F7,
+        n if n == key_names::function_key(8) => KeyCode::KEY_F8,
+        n if n == key_names::function_key(9) => KeyCode::KEY_F9,
+        n if n == key_names::function_key(10) => KeyCode::KEY_F10,
+        n if n == key_names::function_key(11) => KeyCode::KEY_F11,
+        n if n == key_names::function_key(12) => KeyCode::KEY_F12,
+        n if n == key_names::function_key(13) => KeyCode::KEY_F13,
+        n if n == key_names::function_key(14) => KeyCode::KEY_F14,
+        n if n == key_names::function_key(15) => KeyCode::KEY_F15,
+        n if n == key_names::function_key(16) => KeyCode::KEY_F16,
+        n if n == key_names::function_key(17) => KeyCode::KEY_F17,
+        n if n == key_names::function_key(18) => KeyCode::KEY_F18,
+        n if n == key_names::function_key(19) => KeyCode::KEY_F19,
+        n if n == key_names::function_key(20) => KeyCode::KEY_F20,
+        _ => return None,
+    })
+}
+
+/// Reverses `translate::key_name`: `"A"` -> `KeyCode::KEY_A`, `"RETURN"`
+/// -> `KeyCode::KEY_ENTER`. Any key name this crate itself produced
+/// round-trips; a name from elsewhere that doesn't match a shared
+/// canonical name or a known evdev key code is simply not injectable.
 fn key_code_for(key: &str) -> Option<KeyCode> {
-    KeyCode::from_str(&format!("KEY_{key}")).ok()
+    canonical_code_for(key).or_else(|| KeyCode::from_str(&format!("KEY_{key}")).ok())
 }
 
 #[cfg(test)]
@@ -138,6 +208,16 @@ mod tests {
             }))
             .is_none()
         );
+    }
+
+    #[test]
+    fn every_shared_key_name_has_a_linux_target() {
+        for name in flow_core::protocol::key_names::all() {
+            assert!(
+                key_code_for(&name).is_some(),
+                "no evdev KeyCode for shared key name {name:?}"
+            );
+        }
     }
 
     #[test]
