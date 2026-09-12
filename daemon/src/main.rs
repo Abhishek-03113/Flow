@@ -563,6 +563,7 @@ async fn run_peer_pipeline(
         device_id.clone(),
         suppress_local,
         on_peer_ownership,
+        service.ownership_handle(),
     )
     .await;
     flow_daemon::logging::product::peer_disconnected(&peer_name);

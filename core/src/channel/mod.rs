@@ -85,8 +85,22 @@ pub enum ChannelMessage {
     /// `sender_role.opposite()`. This is the only cross-daemon ownership
     /// signal: a peer never learns of a switch by "also detecting Scroll
     /// Lock," per `docs/product/vision.md` §12.
+    ///
+    /// `generation` is a per-connection monotonic counter the sender
+    /// bumps every time it emits one of these (`daemon::ownership::OwnershipHandle::bump_generation`).
+    /// A receiver applies the message only if `generation` is strictly
+    /// greater than the last one it accepted
+    /// (`OwnershipHandle::try_advance_generation`); an equal or lower
+    /// value is a stale retransmit or an exact duplicate and is ignored
+    /// — the "Complete Flow V1" task's idempotent-ownership-update
+    /// requirement. There is deliberately no `primary_device_id` field:
+    /// the peer's identity already comes from the Noise-authenticated
+    /// connection itself, never from message content, so naming a
+    /// device here would only add a field that has to be validated
+    /// against something the connection already guarantees.
     SwitchOwnership {
         sender_role: InputRole,
+        generation: u64,
     },
     /// Raw bytes for session establishment. Carried by `NoiseChannel`
     /// (`daemon/todos.json` H3) for handshake material before its wrapped
@@ -229,6 +243,7 @@ mod tests {
         let (mut a, mut b) = ChannelPair::new_pair();
         let message = ChannelMessage::SwitchOwnership {
             sender_role: InputRole::Secondary,
+            generation: 7,
         };
         a.send(message.clone()).await.expect("send");
         let received = b.recv().await.expect("recv");
