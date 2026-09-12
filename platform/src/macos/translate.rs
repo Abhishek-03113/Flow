@@ -8,6 +8,7 @@
 use std::collections::HashSet;
 
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGKeyCode, EventField, KeyCode};
+use flow_core::protocol::key_names;
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
 
 /// Converts `CGEvent`s into `flow_core` [`InputEvent`]s.
@@ -208,62 +209,158 @@ fn scroll_event(event: &CGEvent, timestamp_ms: u64) -> InputEvent {
     })
 }
 
-/// Names a virtual keycode the same way `flow-platform`'s Linux side
-/// names an evdev `KeyCode`: a short, human-readable token, not the raw
-/// number. macOS's virtual keycodes are a fixed hardware-position table
-/// (unlike evdev's named constants for every key), so this only names
-/// the codes `core_graphics::event::KeyCode` itself names; anything else
-/// falls back to a hex literal.
+/// The US ANSI keyboard's letter/digit/punctuation row, as fixed
+/// hardware-position virtual keycodes (Apple's standard `kVK_ANSI_*`
+/// table — `core_graphics::event::KeyCode` has no named constants for
+/// these; unlike `RETURN`/`TAB`/the arrow keys/etc., they simply aren't
+/// in that crate). Shared by [`key_name`] (encode) and
+/// `inject_translate::code_for_name` (decode) via `pub(super)` so the
+/// two directions can't drift apart from each other.
+///
+/// Before this table existed, every plain letter and digit fell through
+/// to the `0x..` hex fallback below — which is symmetric within macOS
+/// itself (this same process's own inject side accepts its own hex
+/// output back) but meant a letter captured on *another* platform (which
+/// sends the bare character `"A"`, never macOS's raw hex) could never
+/// match here. That was the dominant reason typed text didn't cross
+/// platforms at all; see `key_names`' module doc comment.
+pub(super) const ANSI_KEYCODES: &[(CGKeyCode, char)] = &[
+    (0x00, 'A'),
+    (0x01, 'S'),
+    (0x02, 'D'),
+    (0x03, 'F'),
+    (0x04, 'H'),
+    (0x05, 'G'),
+    (0x06, 'Z'),
+    (0x07, 'X'),
+    (0x08, 'C'),
+    (0x09, 'V'),
+    (0x0B, 'B'),
+    (0x0C, 'Q'),
+    (0x0D, 'W'),
+    (0x0E, 'E'),
+    (0x0F, 'R'),
+    (0x10, 'Y'),
+    (0x11, 'T'),
+    (0x12, '1'),
+    (0x13, '2'),
+    (0x14, '3'),
+    (0x15, '4'),
+    (0x16, '6'),
+    (0x17, '5'),
+    (0x18, '='),
+    (0x19, '9'),
+    (0x1A, '7'),
+    (0x1B, '-'),
+    (0x1C, '8'),
+    (0x1D, '0'),
+    (0x1E, ']'),
+    (0x1F, 'O'),
+    (0x20, 'U'),
+    (0x21, '['),
+    (0x22, 'I'),
+    (0x23, 'P'),
+    (0x25, 'L'),
+    (0x26, 'J'),
+    (0x27, '\''),
+    (0x28, 'K'),
+    (0x29, ';'),
+    (0x2A, '\\'),
+    (0x2B, ','),
+    (0x2C, '/'),
+    (0x2D, 'N'),
+    (0x2E, 'M'),
+    (0x2F, '.'),
+    (0x32, '`'),
+];
+
+/// This table's own [`ANSI_KEYCODES`] speaks raw ASCII punctuation
+/// (`'-'`, `'='`, ...), but the wire format uses `key_names`' named
+/// tokens for punctuation (`MINUS`, `EQUAL`, ...) the same as every
+/// other non-alphanumeric key — only letters and digits stay bare
+/// characters. This maps between the two for [`key_name`]'s encode
+/// direction; `punctuation_char_for` in `inject_translate.rs` is its
+/// exact inverse.
+fn punctuation_name_for(ch: char) -> Option<&'static str> {
+    Some(match ch {
+        '-' => key_names::MINUS,
+        '=' => key_names::EQUAL,
+        '[' => key_names::LEFT_BRACKET,
+        ']' => key_names::RIGHT_BRACKET,
+        ';' => key_names::SEMICOLON,
+        '\'' => key_names::QUOTE,
+        ',' => key_names::COMMA,
+        '.' => key_names::PERIOD,
+        '/' => key_names::SLASH,
+        '\\' => key_names::BACKSLASH,
+        '`' => key_names::GRAVE,
+        _ => return None,
+    })
+}
+
+/// Names a virtual keycode using `flow_core::protocol::key_names`'
+/// shared, cross-platform vocabulary wherever one applies (`key_names`'
+/// module doc comment explains why that matters), falling back to a raw
+/// hex literal — same as the Windows/Linux sides — for anything this
+/// function doesn't itself name.
 fn key_name(code: CGKeyCode) -> String {
+    if let Some((_, ch)) = ANSI_KEYCODES.iter().find(|(c, _)| *c == code) {
+        if ch.is_ascii_alphanumeric() {
+            return ch.to_string();
+        }
+        // `find` above guarantees a `punctuation_name_for` hit — every
+        // non-alphanumeric char in `ANSI_KEYCODES` has one.
+        return punctuation_name_for(*ch).expect("ANSI_KEYCODES only carries known punctuation").to_string();
+    }
     match code {
-        KeyCode::RETURN => "RETURN".to_string(),
-        KeyCode::TAB => "TAB".to_string(),
-        KeyCode::SPACE => "SPACE".to_string(),
-        KeyCode::DELETE => "DELETE".to_string(),
-        KeyCode::ESCAPE => "ESCAPE".to_string(),
-        KeyCode::COMMAND => "COMMAND".to_string(),
-        KeyCode::SHIFT => "SHIFT".to_string(),
-        KeyCode::CAPS_LOCK => "CAPS_LOCK".to_string(),
-        KeyCode::OPTION => "OPTION".to_string(),
-        KeyCode::CONTROL => "CONTROL".to_string(),
-        KeyCode::RIGHT_COMMAND => "RIGHT_COMMAND".to_string(),
-        KeyCode::RIGHT_SHIFT => "RIGHT_SHIFT".to_string(),
-        KeyCode::RIGHT_OPTION => "RIGHT_OPTION".to_string(),
-        KeyCode::RIGHT_CONTROL => "RIGHT_CONTROL".to_string(),
-        KeyCode::FUNCTION => "FUNCTION".to_string(),
-        KeyCode::VOLUME_UP => "VOLUME_UP".to_string(),
-        KeyCode::VOLUME_DOWN => "VOLUME_DOWN".to_string(),
-        KeyCode::MUTE => "MUTE".to_string(),
-        KeyCode::F1 => "F1".to_string(),
-        KeyCode::F2 => "F2".to_string(),
-        KeyCode::F3 => "F3".to_string(),
-        KeyCode::F4 => "F4".to_string(),
-        KeyCode::F5 => "F5".to_string(),
-        KeyCode::F6 => "F6".to_string(),
-        KeyCode::F7 => "F7".to_string(),
-        KeyCode::F8 => "F8".to_string(),
-        KeyCode::F9 => "F9".to_string(),
-        KeyCode::F10 => "F10".to_string(),
-        KeyCode::F11 => "F11".to_string(),
-        KeyCode::F12 => "F12".to_string(),
-        KeyCode::F13 => "F13".to_string(),
-        KeyCode::F14 => "F14".to_string(),
-        KeyCode::F15 => "F15".to_string(),
-        KeyCode::F16 => "F16".to_string(),
-        KeyCode::F17 => "F17".to_string(),
-        KeyCode::F18 => "F18".to_string(),
-        KeyCode::F19 => "F19".to_string(),
-        KeyCode::F20 => "F20".to_string(),
-        KeyCode::HELP => "HELP".to_string(),
-        KeyCode::HOME => "HOME".to_string(),
-        KeyCode::PAGE_UP => "PAGE_UP".to_string(),
-        KeyCode::FORWARD_DELETE => "FORWARD_DELETE".to_string(),
-        KeyCode::END => "END".to_string(),
-        KeyCode::PAGE_DOWN => "PAGE_DOWN".to_string(),
-        KeyCode::LEFT_ARROW => "LEFT_ARROW".to_string(),
-        KeyCode::RIGHT_ARROW => "RIGHT_ARROW".to_string(),
-        KeyCode::DOWN_ARROW => "DOWN_ARROW".to_string(),
-        KeyCode::UP_ARROW => "UP_ARROW".to_string(),
+        KeyCode::RETURN => key_names::RETURN.to_string(),
+        KeyCode::TAB => key_names::TAB.to_string(),
+        KeyCode::SPACE => key_names::SPACE.to_string(),
+        KeyCode::DELETE => key_names::DELETE.to_string(),
+        KeyCode::ESCAPE => key_names::ESCAPE.to_string(),
+        KeyCode::COMMAND => key_names::COMMAND.to_string(),
+        KeyCode::SHIFT => key_names::SHIFT.to_string(),
+        KeyCode::CAPS_LOCK => key_names::CAPS_LOCK.to_string(),
+        KeyCode::OPTION => key_names::OPTION.to_string(),
+        KeyCode::CONTROL => key_names::CONTROL.to_string(),
+        KeyCode::RIGHT_COMMAND => key_names::RIGHT_COMMAND.to_string(),
+        KeyCode::RIGHT_SHIFT => key_names::RIGHT_SHIFT.to_string(),
+        KeyCode::RIGHT_OPTION => key_names::RIGHT_OPTION.to_string(),
+        KeyCode::RIGHT_CONTROL => key_names::RIGHT_CONTROL.to_string(),
+        KeyCode::FUNCTION => key_names::FUNCTION.to_string(),
+        KeyCode::VOLUME_UP => key_names::VOLUME_UP.to_string(),
+        KeyCode::VOLUME_DOWN => key_names::VOLUME_DOWN.to_string(),
+        KeyCode::MUTE => key_names::MUTE.to_string(),
+        KeyCode::F1 => key_names::function_key(1),
+        KeyCode::F2 => key_names::function_key(2),
+        KeyCode::F3 => key_names::function_key(3),
+        KeyCode::F4 => key_names::function_key(4),
+        KeyCode::F5 => key_names::function_key(5),
+        KeyCode::F6 => key_names::function_key(6),
+        KeyCode::F7 => key_names::function_key(7),
+        KeyCode::F8 => key_names::function_key(8),
+        KeyCode::F9 => key_names::function_key(9),
+        KeyCode::F10 => key_names::function_key(10),
+        KeyCode::F11 => key_names::function_key(11),
+        KeyCode::F12 => key_names::function_key(12),
+        KeyCode::F13 => key_names::function_key(13),
+        KeyCode::F14 => key_names::function_key(14),
+        KeyCode::F15 => key_names::function_key(15),
+        KeyCode::F16 => key_names::function_key(16),
+        KeyCode::F17 => key_names::function_key(17),
+        KeyCode::F18 => key_names::function_key(18),
+        KeyCode::F19 => key_names::function_key(19),
+        KeyCode::F20 => key_names::function_key(20),
+        KeyCode::HELP => key_names::HELP.to_string(),
+        KeyCode::HOME => key_names::HOME.to_string(),
+        KeyCode::PAGE_UP => key_names::PAGE_UP.to_string(),
+        KeyCode::FORWARD_DELETE => key_names::FORWARD_DELETE.to_string(),
+        KeyCode::END => key_names::END.to_string(),
+        KeyCode::PAGE_DOWN => key_names::PAGE_DOWN.to_string(),
+        KeyCode::LEFT_ARROW => key_names::LEFT_ARROW.to_string(),
+        KeyCode::RIGHT_ARROW => key_names::RIGHT_ARROW.to_string(),
+        KeyCode::DOWN_ARROW => key_names::DOWN_ARROW.to_string(),
+        KeyCode::UP_ARROW => key_names::UP_ARROW.to_string(),
         other => format!("0x{other:02X}"),
     }
 }
@@ -285,13 +382,15 @@ mod tests {
     fn plain_key_press_and_release_carry_no_modifiers() {
         let mut translator = EventTranslator::new();
 
+        // 0x00 is kVK_ANSI_A — a plain letter, not a hex fallback (see
+        // `ANSI_KEYCODES`).
         let down = translator
             .translate(CGEventType::KeyDown, &key_event(0x00, true), 0)
             .unwrap();
         assert_eq!(
             down,
             InputEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: "0x00".to_string(),
+                key: "A".to_string(),
                 modifiers: vec![],
                 timestamp_ms: 0,
             })
@@ -303,11 +402,24 @@ mod tests {
         assert_eq!(
             up,
             InputEvent::Keyboard(KeyboardEvent::KeyUp {
-                key: "0x00".to_string(),
+                key: "A".to_string(),
                 modifiers: vec![],
                 timestamp_ms: 0,
             })
         );
+    }
+
+    #[test]
+    fn a_code_outside_the_ansi_and_named_tables_falls_back_to_hex() {
+        // 0xFF isn't a real macOS virtual keycode; stands in for "some
+        // future/unmapped code" to exercise the fallback path itself.
+        assert_eq!(key_name(0xFF), "0xFF".to_string());
+    }
+
+    #[test]
+    fn ansi_punctuation_uses_its_shared_key_names_token_not_the_raw_char() {
+        // 0x2C is kVK_ANSI_Slash — punctuation, not a bare character.
+        assert_eq!(key_name(0x2C), key_names::SLASH.to_string());
     }
 
     #[test]
@@ -394,7 +506,7 @@ mod tests {
         assert_eq!(
             down,
             InputEvent::Keyboard(KeyboardEvent::KeyDown {
-                key: "0x00".to_string(),
+                key: "A".to_string(),
                 modifiers: vec![Modifier::Shift],
                 timestamp_ms: 0,
             })

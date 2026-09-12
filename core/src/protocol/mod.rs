@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod key_names;
+
 /// Which side of a paired connection this daemon's physical input
 /// currently drives (`docs/product/vision.md` §22, "only the active
 /// device should receive input").

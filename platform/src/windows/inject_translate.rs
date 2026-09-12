@@ -10,12 +10,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
     MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT,
     MOUSE_EVENT_FLAGS, VIRTUAL_KEY, VK_APPS, VK_BACK, VK_CAPITAL, VK_DELETE, VK_DOWN, VK_END,
-    VK_ESCAPE, VK_F1, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NEXT,
-    VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU, VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB,
-    VK_UP,
+    VK_ESCAPE, VK_F1, VK_HELP, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN,
+    VK_NEXT, VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA,
+    VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU,
+    VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB, VK_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::WHEEL_DELTA;
 
+use flow_core::protocol::key_names;
 use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
 
 /// Translates one `InputEvent` into the `INPUT` structs that reproduce
@@ -135,8 +137,10 @@ fn wheel_mouse_data(notches: i32) -> u32 {
 
 /// Reverses `translate::key_name`. Letters/digits and `F1`..`F24` derive
 /// their code arithmetically, the same way `key_name` derived their
-/// names; everything else is a reversed lookup, falling back to parsing
-/// a `"0x.."` hex literal. Any name this crate itself produced round-trips.
+/// names; every other name in `flow_core::protocol::key_names`' shared
+/// vocabulary (so this accepts what *any* platform's capture side sends,
+/// not only Windows' own) is a reversed lookup; anything else falls back
+/// to parsing a `"0x.."` hex literal.
 fn code_for_name(name: &str) -> Option<VIRTUAL_KEY> {
     if let Some(code) = single_char_code(name) {
         return Some(code);
@@ -148,54 +152,84 @@ fn code_for_name(name: &str) -> Option<VIRTUAL_KEY> {
             }
         }
     }
-    let code = if name == "RETURN" {
+    let code = if name == key_names::RETURN {
         VK_RETURN
-    } else if name == "ESCAPE" {
+    } else if name == key_names::ESCAPE {
         VK_ESCAPE
-    } else if name == "SPACE" {
+    } else if name == key_names::SPACE {
         VK_SPACE
-    } else if name == "TAB" {
+    } else if name == key_names::TAB {
         VK_TAB
-    } else if name == "BACK" {
+    } else if name == key_names::DELETE {
         VK_BACK
-    } else if name == "DELETE" {
+    } else if name == key_names::FORWARD_DELETE {
         VK_DELETE
-    } else if name == "CAPITAL" {
+    } else if name == key_names::CAPS_LOCK {
         VK_CAPITAL
-    } else if name == "HOME" {
+    } else if name == key_names::HOME {
         VK_HOME
-    } else if name == "END" {
+    } else if name == key_names::END {
         VK_END
-    } else if name == "PRIOR" {
+    } else if name == key_names::PAGE_UP {
         VK_PRIOR
-    } else if name == "NEXT" {
+    } else if name == key_names::PAGE_DOWN {
         VK_NEXT
-    } else if name == "LEFT" {
+    } else if name == key_names::LEFT_ARROW {
         VK_LEFT
-    } else if name == "RIGHT" {
+    } else if name == key_names::RIGHT_ARROW {
         VK_RIGHT
-    } else if name == "UP" {
+    } else if name == key_names::UP_ARROW {
         VK_UP
-    } else if name == "DOWN" {
+    } else if name == key_names::DOWN_ARROW {
         VK_DOWN
     } else if name == "APPS" {
         VK_APPS
-    } else if name == "LSHIFT" {
+    } else if name == key_names::SHIFT {
         VK_LSHIFT
-    } else if name == "RSHIFT" {
+    } else if name == key_names::RIGHT_SHIFT {
         VK_RSHIFT
-    } else if name == "LCONTROL" {
+    } else if name == key_names::CONTROL {
         VK_LCONTROL
-    } else if name == "RCONTROL" {
+    } else if name == key_names::RIGHT_CONTROL {
         VK_RCONTROL
-    } else if name == "LMENU" {
+    } else if name == key_names::OPTION {
         VK_LMENU
-    } else if name == "RMENU" {
+    } else if name == key_names::RIGHT_OPTION {
         VK_RMENU
-    } else if name == "LWIN" {
+    } else if name == key_names::COMMAND {
         VK_LWIN
-    } else if name == "RWIN" {
+    } else if name == key_names::RIGHT_COMMAND {
         VK_RWIN
+    } else if name == key_names::MINUS {
+        VK_OEM_MINUS
+    } else if name == key_names::EQUAL {
+        VK_OEM_PLUS
+    } else if name == key_names::LEFT_BRACKET {
+        VK_OEM_4
+    } else if name == key_names::RIGHT_BRACKET {
+        VK_OEM_6
+    } else if name == key_names::SEMICOLON {
+        VK_OEM_1
+    } else if name == key_names::QUOTE {
+        VK_OEM_7
+    } else if name == key_names::COMMA {
+        VK_OEM_COMMA
+    } else if name == key_names::PERIOD {
+        VK_OEM_PERIOD
+    } else if name == key_names::SLASH {
+        VK_OEM_2
+    } else if name == key_names::BACKSLASH {
+        VK_OEM_5
+    } else if name == key_names::GRAVE {
+        VK_OEM_3
+    } else if name == key_names::HELP {
+        VK_HELP
+    } else if name == key_names::VOLUME_UP {
+        VK_VOLUME_UP
+    } else if name == key_names::VOLUME_DOWN {
+        VK_VOLUME_DOWN
+    } else if name == key_names::MUTE {
+        VK_VOLUME_MUTE
     } else {
         return name
             .strip_prefix("0x")
@@ -278,6 +312,28 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(as_keybd(&inputs[0]).wVk.0, 0x1234);
+    }
+
+    /// Cross-platform regression guard (see `key_names`' module doc
+    /// comment): every name another platform's capture side can produce
+    /// must have a Windows injection target, or a key silently stops
+    /// working across machines again without any test catching it.
+    #[test]
+    fn every_shared_key_name_has_a_windows_target() {
+        for name in flow_core::protocol::key_names::all() {
+            // The physical Fn/Globe key is intercepted by keyboard
+            // firmware before it ever reaches Win32 — there is no
+            // VIRTUAL_KEY for it at all, unlike every other name this
+            // test guards, which is a genuine gap this test should
+            // catch.
+            if name == flow_core::protocol::key_names::FUNCTION {
+                continue;
+            }
+            assert!(
+                code_for_name(&name).is_some(),
+                "no Windows VIRTUAL_KEY for shared key name {name:?}"
+            );
+        }
     }
 
     #[test]

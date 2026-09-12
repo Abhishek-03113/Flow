@@ -6,7 +6,7 @@ use std::io;
 use evdev::uinput::VirtualDevice;
 use evdev::{AttributeSet, KeyCode, RelativeAxisCode};
 use flow_core::input::InputInjector;
-use flow_core::protocol::InputEvent;
+use flow_core::protocol::{InputEvent, KeyboardEvent};
 
 use super::inject_translate::to_uinput_events;
 
@@ -50,7 +50,24 @@ impl InputInjector for LinuxInputInjector {
     fn inject(&mut self, event: &InputEvent) -> Result<(), Self::Error> {
         match to_uinput_events(event) {
             Some(events) => self.device.emit(&events),
-            None => Ok(()),
+            // A key from a peer that sent something outside the shared
+            // vocabulary (`flow_core::protocol::key_names`) and evdev's
+            // own name — surfaced as an error rather than silently doing
+            // nothing, per `InputCapture::set_suppress_local`'s stated
+            // philosophy in `core/src/input/mod.rs`: a caller that
+            // believes a key was injected when it wasn't is worse than a
+            // loud failure. A mouse event's `to_uinput_events` only
+            // returns `None` for an all-zero `Move`/`Scroll`, which is
+            // correctly a no-op, not a failure.
+            None => match event {
+                InputEvent::Keyboard(
+                    KeyboardEvent::KeyDown { key, .. } | KeyboardEvent::KeyUp { key, .. },
+                ) => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("no evdev key code for {key:?}"),
+                )),
+                InputEvent::Mouse(_) => Ok(()),
+            },
         }
     }
 }

@@ -129,6 +129,12 @@ See `docs/testing/manual-testing-strategy.md`'s Tier 0 for what this automates.
 
 Cross-compilation setup instructions (exact `rustup target add`/`cargo check` invocations) are documented in "Testing and linting" above (`daemon/todos.json` task J3).
 
+### Shared cross-platform key-name vocabulary
+
+Each platform's `key_name`/`code_for_name` pair used to invent its own key-name strings independently — Windows sent `"LMENU"`, macOS's inject side only recognized `"OPTION"`, and neither the injector nor the daemon's own tracing surfaced the mismatch (`inject()` returned `Ok(())` even when nothing was posted to the OS). Real cross-machine testing (Windows capturing, macOS receiving) showed this as "keyboard not working at all" — plain typed text never arrived, since macOS additionally has no `CGKeyCode` constant for plain letters/digits at all and fell back to a raw hex literal no other platform's bare-char convention matches.
+
+Fixed by giving all three platforms one shared, compiler-checked vocabulary: `flow_core::protocol::key_names` (named keys) plus a documented bare-single-character convention for letters/digits, a new US-ANSI letter/digit/punctuation keycode table on macOS (`platform/src/macos/translate.rs::ANSI_KEYCODES`), and an `UnmappedKey`/`InvalidInput` error from each platform's `InputInjector::inject` when a key falls outside that vocabulary, instead of the previous silent `Ok(())`. Each platform's `inject_translate.rs` has an `every_shared_key_name_has_a_*_target` test asserting `code_for_name`/`key_code_for` succeeds for every name `key_names::all()` produces — only the Windows copy runs in this environment; the macOS and Linux copies are reviewed, not executed, per this section's existing "verified how" caveats. The macOS `ANSI_KEYCODES` table in particular was written from memory of Apple's published `kVK_ANSI_*` values (no local macOS toolchain to check against) and needs a spot-check on real hardware.
+
 ## Switch-key hotkey
 
 `daemon/src/hotkey/` detects the configured switch-key combination directly from the platform's real input capture and triggers a device switch **without any IPC client connected**, per `vision.md` §8 ("Daemon Works without UI"). Two pieces:
