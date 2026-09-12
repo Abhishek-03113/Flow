@@ -255,6 +255,23 @@ impl HeldInputTracker {
 /// observed through `devices` instead and relayed to the peer over the
 /// same connection; ownership is never inferred from both machines
 /// independently detecting the switch key.
+///
+/// `ownership` ([`crate::ownership::OwnershipHandle`]) is this
+/// connection's single source of truth for *this daemon's own role* and
+/// the ownership generation counter, shared (not copied) with
+/// `DaemonService` and `hotkey::runner::spawn_pipeline_switch_filter` —
+/// updated here at both points `forwarding` changes (a local flip and a
+/// received `SwitchOwnership`), and gating a received `SwitchOwnership`
+/// against stale/duplicate delivery before anything else in this
+/// function reacts to it. Reset to `Primary` when this connection ends,
+/// so a daemon that was Secondary when its peer vanished isn't
+/// permanently unable to initiate on the next connection.
+// `ownership` (an `OwnershipHandle`, cheap and Clone) is the 8th
+// parameter, one over clippy's default limit of 7 — bundling the
+// existing 7 into a struct to silence this is a larger, unrelated
+// refactor of every call site (including the 8 in this module's own
+// tests) for a lint threshold, not a real complexity problem here.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_paired_connection<I, S, O>(
     mut channel: Box<dyn Channel>,
     mut capture_events: mpsc::UnboundedReceiver<InputEvent>,
@@ -263,6 +280,7 @@ pub async fn run_paired_connection<I, S, O>(
     peer_id: DeviceId,
     mut suppress_local: S,
     mut on_peer_ownership: O,
+    ownership: crate::ownership::OwnershipHandle,
 ) where
     I: InputInjector,
     I::Error: std::fmt::Debug,
@@ -360,7 +378,8 @@ pub async fn run_paired_connection<I, S, O>(
                 {
                     break 'conn;
                 }
-                if channel.send(ChannelMessage::SwitchOwnership { sender_role: new_role }).await.is_err() {
+                let generation = ownership.bump_generation();
+                if channel.send(ChannelMessage::SwitchOwnership { sender_role: new_role, generation }).await.is_err() {
                     crate::hop_note!(
                         stage = "send_failed",
                         role = "owner",
@@ -370,6 +389,7 @@ pub async fn run_paired_connection<I, S, O>(
                     break 'conn;
                 }
                 forwarding = now_forwarding;
+                ownership.set_role(new_role);
                 // Going Secondary -> Primary: release anything we were
                 // injecting from the peer. The peer's own hand-off flush
                 // covers this too, but reconciling both sides keeps a
@@ -430,7 +450,18 @@ pub async fn run_paired_connection<I, S, O>(
                             Err(err) => crate::logging::product::error("inject input", &err),
                         }
                     }
-                    Ok(ChannelMessage::SwitchOwnership { sender_role }) => {
+                    Ok(ChannelMessage::SwitchOwnership { sender_role, generation }) => {
+                        if !ownership.try_advance_generation(generation) {
+                            crate::hop_note!(
+                                stage = "ownership_rejected",
+                                role = "receiver",
+                                peer = %peer_id.0,
+                                generation = generation,
+                                reason = "stale_or_duplicate_generation",
+                                "ignored a SwitchOwnership at or below the last accepted generation"
+                            );
+                            continue;
+                        }
                         let my_role = sender_role.opposite();
                         let now_forwarding = matches!(my_role, InputRole::Primary);
                         crate::hop_note!(
@@ -439,6 +470,7 @@ pub async fn run_paired_connection<I, S, O>(
                             peer = %peer_id.0,
                             sender_role = ?sender_role,
                             new_role = ?my_role,
+                            generation = generation,
                             "peer handed the ownership baton over the live connection"
                         );
                         // Were forwarding, now Secondary: flush what we
@@ -460,6 +492,7 @@ pub async fn run_paired_connection<I, S, O>(
                         // arm, so it is never echoed back as a second
                         // handoff.
                         forwarding = now_forwarding;
+                        ownership.set_role(my_role);
                         suppress_local(forwarding);
                         on_peer_ownership(my_role);
                     }
@@ -476,6 +509,10 @@ pub async fn run_paired_connection<I, S, O>(
     if forwarding {
         suppress_local(false);
     }
+    // Never leave this machine permanently Secondary once its peer
+    // connection is gone — otherwise Scroll Lock authority (task §6)
+    // would have no legal way back on the next connection.
+    ownership.set_role(InputRole::Primary);
 }
 
 /// This side's role given whether it is currently forwarding captured
@@ -576,6 +613,7 @@ fn device_name(devices: &[Device], id: &str) -> String {
 mod tests {
     use super::*;
     use crate::channel::tcp::TcpChannel;
+    use crate::ownership::OwnershipHandle;
     use crate::service::LOCAL_DEVICE_ID;
     use flow_core::device::HostOs;
     use flow_core::protocol::{InputEvent, KeyboardEvent};
@@ -1154,6 +1192,7 @@ mod tests {
             peer_id(),
             ignore_suppression(),
             ignore_ownership(),
+            OwnershipHandle::new(),
         ));
 
         // The peer is the active device, so captured input is forwarded
@@ -1208,6 +1247,7 @@ mod tests {
             peer_id(),
             ignore_suppression(),
             ignore_ownership(),
+            OwnershipHandle::new(),
         ));
 
         peer_side
@@ -1247,6 +1287,7 @@ mod tests {
                 let _ = suppress_tx.send(suppress);
             },
             ignore_ownership(),
+            OwnershipHandle::new(),
         ));
 
         // The peer is already active when the connection opens, so
@@ -1292,6 +1333,7 @@ mod tests {
                 let _ = suppress_tx.send(suppress);
             },
             ignore_ownership(),
+            OwnershipHandle::new(),
         ));
 
         // One initial `false` for the starting state, then nothing.
@@ -1344,6 +1386,7 @@ mod tests {
                 let _ = suppress_tx.send(suppress);
             },
             apply_ownership_to(devices_tx),
+            OwnershipHandle::new(),
         ));
 
         // Starts Secondary.
@@ -1353,6 +1396,7 @@ mod tests {
         peer_side
             .send(ChannelMessage::SwitchOwnership {
                 sender_role: InputRole::Secondary,
+                generation: 1,
             })
             .await
             .expect("send handoff");
@@ -1389,6 +1433,7 @@ mod tests {
             peer_id(),
             ignore_suppression(),
             ignore_ownership(),
+            OwnershipHandle::new(),
         ));
 
         capture_tx.send(key_down("A")).expect("send keydown");
@@ -1414,8 +1459,15 @@ mod tests {
             other => panic!("expected a synthesized KeyUp frame first, got {other:?}"),
         }
         match peer_side.recv().await.expect("recv") {
-            ChannelMessage::SwitchOwnership { sender_role } => {
+            ChannelMessage::SwitchOwnership {
+                sender_role,
+                generation,
+            } => {
                 assert_eq!(sender_role, InputRole::Secondary);
+                assert_eq!(
+                    generation, 1,
+                    "the first local-initiated handoff bumps generation to 1"
+                );
             }
             other => panic!("expected the ownership handoff after the flush, got {other:?}"),
         }
@@ -1436,6 +1488,7 @@ mod tests {
         let (capture_tx, capture_rx) = mpsc::unbounded_channel();
         let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
         let injector = RecordingInjector { received: inj_tx };
+        let (suppress_tx, mut suppress_rx) = mpsc::unbounded_channel();
 
         let pipeline = tokio::spawn(run_paired_connection(
             our_side,
@@ -1443,16 +1496,31 @@ mod tests {
             devices_rx,
             injector,
             peer_id(),
-            ignore_suppression(),
+            move |suppress| {
+                let _ = suppress_tx.send(suppress);
+            },
             apply_ownership_to(devices_tx),
+            OwnershipHandle::new(),
         ));
+
+        // Starts Secondary.
+        assert_eq!(suppress_rx.recv().await, Some(false));
 
         peer_side
             .send(ChannelMessage::SwitchOwnership {
                 sender_role: InputRole::Secondary,
+                generation: 1,
             })
             .await
             .expect("send handoff");
+        // Synchronizes on the pipeline having actually processed the
+        // handoff (suppression flips synchronously in that branch)
+        // before sending the capture event below — otherwise `select!`
+        // could poll the capture branch first, while `forwarding` is
+        // still `false`, silently dropping the event (captured-while-
+        // inactive is dropped, not queued) and hanging the test's later
+        // `recv`.
+        assert_eq!(suppress_rx.recv().await, Some(true));
 
         // The next frame the peer sees must be this side's forwarded
         // capture event, not an echoed handoff.
@@ -1486,6 +1554,7 @@ mod tests {
             peer_id(),
             ignore_suppression(),
             apply_ownership_to(devices_tx),
+            OwnershipHandle::new(),
         ));
 
         peer_side
@@ -1503,6 +1572,7 @@ mod tests {
         peer_side
             .send(ChannelMessage::SwitchOwnership {
                 sender_role: InputRole::Secondary,
+                generation: 1,
             })
             .await
             .expect("send handoff");
@@ -1511,5 +1581,144 @@ mod tests {
         drop(capture_tx);
         peer_side.close().await.expect("close");
         pipeline.await.expect("pipeline task");
+    }
+
+    /// task §5's idempotent-ownership-update guard: a `SwitchOwnership`
+    /// at or below the last accepted generation must be ignored
+    /// entirely — no suppression call, no role change, no
+    /// `on_peer_ownership` — not merely re-applied harmlessly.
+    #[tokio::test]
+    async fn a_stale_or_duplicate_ownership_generation_is_ignored() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+        let (suppress_tx, mut suppress_rx) = mpsc::unbounded_channel();
+        let ownership = OwnershipHandle::new();
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            move |suppress| {
+                let _ = suppress_tx.send(suppress);
+            },
+            apply_ownership_to(devices_tx),
+            ownership,
+        ));
+
+        // Starts Secondary.
+        assert_eq!(suppress_rx.recv().await, Some(false));
+
+        // A genuine handoff at generation 5 is accepted.
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Secondary,
+                generation: 5,
+            })
+            .await
+            .expect("send handoff");
+        assert_eq!(suppress_rx.recv().await, Some(true));
+
+        // A stale retransmit at a lower generation must be ignored: no
+        // second suppression call, forwarding stays as it was.
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Secondary,
+                generation: 3,
+            })
+            .await
+            .expect("send stale handoff");
+        // An exact duplicate of the already-accepted generation must
+        // also be ignored.
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Secondary,
+                generation: 5,
+            })
+            .await
+            .expect("send duplicate handoff");
+
+        // Prove neither stale message did anything: this side is still
+        // forwarding (Primary), so a captured event still reaches the
+        // peer rather than the connection having gone quiet or reset.
+        capture_tx.send(a_key_event("A")).expect("send capture");
+        match peer_side.recv().await.expect("recv") {
+            ChannelMessage::Input { event, .. } => assert_eq!(event, a_key_event("A")),
+            other => panic!("expected the forwarded Input frame, got {other:?}"),
+        }
+
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        // No further suppression calls were made by the ignored stale/
+        // duplicate messages — only the final disconnect release.
+        assert_eq!(suppress_rx.recv().await, Some(false));
+        assert_eq!(suppress_rx.recv().await, None);
+    }
+
+    /// A daemon that was Secondary when its peer connection drops must
+    /// not stay permanently unable to initiate a switch — otherwise
+    /// task §6's Primary-only gate would have no way back on the next
+    /// connection.
+    #[tokio::test]
+    async fn run_paired_connection_resets_role_to_primary_on_disconnect() {
+        let (mut peer_side, our_side) = connected_pair().await;
+        // Starts Primary (peer is the active device).
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, mut inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+        let ownership = OwnershipHandle::new();
+        let ownership_for_assert = ownership.clone();
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+            apply_ownership_to(devices_tx),
+            ownership,
+        ));
+        assert!(ownership_for_assert.is_primary(), "starts Primary");
+
+        // The peer becomes Primary, so this side becomes Secondary.
+        peer_side
+            .send(ChannelMessage::SwitchOwnership {
+                sender_role: InputRole::Primary,
+                generation: 1,
+            })
+            .await
+            .expect("send handoff");
+        // Give the pipeline task a chance to apply it before asserting:
+        // an injected event from the peer only arrives once this side
+        // has processed the handoff.
+        peer_side
+            .send(ChannelMessage::Input {
+                sequence: 1,
+                event: a_key_event("Z"),
+            })
+            .await
+            .expect("send input");
+        inj_rx.recv().await.expect("event injected as Secondary");
+        assert!(
+            ownership_for_assert.is_secondary(),
+            "peer's handoff made this side Secondary"
+        );
+
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        assert!(
+            ownership_for_assert.is_primary(),
+            "disconnect must reset a Secondary back to Primary so it can initiate on the next connection"
+        );
     }
 }

@@ -60,10 +60,19 @@ lists, both send gates, and both UIs stay consistent. Exactly one machine is **P
   then `stage=input_role_changed trigger=peer`.
 - Held keys/buttons mid-switch: `KeyUp`/`ButtonUp` frames are flushed to the peer *before*
   the `SwitchOwnership` frame — the far machine must never be left holding a key.
+- A press on the wrong machine: `stage=switch_ignored reason=not_primary` — the key was
+  consumed locally (never forwarded, never leaked into the remote foreground app) but did
+  **not** change ownership.
 
-Because the baton travels the wire, pressing **Scroll Lock on the Windows keyboard alone
-toggles the full Windows-Primary ↔ Mac-Primary cycle** — you do not need a keyboard on the
-Mac to hand control back (see Round 2).
+**Scroll Lock is Primary-only** ("Complete Flow V1" task §6): only the machine that is
+*currently* Primary may use its own Scroll Lock to hand control away. A machine that is
+currently Secondary has its Scroll Lock swallowed locally — logged as `switch_ignored`, not
+forwarded, not typed anywhere — but nothing switches. Concretely: Windows presses Scroll
+Lock once to become Secondary (Mac becomes Primary); getting control back over Windows now
+requires pressing Scroll Lock **on the Mac's own keyboard** (Round 2's pre-flight state),
+not a second press on Windows. (An earlier pass of this doc described a symmetric "press
+Scroll Lock on Windows twice" flow with no Mac keyboard needed — that flow no longer applies
+under the Primary-only gate; see Round 1 step 7 below and Round 2's intro.)
 
 > If `cargo run` rebuilds slowly each start, build once (`cargo build -p flow-daemon`) and
 > run `./target/debug/flow-daemon` (Mac) / `.\target\debug\flow-daemon.exe` (Windows)
@@ -143,11 +152,21 @@ check which way it went.
          The Mac receives nothing.
        - **The Mac UI's active device flips to <Windows>** (Mac is now Primary toward
          Windows) — with no reconnect, link state stays **Connected** throughout.
-7. [ ] **Switch back.** Press **Scroll Lock** again → `[SWITCH] <Windows> -> <Mac>` on
-       Windows + the mirror `switch_key` / `input_role_changed trigger=peer` on the Mac →
-       back to controlling the Mac. Both UIs' active-device indicators flip together.
-8. [ ] **Repeated switching.** Alternate Scroll Lock 10+ times, typing a few characters and
-       moving the mouse after each switch. Confirm every time:
+7. [ ] **Windows is now Secondary — its own Scroll Lock does nothing.** Press **Scroll
+       Lock** on the Windows keyboard again. Confirm: no `[SWITCH]` line on either machine,
+       Windows log shows `stage=switch_ignored reason=not_primary`, neither UI's
+       active-device indicator moves, and the key is not typed anywhere. This is new
+       behavior (Primary-only Scroll Lock authority) — a prior pass of this script expected
+       this second press to hand control back; it now must not.
+7b. [ ] **Switch back — from the Mac.** On the **Mac's own keyboard**, press **Scroll
+       Lock**. → `[SWITCH] <Windows> -> <Mac>` on the Mac log + the mirror `switch_key` /
+       `input_role_changed trigger=peer` on Windows → back to controlling the Mac from
+       Windows. Both UIs' active-device indicators flip together. (This is the task §6
+       "document the exact mechanism for the reverse transition": the Mac's own physical
+       Scroll Lock, since only the current Primary — now the Mac — may initiate.)
+8. [ ] **Repeated switching.** Alternate Scroll Lock 10+ times — remembering each press must
+       be on whichever machine is *currently* Primary, not always Windows — typing a few
+       characters and moving the mouse after each switch. Confirm every time:
        - no stuck keys (no character repeating forever on either machine),
        - no stuck mouse button (no phantom drag/selection),
        - no duplicate input (a key never lands on both),
@@ -175,11 +194,11 @@ concern #4/#10 territory — the logs are what make it fixable.
 
 > **V1 scope note.** For the current V1 acceptance pass, Round 0 + Round 1 are the gate.
 > Round 2 is where macOS *local suppression* first runs on real hardware; it is optional
-> for this pass and can be scheduled separately. With the ownership baton, you no longer
-> need a Mac keyboard to enter/exit this state — pressing **Scroll Lock on the Windows
-> keyboard** toggles Windows-Primary ↔ Mac-Primary, so you can drive the whole round from
-> Windows and just observe the Mac. A Mac keyboard press is only needed to test that the
-> Mac's *own* switch key also relays (step 4).
+> for this pass and can be scheduled separately. Scroll Lock is now Primary-only-gated (see
+> the "Ownership model" section above), so entering this state **does** need a Mac keyboard
+> press: Windows hands off to the Mac once (Windows Scroll Lock, while Windows is still
+> Primary), and getting back out of it again requires the Mac's own Scroll Lock, since the
+> Mac is Primary by then. Step 4 below exercises exactly that press.
 
 macOS suppression is implemented (active `CGEventTap` + raw-FFI trampoline returning `NULL`
 to drop consumed events, `SuppressionGate`, self-inject guard, fails open on any callback

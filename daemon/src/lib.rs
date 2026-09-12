@@ -12,6 +12,7 @@ pub mod hotkey;
 pub mod identity;
 pub mod ipc;
 pub mod logging;
+pub mod ownership;
 pub mod pairing_fingerprint;
 pub mod pipeline;
 pub mod security;

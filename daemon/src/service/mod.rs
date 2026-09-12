@@ -35,6 +35,7 @@ use crate::channel::noise::NoiseChannel;
 use crate::channel::{handshake, negotiate};
 use crate::discovery::DiscoveredPeer;
 use crate::identity::DeviceIdentity;
+use crate::ownership::OwnershipHandle;
 use crate::pairing_fingerprint::key_fingerprint;
 use crate::security::Security;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
@@ -352,6 +353,15 @@ pub struct DaemonService {
     /// `hotkey::runner` stands down to avoid a double switch. Maintained
     /// through [`Self::enter_peer_pipeline`]'s RAII guard.
     active_peer_pipelines: Arc<AtomicUsize>,
+    /// This daemon's own input-ownership role + ownership generation
+    /// counter (`daemon::ownership::OwnershipHandle`) — the single
+    /// source of truth [`Self::is_local_primary`] and friends read, and
+    /// what `pipeline::run_paired_connection` and
+    /// `hotkey::runner::spawn_pipeline_switch_filter` both share (not
+    /// copy) via [`Self::ownership_handle`]. Independent of `devices`:
+    /// see the module doc on `daemon::ownership` for why the `Active`
+    /// flag alone can't stand in for this.
+    ownership: OwnershipHandle,
 }
 
 impl DaemonService {
@@ -414,6 +424,7 @@ impl DaemonService {
             test_hooks: false,
             debug_inject_tx,
             active_peer_pipelines: Arc::new(AtomicUsize::new(0)),
+            ownership: OwnershipHandle::new(),
         }
     }
 
@@ -433,6 +444,37 @@ impl DaemonService {
     /// Whether any peer input-streaming pipeline is currently running.
     pub fn peer_pipeline_active(&self) -> bool {
         self.active_peer_pipelines.load(Ordering::SeqCst) > 0
+    }
+
+    /// A clone of this daemon's [`OwnershipHandle`] — shares the same
+    /// underlying role + generation atomics, not a snapshot. `main.rs`
+    /// hands this to `pipeline::run_paired_connection`;
+    /// `hotkey::runner::spawn_pipeline_switch_filter` reads it (via
+    /// [`Self::is_local_primary`]) to gate Scroll Lock ("Complete Flow
+    /// V1" task §6: only the current Primary may initiate a switch).
+    pub fn ownership_handle(&self) -> OwnershipHandle {
+        self.ownership.clone()
+    }
+
+    /// This daemon's own role in the paired session right now. See the
+    /// `daemon::ownership` module doc for why this is tracked
+    /// explicitly rather than derived from `devices`.
+    pub fn local_role(&self) -> InputRole {
+        self.ownership.role()
+    }
+
+    pub fn is_local_primary(&self) -> bool {
+        self.ownership.is_primary()
+    }
+
+    pub fn is_local_secondary(&self) -> bool {
+        self.ownership.is_secondary()
+    }
+
+    /// In the V1 exactly-two-device model, the peer's role is always
+    /// this side's opposite.
+    pub fn peer_is_primary(&self) -> bool {
+        self.ownership.peer_is_primary()
     }
 
     /// Enables the `debug_inject_input` IPC command on this service.

@@ -140,13 +140,30 @@ pub fn spawn_pipeline_switch_filter(
                         if let InputEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) = &event {
                             consumed_keys.insert(key.clone());
                         }
-                        crate::hop_note!(
-                            stage = "switch_consumed",
-                            role = "owner",
-                            trigger = "hotkey",
-                            "switch key matched inside a peer pipeline; not forwarding it to the peer"
-                        );
-                        service.switch_active_device_local().await;
+                        // Only the current Primary may initiate a switch
+                        // ("Complete Flow V1" task §6). The key is
+                        // consumed either way — never forwarded to the
+                        // peer as an ordinary `InputEvent`, and never
+                        // treated as a normal key by a Secondary — but a
+                        // Secondary pressing it locally does not change
+                        // ownership.
+                        if service.is_local_primary() {
+                            crate::hop_note!(
+                                stage = "switch_consumed",
+                                role = "owner",
+                                trigger = "hotkey",
+                                "switch key matched inside a peer pipeline; not forwarding it to the peer"
+                            );
+                            service.switch_active_device_local().await;
+                        } else {
+                            crate::hop_note!(
+                                stage = "switch_ignored",
+                                role = "owner",
+                                trigger = "hotkey",
+                                reason = "not_primary",
+                                "switch key matched while this daemon is Secondary; consumed, ownership unchanged"
+                            );
+                        }
                         continue;
                     }
                     if let InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) = &event {
@@ -243,6 +260,33 @@ mod tests {
         devices_rx.changed().await.expect("devices updated");
         let after = active_device_id(&devices_rx.borrow_and_update()).expect("an active device");
         assert_ne!(before, after, "the active device should have switched");
+    }
+
+    #[tokio::test]
+    async fn a_switch_key_press_while_secondary_is_consumed_but_does_not_switch() {
+        let service = test_service().await;
+        service
+            .ownership_handle()
+            .set_role(flow_core::protocol::InputRole::Secondary);
+        let mut devices_rx = service.watch_devices();
+        let before = active_device_id(&devices_rx.borrow_and_update()).expect("an active device");
+
+        let (tx, rx) = tokio_mpsc::unbounded_channel();
+        let mut out = spawn_pipeline_switch_filter(service, rx);
+
+        tx.send(scroll_lock_down()).unwrap();
+        tx.send(scroll_lock_up()).unwrap();
+        // A normal event afterwards proves both Scroll Lock events were
+        // withheld (never forwarded), not merely delayed.
+        tx.send(letter_a_down()).unwrap();
+        assert_eq!(out.recv().await, Some(letter_a_down()));
+
+        // No switch happened: still the same active device.
+        let after = active_device_id(&devices_rx.borrow_and_update()).expect("an active device");
+        assert_eq!(
+            before, after,
+            "a Secondary's own switch key must not change ownership"
+        );
     }
 
     #[tokio::test]
