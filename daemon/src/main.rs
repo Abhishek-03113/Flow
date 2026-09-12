@@ -534,7 +534,7 @@ async fn run_peer_pipeline(
 
     // The receiving half of the ownership baton: when the *peer* switches
     // (its Scroll Lock, or an IPC command on its side), it sends
-    // `ChannelMessage::SwitchOwnership` over this same connection and the
+    // `ChannelMessage::OwnershipChanged` over this same connection and the
     // pipeline calls this with our new role. Applying it here keeps this
     // daemon's device list — and therefore the send gate and the UI — in
     // step with the peer's switch, with no reconnect and without this

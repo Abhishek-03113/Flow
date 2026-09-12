@@ -49,20 +49,34 @@ websocket/TCP frame noise. If you need the full firehose for a specific bug, use
 
 A switch no longer just makes the local machine stop forwarding. Whichever daemon detects
 the switch key (or gets an IPC `switch_active_device`) flips its own active device **and
-sends `ChannelMessage::SwitchOwnership` over the existing connection** — no reconnect. The
-peer applies the opposite role (`DaemonService::apply_peer_ownership`), so both device
-lists, both send gates, and both UIs stay consistent. Exactly one machine is **Primary**
-(captures + forwards + suppresses locally) and one is **Secondary** (injects) at all times.
+sends `ChannelMessage::OwnershipChanged` (absolute `primary_device_id`, not a role the
+receiver has to invert) over the existing connection** — no reconnect. The peer applies it
+(`DaemonService::apply_peer_ownership`), so both device lists, both send gates, and both UIs
+stay consistent. Exactly one machine is **Primary** (captures + forwards + suppresses
+locally) and one is **Secondary** (injects) at all times.
+
+Every new connection — including a reconnect after a dropped link — opens with both daemons
+exchanging one `OwnershipChanged` each stating their current belief, before either touches
+forwarding or suppression ("Fix Flow V1 Ownership Synchronization" task). This is what
+prevents split-brain: a disconnect no longer forces either side back to `Primary`; the next
+connection's handshake deterministically reconciles whichever side has the fresher
+(higher-generation) belief. Look for `stage=ownership_reconciled` at the very start of every
+connection's log — it names `local_belief`, `peer_belief`, and `resolved_primary` so a
+reconnect that converges "wrong" is diagnosable from the log alone.
 
 `RUST_LOG=flow=trace` markers to grep for on a switch:
+- Connection start (including every reconnect): `stage=ownership_reconciled … "ownership
+  reconciled at connection start"`.
 - Presser: `stage=input_role_changed trigger=local … "local switch relayed to the peer"`.
 - Other machine: `stage=switch_key … "peer handed the ownership baton over the live connection"`
   then `stage=input_role_changed trigger=peer`.
 - Held keys/buttons mid-switch: `KeyUp`/`ButtonUp` frames are flushed to the peer *before*
-  the `SwitchOwnership` frame — the far machine must never be left holding a key.
+  the `OwnershipChanged` frame — the far machine must never be left holding a key.
 - A press on the wrong machine: `stage=switch_ignored reason=not_primary` — the key was
   consumed locally (never forwarded, never leaked into the remote foreground app) but did
   **not** change ownership.
+- A rejected ownership message: `stage=ownership_rejected reason=stale_or_duplicate_generation`
+  or `reason=invalid_target_owner` (a message naming a device outside this pair).
 
 **Scroll Lock is Primary-only** ("Complete Flow V1" task §6): only the machine that is
 *currently* Primary may use its own Scroll Lock to hand control away. A machine that is
@@ -180,6 +194,17 @@ check which way it went.
        - UI link state → **Reconnecting**.
 10. [ ] **Reconnect.** Restart the Mac daemon → within ~10 s `[PEER] <Mac> connected`,
         link state → Connected, and Scroll Lock switching works again.
+10b. [ ] **Reconnect does not split-brain ("Fix Flow V1 Ownership Synchronization" task —
+        the scenario this pass exists to fix).** With the Mac Primary (holding the
+        keyboard), pull its network cable (or `Ctrl-C` the daemon) rather than switching
+        first. On Windows, confirm `[PEER] <Mac> disconnected` and Windows's own Scroll
+        Lock does **not** silently make Windows Primary — Windows should show
+        `stage=ownership_reconciled` only once the Mac actually reconnects, at which point
+        both logs must show the **same** `resolved_primary` and exactly one of the two UIs'
+        active-device indicators reads "Using: <the other machine>" — never both, never
+        neither. If both machines ever show themselves as Primary/Active at once after this
+        reconnect, that is the split-brain bug — capture both logs and send them back
+        immediately rather than continuing the checklist.
 11. [ ] **Held key across a switch.** Press and hold `j` on Windows while the Mac is
         active, and while holding it press Scroll Lock. Release `j`. Confirm the Mac does
         **not** get a stuck `j`, and Windows does not either.

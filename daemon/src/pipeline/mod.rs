@@ -23,6 +23,8 @@ use flow_core::input::InputInjector;
 use flow_core::protocol::{InputEvent, InputRole, KeyboardEvent, MouseButton, MouseEvent};
 use tokio::sync::{mpsc, watch};
 
+use crate::service::LOCAL_DEVICE_ID;
+
 /// Whether `peer_id` is the device currently receiving input — i.e.
 /// whether input captured here should be forwarded to it.
 ///
@@ -248,7 +250,7 @@ impl HeldInputTracker {
 ///
 /// `on_peer_ownership` is called with this daemon's new [`InputRole`]
 /// whenever the *peer* hands the ownership baton across
-/// (`ChannelMessage::SwitchOwnership`) — the caller wires it to
+/// (`ChannelMessage::OwnershipChanged`) — the caller wires it to
 /// `DaemonService::apply_peer_ownership` so the local device list follows
 /// the peer's switch without a reconnect. A switch initiated *here*
 /// (Scroll Lock on this machine, or an IPC `switch_active_device`) is
@@ -260,12 +262,22 @@ impl HeldInputTracker {
 /// connection's single source of truth for *this daemon's own role* and
 /// the ownership generation counter, shared (not copied) with
 /// `DaemonService` and `hotkey::runner::spawn_pipeline_switch_filter` —
-/// updated here at both points `forwarding` changes (a local flip and a
-/// received `SwitchOwnership`), and gating a received `SwitchOwnership`
-/// against stale/duplicate delivery before anything else in this
-/// function reacts to it. Reset to `Primary` when this connection ends,
-/// so a daemon that was Secondary when its peer vanished isn't
-/// permanently unable to initiate on the next connection.
+/// updated here at every point `forwarding` changes (the opening
+/// handshake, a local flip, and a received `OwnershipChanged`), and
+/// gating a received live handoff against stale/duplicate delivery
+/// before anything else in this function reacts to it.
+///
+/// **Not** reset to `Primary` when this connection ends ("Fix Flow V1
+/// Ownership Synchronization" task): doing that unconditionally, on
+/// *both* peers, independent of what either side's role actually was,
+/// is exactly what produced split-brain ownership on a disconnect —
+/// both sides would resolve to `Primary` the instant their shared
+/// connection dropped, with nothing to reconcile them afterward. Role is
+/// instead left exactly as it was; the next connection's opening
+/// handshake (see the `resolve_ownership` call near the top of this
+/// function) reconciles it deterministically, whether that next
+/// connection is a reconnect to the same peer or this daemon's first
+/// connection ever.
 // `ownership` (an `OwnershipHandle`, cheap and Clone) is the 8th
 // parameter, one over clippy's default limit of 7 — bundling the
 // existing 7 into a struct to silence this is a larger, unrelated
@@ -296,20 +308,85 @@ pub async fn run_paired_connection<I, S, O>(
     let mut held = HeldInputTracker::default();
     let mut sent_held = HeldInputTracker::default();
 
-    // Apply the current state up front rather than waiting for the first
-    // change: this connection may well be established while the peer is
-    // already the active device. `forwarding` is the single source of
-    // truth for this side's role for the rest of the loop — it is updated
-    // the instant a `SwitchOwnership` arrives, so the send gate is never
-    // one `devices` tick behind during a handoff.
-    let mut forwarding = is_peer_receiving_input(&devices.borrow_and_update(), &peer_id);
+    // Ownership synchronization handshake ("Fix Flow V1 Ownership
+    // Synchronization" task §5): before anything else touches forwarding,
+    // suppression, or the devices list, both sides exchange their current
+    // belief about who is Primary and independently resolve any
+    // disagreement the same deterministic way (`resolve_ownership`). This
+    // runs on *every* new connection — a reconnect after a disconnect, a
+    // simultaneous connection race, or the very first connection this pair
+    // ever makes — so it is the one mechanism that keeps two peers from
+    // ever both landing on Primary, rather than each side just re-deriving
+    // its own belief from its own local `devices` snapshot as before.
+    let local_id = DeviceId(LOCAL_DEVICE_ID.to_string());
+    let local_belief = local_belief(&ownership, &peer_id);
+    let local_generation = ownership.generation_now();
+    if channel
+        .send(ChannelMessage::OwnershipChanged {
+            primary_device_id: local_belief.clone(),
+            generation: local_generation,
+        })
+        .await
+        .is_err()
+    {
+        crate::hop_note!(
+            stage = "send_failed",
+            role = "owner",
+            peer = %peer_id.0,
+            "channel send failed during the opening ownership handshake; not starting the pipeline"
+        );
+        return;
+    }
+    let (peer_belief, peer_generation) = loop {
+        match channel.recv().await {
+            Ok(ChannelMessage::OwnershipChanged {
+                primary_device_id,
+                generation,
+            }) => break (primary_device_id, generation),
+            // A Heartbeat or other frame racing the handshake on the same
+            // connection isn't part of it — left for the main loop below,
+            // not treated as an error here.
+            Ok(_) => continue,
+            Err(_) => {
+                crate::hop_note!(
+                    stage = "recv_failed",
+                    role = "owner",
+                    peer = %peer_id.0,
+                    "channel recv failed during the opening ownership handshake; not starting the pipeline"
+                );
+                return;
+            }
+        }
+    };
+    let (resolved_primary, resolved_generation) = resolve_ownership(
+        &local_id,
+        &local_belief,
+        local_generation,
+        &peer_id,
+        &peer_belief,
+        peer_generation,
+    );
+    let role_changed = ownership.reconcile(is_local_device(&resolved_primary), resolved_generation);
+    // `forwarding` is the single source of truth for this side's role for
+    // the rest of the loop — it is updated the instant an `OwnershipChanged`
+    // arrives, so the send gate is never one `devices` tick behind during a
+    // handoff.
+    let mut forwarding = is_local_device(&resolved_primary);
     suppress_local(forwarding);
+    on_peer_ownership(role_of(forwarding));
     crate::hop_note!(
-        stage = "pipeline_gate_init",
+        stage = "ownership_reconciled",
         role = "owner",
         peer = %peer_id.0,
+        local_belief = %local_belief.0,
+        local_generation = local_generation,
+        peer_belief = %peer_belief.0,
+        peer_generation = peer_generation,
+        resolved_primary = %resolved_primary.0,
+        resolved_generation = resolved_generation,
+        role_changed = role_changed,
         forwarding = forwarding,
-        "initial send-gate state for this connection"
+        "ownership reconciled at connection start; initial send-gate state set"
     );
 
     'conn: loop {
@@ -379,7 +456,12 @@ pub async fn run_paired_connection<I, S, O>(
                     break 'conn;
                 }
                 let generation = ownership.bump_generation();
-                if channel.send(ChannelMessage::SwitchOwnership { sender_role: new_role, generation }).await.is_err() {
+                let primary_device_id = if now_forwarding {
+                    local_id.clone()
+                } else {
+                    peer_id.clone()
+                };
+                if channel.send(ChannelMessage::OwnershipChanged { primary_device_id, generation }).await.is_err() {
                     crate::hop_note!(
                         stage = "send_failed",
                         role = "owner",
@@ -450,7 +532,19 @@ pub async fn run_paired_connection<I, S, O>(
                             Err(err) => crate::logging::product::error("inject input", &err),
                         }
                     }
-                    Ok(ChannelMessage::SwitchOwnership { sender_role, generation }) => {
+                    Ok(ChannelMessage::OwnershipChanged { primary_device_id, generation }) => {
+                        if primary_device_id != local_id && primary_device_id != peer_id {
+                            crate::hop_note!(
+                                stage = "ownership_rejected",
+                                role = "receiver",
+                                peer = %peer_id.0,
+                                claimed_primary = %primary_device_id.0,
+                                generation = generation,
+                                reason = "invalid_target_owner",
+                                "ignored an OwnershipChanged naming a device outside this pair"
+                            );
+                            continue;
+                        }
                         if !ownership.try_advance_generation(generation) {
                             crate::hop_note!(
                                 stage = "ownership_rejected",
@@ -458,17 +552,17 @@ pub async fn run_paired_connection<I, S, O>(
                                 peer = %peer_id.0,
                                 generation = generation,
                                 reason = "stale_or_duplicate_generation",
-                                "ignored a SwitchOwnership at or below the last accepted generation"
+                                "ignored an OwnershipChanged at or below the last accepted generation"
                             );
                             continue;
                         }
-                        let my_role = sender_role.opposite();
-                        let now_forwarding = matches!(my_role, InputRole::Primary);
+                        let now_forwarding = primary_device_id == local_id;
+                        let my_role = role_of(now_forwarding);
                         crate::hop_note!(
                             stage = "switch_key",
                             role = "receiver",
                             peer = %peer_id.0,
-                            sender_role = ?sender_role,
+                            primary_device_id = %primary_device_id.0,
                             new_role = ?my_role,
                             generation = generation,
                             "peer handed the ownership baton over the live connection"
@@ -509,10 +603,11 @@ pub async fn run_paired_connection<I, S, O>(
     if forwarding {
         suppress_local(false);
     }
-    // Never leave this machine permanently Secondary once its peer
-    // connection is gone — otherwise Scroll Lock authority (task §6)
-    // would have no legal way back on the next connection.
-    ownership.set_role(InputRole::Primary);
+    // Deliberately leaves `ownership`'s role untouched: forcing it back to
+    // `Primary` here — regardless of what it actually was — is exactly what
+    // produced split-brain ownership, since both peers run this same
+    // teardown independently on the same disconnect. The next connection's
+    // opening handshake (top of this function) reconciles it instead.
 }
 
 /// This side's role given whether it is currently forwarding captured
@@ -523,6 +618,71 @@ fn role_of(forwarding: bool) -> InputRole {
     } else {
         InputRole::Secondary
     }
+}
+
+/// The absolute id of whichever device this side currently believes is
+/// Primary — this daemon itself, or `peer_id`. This is what every
+/// `ChannelMessage::OwnershipChanged` this side sends carries, replacing a
+/// sender-relative role a receiver would otherwise have to invert
+/// (`sender_role.opposite()`) — the exact inference the "Fix Flow V1
+/// Ownership Synchronization" task rules out, since it can't tell two
+/// independently-diverged peers apart.
+fn local_belief(ownership: &crate::ownership::OwnershipHandle, peer_id: &DeviceId) -> DeviceId {
+    if ownership.is_primary() {
+        DeviceId(LOCAL_DEVICE_ID.to_string())
+    } else {
+        peer_id.clone()
+    }
+}
+
+/// Whether `id` names this daemon itself (as opposed to its peer).
+fn is_local_device(id: &DeviceId) -> bool {
+    id.0 == LOCAL_DEVICE_ID
+}
+
+/// Deterministically resolves two peers' independent beliefs about who is
+/// Primary into the one answer both sides must agree on. This is the
+/// mechanism behind both "deterministic initial owner" and "no split-brain
+/// after a reconnect" — the same function serves both, since a first-ever
+/// connection is just a reconnect where neither side has ever handed the
+/// baton yet (generation 0 on both ends).
+///
+/// - A strictly higher `generation` is fresher and wins outright, no matter
+///   which side (local or peer) reports it — direction-independent by
+///   construction (swap every `local_*`/`peer_*` argument and the same
+///   absolute device id still wins).
+/// - An exact tie where both sides already name the same primary isn't a
+///   conflict at all — kept as-is.
+/// - An exact tie where they *disagree* — including two fresh daemons'
+///   first-ever connection, where both default to "I am Primary of
+///   myself" at generation 0 — is broken by comparing device ids: the
+///   lexicographically smaller one is Primary. Both sides compare the same
+///   two ids, so both always reach the same verdict.
+///
+/// Returns `(resolved_primary_device_id, resolved_generation)`; the caller
+/// applies this via `OwnershipHandle::reconcile`.
+fn resolve_ownership(
+    local_id: &DeviceId,
+    local_primary: &DeviceId,
+    local_generation: u64,
+    peer_id: &DeviceId,
+    peer_primary: &DeviceId,
+    peer_generation: u64,
+) -> (DeviceId, u64) {
+    let resolved_generation = local_generation.max(peer_generation);
+    let resolved_primary = match local_generation.cmp(&peer_generation) {
+        std::cmp::Ordering::Greater => local_primary.clone(),
+        std::cmp::Ordering::Less => peer_primary.clone(),
+        std::cmp::Ordering::Equal if local_primary == peer_primary => local_primary.clone(),
+        std::cmp::Ordering::Equal => {
+            if local_id.0 < peer_id.0 {
+                local_id.clone()
+            } else {
+                peer_id.clone()
+            }
+        }
+    };
+    (resolved_primary, resolved_generation)
 }
 
 /// Forwards a batch of synthesized release events to the peer as ordinary
@@ -695,6 +855,50 @@ mod tests {
         (Box::new(client), Box::new(server))
     }
 
+    /// Drives the peer side of the ownership-reconciliation handshake every
+    /// `run_paired_connection` now performs before its main loop: consumes
+    /// the pipeline's own opening `OwnershipChanged`, then answers with
+    /// `claimed_primary`/`claimed_generation` so the two sides reconcile to
+    /// a known, chosen starting state instead of each test having to
+    /// hand-roll the exchange. Must be called (and awaited) before any
+    /// other traffic on `peer_side`, exactly once per connection.
+    async fn handshake_as_peer(
+        peer_side: &mut Box<dyn Channel>,
+        claimed_primary: DeviceId,
+        claimed_generation: u64,
+    ) {
+        match peer_side
+            .recv()
+            .await
+            .expect("recv the pipeline's opening handshake message")
+        {
+            ChannelMessage::OwnershipChanged { .. } => {}
+            other => panic!("expected the pipeline's opening OwnershipChanged, got {other:?}"),
+        }
+        peer_side
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: claimed_primary,
+                generation: claimed_generation,
+            })
+            .await
+            .expect("send handshake reply");
+    }
+
+    /// Answers the opening handshake claiming the peer itself already
+    /// agrees this side (the pipeline under test) is Primary — the pipeline
+    /// starts forwarding, generation 0 on both ends (an uncontested tie:
+    /// both name the same primary, so no tie-break is even reached).
+    async fn handshake_starting_primary(peer_side: &mut Box<dyn Channel>) {
+        handshake_as_peer(peer_side, DeviceId(LOCAL_DEVICE_ID.to_string()), 0).await;
+    }
+
+    /// Answers the opening handshake claiming the peer itself is Primary at
+    /// a generation strictly higher than the pipeline's own default (0) —
+    /// its claim wins outright, so the pipeline under test starts Secondary.
+    async fn handshake_starting_secondary(peer_side: &mut Box<dyn Channel>) {
+        handshake_as_peer(peer_side, peer_id(), 1).await;
+    }
+
     /// The direction that matters, and the one this pipeline previously
     /// had backwards: input is forwarded to a peer exactly when *that
     /// peer* is the active device (`vision.md` §22, "only the active
@@ -734,6 +938,71 @@ mod tests {
             &devices,
             &DeviceId("other-peer".to_string())
         ));
+    }
+
+    fn local_id() -> DeviceId {
+        DeviceId(LOCAL_DEVICE_ID.to_string())
+    }
+
+    /// A strictly higher generation wins outright — and does so
+    /// identically regardless of which side of the call is "local" and
+    /// which is "peer": swapping every `local_*`/`peer_*` argument still
+    /// picks the same absolute device id, which is what makes ownership
+    /// resolution independent of connection direction.
+    #[test]
+    fn resolve_ownership_picks_the_strictly_higher_generation_regardless_of_direction() {
+        let (primary, generation) =
+            resolve_ownership(&local_id(), &local_id(), 5, &peer_id(), &peer_id(), 2);
+        assert_eq!(primary, local_id());
+        assert_eq!(generation, 5);
+
+        // Same facts, roles swapped: the peer's perspective must reach the
+        // identical absolute answer.
+        let (primary, generation) =
+            resolve_ownership(&peer_id(), &peer_id(), 2, &local_id(), &local_id(), 5);
+        assert_eq!(
+            primary,
+            local_id(),
+            "the higher-generation claimant is the same absolute device either way"
+        );
+        assert_eq!(generation, 5);
+    }
+
+    /// An exact generation tie where both sides already name the same
+    /// primary isn't a conflict — it's kept as-is.
+    #[test]
+    fn resolve_ownership_tie_with_agreement_is_a_no_op() {
+        let (primary, generation) =
+            resolve_ownership(&local_id(), &peer_id(), 3, &peer_id(), &peer_id(), 3);
+        assert_eq!(primary, peer_id());
+        assert_eq!(generation, 3);
+    }
+
+    /// The deterministic tie-break: two fresh daemons' first-ever
+    /// connection (generation 0 on both sides, each still defaulting to
+    /// "I am Primary of myself") must not leave both sides claiming
+    /// Primary — the lexicographically smaller device id wins, and both
+    /// sides of the same pair compute the identical verdict.
+    #[test]
+    fn resolve_ownership_breaks_a_disagreeing_tie_deterministically_and_symmetrically() {
+        let (primary, generation) =
+            resolve_ownership(&local_id(), &local_id(), 0, &peer_id(), &peer_id(), 0);
+        assert_eq!(generation, 0);
+        let expected = if local_id().0 < peer_id().0 {
+            local_id()
+        } else {
+            peer_id()
+        };
+        assert_eq!(primary, expected);
+
+        // The peer's own perspective on the identical facts must resolve
+        // to the same absolute device.
+        let (primary_from_peer, _) =
+            resolve_ownership(&peer_id(), &peer_id(), 0, &local_id(), &local_id(), 0);
+        assert_eq!(
+            primary_from_peer, expected,
+            "both sides of the same pair must reach the same absolute Primary"
+        );
     }
 
     #[tokio::test]
@@ -1194,6 +1463,7 @@ mod tests {
             ignore_ownership(),
             OwnershipHandle::new(),
         ));
+        handshake_starting_primary(&mut peer_side).await;
 
         // The peer is the active device, so captured input is forwarded
         // to it rather than staying on this machine.
@@ -1249,6 +1519,7 @@ mod tests {
             ignore_ownership(),
             OwnershipHandle::new(),
         ));
+        handshake_starting_secondary(&mut peer_side).await;
 
         peer_side
             .send(ChannelMessage::Input {
@@ -1289,6 +1560,7 @@ mod tests {
             ignore_ownership(),
             OwnershipHandle::new(),
         ));
+        handshake_starting_primary(&mut peer_side).await;
 
         // The peer is already active when the connection opens, so
         // suppression is applied immediately rather than only on the
@@ -1335,6 +1607,7 @@ mod tests {
             ignore_ownership(),
             OwnershipHandle::new(),
         ));
+        handshake_starting_secondary(&mut peer_side).await;
 
         // One initial `false` for the starting state, then nothing.
         assert_eq!(suppress_rx.recv().await, Some(false));
@@ -1364,7 +1637,7 @@ mod tests {
     }
 
     /// The receiving half of the ownership baton: a peer's
-    /// `SwitchOwnership` making this side `Primary` must start forwarding
+    /// `OwnershipChanged` making this side `Primary` must start forwarding
     /// captured input and suppress it locally — over the same connection,
     /// no reconnect.
     #[tokio::test]
@@ -1388,15 +1661,20 @@ mod tests {
             apply_ownership_to(devices_tx),
             OwnershipHandle::new(),
         ));
+        handshake_starting_secondary(&mut peer_side).await;
 
         // Starts Secondary.
         assert_eq!(suppress_rx.recv().await, Some(false));
 
-        // The peer says it is now Secondary, so this side becomes Primary.
+        // The peer says this side is now Primary. Generation 2: the
+        // handshake above already raised the floor to 1
+        // (`handshake_starting_secondary`), so this live handoff must be
+        // strictly higher to be accepted as a fresh change rather than a
+        // stale/duplicate one.
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Secondary,
-                generation: 1,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId(LOCAL_DEVICE_ID.to_string()),
+                generation: 2,
             })
             .await
             .expect("send handoff");
@@ -1416,7 +1694,7 @@ mod tests {
 
     /// A switch initiated on *this* machine (a `devices` change) while a
     /// key is held forwarded: the peer must get the synthesized release
-    /// first, then the `SwitchOwnership` handoff — never a stuck key.
+    /// first, then the `OwnershipChanged` handoff — never a stuck key.
     #[tokio::test]
     async fn a_local_switch_flushes_held_forwarded_input_then_relays_the_handoff() {
         let (mut peer_side, our_side) = connected_pair().await;
@@ -1435,6 +1713,7 @@ mod tests {
             ignore_ownership(),
             OwnershipHandle::new(),
         ));
+        handshake_starting_primary(&mut peer_side).await;
 
         capture_tx.send(key_down("A")).expect("send keydown");
         assert_eq!(
@@ -1459,11 +1738,11 @@ mod tests {
             other => panic!("expected a synthesized KeyUp frame first, got {other:?}"),
         }
         match peer_side.recv().await.expect("recv") {
-            ChannelMessage::SwitchOwnership {
-                sender_role,
+            ChannelMessage::OwnershipChanged {
+                primary_device_id,
                 generation,
             } => {
-                assert_eq!(sender_role, InputRole::Secondary);
+                assert_eq!(primary_device_id, peer_id());
                 assert_eq!(
                     generation, 1,
                     "the first local-initiated handoff bumps generation to 1"
@@ -1479,7 +1758,7 @@ mod tests {
     }
 
     /// Applying a handoff the peer sent must not bounce a second
-    /// `SwitchOwnership` straight back — that would ping-pong ownership
+    /// `OwnershipChanged` straight back — that would ping-pong ownership
     /// forever.
     #[tokio::test]
     async fn a_peer_initiated_handoff_is_not_echoed_back() {
@@ -1502,14 +1781,15 @@ mod tests {
             apply_ownership_to(devices_tx),
             OwnershipHandle::new(),
         ));
+        handshake_starting_secondary(&mut peer_side).await;
 
         // Starts Secondary.
         assert_eq!(suppress_rx.recv().await, Some(false));
 
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Secondary,
-                generation: 1,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId(LOCAL_DEVICE_ID.to_string()),
+                generation: 2,
             })
             .await
             .expect("send handoff");
@@ -1556,6 +1836,7 @@ mod tests {
             apply_ownership_to(devices_tx),
             OwnershipHandle::new(),
         ));
+        handshake_starting_secondary(&mut peer_side).await;
 
         peer_side
             .send(ChannelMessage::Input {
@@ -1570,9 +1851,9 @@ mod tests {
         );
 
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Secondary,
-                generation: 1,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId(LOCAL_DEVICE_ID.to_string()),
+                generation: 2,
             })
             .await
             .expect("send handoff");
@@ -1583,7 +1864,7 @@ mod tests {
         pipeline.await.expect("pipeline task");
     }
 
-    /// task §5's idempotent-ownership-update guard: a `SwitchOwnership`
+    /// task §5's idempotent-ownership-update guard: an `OwnershipChanged`
     /// at or below the last accepted generation must be ignored
     /// entirely — no suppression call, no role change, no
     /// `on_peer_ownership` — not merely re-applied harmlessly.
@@ -1609,14 +1890,15 @@ mod tests {
             apply_ownership_to(devices_tx),
             ownership,
         ));
+        handshake_starting_secondary(&mut peer_side).await;
 
         // Starts Secondary.
         assert_eq!(suppress_rx.recv().await, Some(false));
 
         // A genuine handoff at generation 5 is accepted.
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Secondary,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId(LOCAL_DEVICE_ID.to_string()),
                 generation: 5,
             })
             .await
@@ -1626,8 +1908,8 @@ mod tests {
         // A stale retransmit at a lower generation must be ignored: no
         // second suppression call, forwarding stays as it was.
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Secondary,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId(LOCAL_DEVICE_ID.to_string()),
                 generation: 3,
             })
             .await
@@ -1635,8 +1917,8 @@ mod tests {
         // An exact duplicate of the already-accepted generation must
         // also be ignored.
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Secondary,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId(LOCAL_DEVICE_ID.to_string()),
                 generation: 5,
             })
             .await
@@ -1661,14 +1943,66 @@ mod tests {
         assert_eq!(suppress_rx.recv().await, None);
     }
 
-    /// A daemon that was Secondary when its peer connection drops must
-    /// not stay permanently unable to initiate a switch — otherwise
-    /// task §6's Primary-only gate would have no way back on the next
-    /// connection.
+    /// task's "invalid target owner rejected" requirement: an
+    /// `OwnershipChanged` naming neither this daemon nor its peer must be
+    /// ignored outright — no suppression call, no role change.
     #[tokio::test]
-    async fn run_paired_connection_resets_role_to_primary_on_disconnect() {
+    async fn an_ownership_changed_naming_an_unknown_device_is_rejected() {
         let (mut peer_side, our_side) = connected_pair().await;
-        // Starts Primary (peer is the active device).
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+        let (suppress_tx, mut suppress_rx) = mpsc::unbounded_channel();
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            move |suppress| {
+                let _ = suppress_tx.send(suppress);
+            },
+            apply_ownership_to(devices_tx),
+            OwnershipHandle::new(),
+        ));
+        handshake_starting_secondary(&mut peer_side).await;
+
+        // Starts Secondary.
+        assert_eq!(suppress_rx.recv().await, Some(false));
+
+        // Names a third device that isn't part of this pair at all.
+        peer_side
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: DeviceId("some-other-device".to_string()),
+                generation: 99,
+            })
+            .await
+            .expect("send fabricated handoff");
+
+        // Prove it did nothing: this side is still Secondary, so a
+        // captured event stays local rather than being forwarded — and no
+        // second suppression call was made by the rejected message.
+        capture_tx.send(a_key_event("A")).expect("send capture");
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        assert_eq!(
+            suppress_rx.recv().await,
+            None,
+            "the rejected message must not have triggered any suppression change, including on disconnect"
+        );
+    }
+
+    /// The direct regression guard for the fix: role is left as-is on
+    /// disconnect rather than forced back to `Primary`, which is what
+    /// produced split-brain (both peers independently reset to `Primary`
+    /// on the same disconnect, with no way to reconcile afterward).
+    #[tokio::test]
+    async fn run_paired_connection_does_not_reset_role_on_disconnect() {
+        let (mut peer_side, our_side) = connected_pair().await;
         let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
         let (capture_tx, capture_rx) = mpsc::unbounded_channel();
         let (inj_tx, mut inj_rx) = mpsc::unbounded_channel();
@@ -1686,12 +2020,13 @@ mod tests {
             apply_ownership_to(devices_tx),
             ownership,
         ));
+        handshake_starting_primary(&mut peer_side).await;
         assert!(ownership_for_assert.is_primary(), "starts Primary");
 
         // The peer becomes Primary, so this side becomes Secondary.
         peer_side
-            .send(ChannelMessage::SwitchOwnership {
-                sender_role: InputRole::Primary,
+            .send(ChannelMessage::OwnershipChanged {
+                primary_device_id: peer_id(),
                 generation: 1,
             })
             .await
@@ -1717,8 +2052,99 @@ mod tests {
         pipeline.await.expect("pipeline task");
 
         assert!(
-            ownership_for_assert.is_primary(),
-            "disconnect must reset a Secondary back to Primary so it can initiate on the next connection"
+            ownership_for_assert.is_secondary(),
+            "disconnect must leave role exactly as it was — forcing Primary here is the split-brain bug"
+        );
+    }
+
+    /// The end-to-end split-brain regression: A is Primary, hands off to
+    /// B, the connection drops, and — instead of both sides guessing
+    /// `Primary` independently, as the old unconditional reset did — a
+    /// reconnect's opening handshake reconciles both sides back onto B,
+    /// because B's persisted generation is the higher (fresher) one.
+    #[tokio::test]
+    async fn reconnect_after_disconnect_converges_on_the_peer_s_persisted_belief() {
+        let ownership = OwnershipHandle::new();
+
+        // --- First connection: A starts Primary, hands off to B, then the
+        // link drops. ---
+        {
+            let (mut peer_side, our_side) = connected_pair().await;
+            let (devices_tx, devices_rx) = watch::channel(devices_with_active_peer());
+            let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+            let (inj_tx, mut inj_rx) = mpsc::unbounded_channel();
+            let injector = RecordingInjector { received: inj_tx };
+
+            let pipeline = tokio::spawn(run_paired_connection(
+                our_side,
+                capture_rx,
+                devices_rx,
+                injector,
+                peer_id(),
+                ignore_suppression(),
+                apply_ownership_to(devices_tx),
+                ownership.clone(),
+            ));
+            handshake_starting_primary(&mut peer_side).await;
+
+            peer_side
+                .send(ChannelMessage::OwnershipChanged {
+                    primary_device_id: peer_id(),
+                    generation: 1,
+                })
+                .await
+                .expect("send handoff to B");
+            // Synchronize on the pipeline having actually processed the
+            // handoff before dropping the link — otherwise this side might
+            // close the connection before it ever reads the message.
+            peer_side
+                .send(ChannelMessage::Input {
+                    sequence: 1,
+                    event: a_key_event("Z"),
+                })
+                .await
+                .expect("send input to sync on the handoff");
+            inj_rx.recv().await.expect("event injected as Secondary");
+            drop(capture_tx);
+            peer_side.close().await.expect("drop the link mid-session");
+            pipeline.await.expect("pipeline task");
+        }
+        assert!(
+            ownership.is_secondary(),
+            "still Secondary immediately after the drop — the fix under test"
+        );
+
+        // --- Reconnect: B (the peer) still believes it is Primary at the
+        // same generation this side accepted (1) — the persisted, fresher
+        // belief. This side's own stale local generation is 0 (a fresh
+        // `run_paired_connection` invocation reads it from the same,
+        // unreset `ownership` handle). ---
+        let (mut peer_side, our_side) = connected_pair().await;
+        let (devices_tx, devices_rx) = watch::channel(devices_with_active_local());
+        let (capture_tx, capture_rx) = mpsc::unbounded_channel();
+        let (inj_tx, _inj_rx) = mpsc::unbounded_channel();
+        let injector = RecordingInjector { received: inj_tx };
+
+        let pipeline = tokio::spawn(run_paired_connection(
+            our_side,
+            capture_rx,
+            devices_rx,
+            injector,
+            peer_id(),
+            ignore_suppression(),
+            apply_ownership_to(devices_tx),
+            ownership.clone(),
+        ));
+        handshake_as_peer(&mut peer_side, peer_id(), 1).await;
+
+        drop(capture_tx);
+        peer_side.close().await.expect("close");
+        pipeline.await.expect("pipeline task");
+
+        assert!(
+            ownership.is_secondary(),
+            "reconnect must converge on B (the peer), not reset to Primary — both peers becoming \
+             Primary on a reconnect is exactly the split-brain bug this pass fixes"
         );
     }
 }

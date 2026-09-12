@@ -17,7 +17,7 @@ pub mod key_names;
 /// machine is receiving and injecting the peer's input instead. Exactly
 /// one end of a pair is `Primary` at any moment; a switch hands the role
 /// across over the same connection, carried by
-/// [`crate::channel::ChannelMessage::SwitchOwnership`].
+/// [`crate::channel::ChannelMessage::OwnershipChanged`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InputRole {
