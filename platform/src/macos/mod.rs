@@ -1,5 +1,5 @@
 //! macOS input adapter, bound to a `CGEventTap` for capture
-//! (`daemon/todos.json` E4) and `CGEventPost` for injection (E5).
+//! (`docs/tasks/daemon-todos.json` E4) and `CGEventPost` for injection (E5).
 
 mod capture;
 mod inject_translate;

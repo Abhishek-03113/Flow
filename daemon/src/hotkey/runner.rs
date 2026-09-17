@@ -1,4 +1,4 @@
-//! Spawns the hotkey runner (`daemon/todos.json` F2): bridges the
+//! Spawns the hotkey runner (`docs/tasks/daemon-todos.json` F2): bridges the
 //! platform's real input-capture stream through [`super::SwitchKeyMatcher`],
 //! calling [`DaemonService::switch_active_device_local`] on a match —
 //! independent of any IPC client, per `vision.md` §8 ("Daemon Works
@@ -111,7 +111,7 @@ pub fn spawn(service: &DaemonService) -> Option<JoinHandle<()>> {
 /// duration of a connection: once the pipeline's hook starts returning
 /// `LRESULT(1)` the standalone [`spawn`] runner's separate hook no longer
 /// sees the switch key at all (`daemon/README.md`, "Local input
-/// suppression"; `todos-fix-physical-input-switching.md` §5), so
+/// suppression"; `docs/tasks/todos-fix-physical-input-switching.md` §5), so
 /// detection has to move onto the stream that is still live. The
 /// standalone runner stands down meanwhile — see
 /// [`DaemonService::peer_pipeline_active`].

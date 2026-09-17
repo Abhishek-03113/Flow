@@ -20,7 +20,7 @@ final themeModeProvider = StateProvider<ThemeMode>((ref) => ThemeMode.dark);
 final trayOpenProvider = StateProvider<bool>((ref) => true);
 
 /// A single transient toast message, auto-dismissed after ~1.7s
-/// (`todos.json` D7). Matches the design's single `toast` state slot: a
+/// (`docs/tasks/todos.json` D7). Matches the design's single `toast` state slot: a
 /// new message replaces whatever is currently showing rather than
 /// queuing behind it.
 class ToastNotifier extends StateNotifier<String?> {

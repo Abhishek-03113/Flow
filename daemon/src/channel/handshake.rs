@@ -1,4 +1,4 @@
-//! The pairing handshake (`daemon/todos.json` G7): the `PairingRequest`/
+//! The pairing handshake (`docs/tasks/daemon-todos.json` G7): the `PairingRequest`/
 //! `PairingDecision` exchange carried as `ChannelMessage::Pairing`
 //! frames. Written once against the `Channel` trait — everything here
 //! takes `&mut dyn Channel` and never inspects `ChannelKind` — so the

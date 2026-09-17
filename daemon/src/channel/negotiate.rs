@@ -1,4 +1,4 @@
-//! Channel negotiation (`daemon/todos.json` G6): given the address(es) a
+//! Channel negotiation (`docs/tasks/daemon-todos.json` G6): given the address(es) a
 //! peer is reachable at, decide which concrete [`Channel`] implementation
 //! to actually connect with. Per `docs/architecture/channels.md`'s
 //! "Negotiation and fallback" section, this is the *only* place in the

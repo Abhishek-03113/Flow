@@ -1,4 +1,4 @@
-//! Per-connection WebSocket IPC handler (`daemon/todos.json` task C3).
+//! Per-connection WebSocket IPC handler (`docs/tasks/daemon-todos.json` task C3).
 //! `tokio-tungstenite` is confined to this module — application code
 //! elsewhere in the daemon only ever sees `IpcRequest`/`IpcResponse`
 //! (`flow-core`), never the WebSocket crate directly.
@@ -406,7 +406,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    /// `daemon/todos.json` I3's regression test: `tokio::spawn` already
+    /// `docs/tasks/daemon-todos.json` I3's regression test: `tokio::spawn` already
     /// isolates a panic to its own task (the runtime catches it and
     /// reports it only through that task's own `JoinHandle`) — this
     /// confirms that holds for the exact spawn shape `main.rs`'s

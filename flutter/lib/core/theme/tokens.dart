@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// Raw design values from the Claude Design source (`todos.json`'s
+/// Raw design values from the Claude Design source (`docs/tasks/todos.json`'s
 /// `sharedDesignTokens`), translated to Flutter types. This file has no
 /// opinion on *how* they're assembled into a theme — see `flow_theme.dart`
 /// for that; this is just the vocabulary.

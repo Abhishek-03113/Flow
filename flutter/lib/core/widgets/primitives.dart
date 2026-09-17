@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../theme/tokens.dart';
 
-/// A device/link status indicator (`todos.json` `sharedDesignTokens.
+/// A device/link status indicator (`docs/tasks/todos.json` `sharedDesignTokens.
 /// statusDotShape`): a solid filled+glow circle for a definite state
 /// (active, error), or a ring for a "reachable but not current" state
 /// (inactive, disconnected). [pulse] adds the `cd-breathe` opacity pulse

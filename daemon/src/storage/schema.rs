@@ -1,4 +1,4 @@
-//! Versioned schema (`daemon/todos.json` `persistenceModel.tables`):
+//! Versioned schema (`docs/tasks/daemon-todos.json` `persistenceModel.tables`):
 //! `settings` (single row), `devices` (paired devices + trust public key),
 //! `connection_history` (append-only event log), `identity` (this
 //! daemon's own keypair, one row). Applied via [`rusqlite_migration`] so

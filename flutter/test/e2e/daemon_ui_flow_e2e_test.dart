@@ -444,7 +444,7 @@ void main() {
 
       // Step 2: pairing — entering this step auto-calls startPairing()
       // (onboarding_flow.dart _goTo), so just wait for the real daemon's
-      // search-to-found transition, same timers `daemon/todos.json`'s
+      // search-to-found transition, same timers `docs/tasks/daemon-todos.json`'s
       // mock-parity fallback uses when nothing has been discovered live.
       late PairingSession found;
       await tester.runAsync(() async {

@@ -1,7 +1,7 @@
 //! Pure translation from `flow_core`'s [`InputEvent`] back to evdev's raw
 //! event model — the inverse of `translate::EventTranslator`, used by
 //! [`super::injector::LinuxInputInjector`]. Isolated from any device I/O
-//! so it's unit-testable without hardware access (`daemon/todos.json` E2
+//! so it's unit-testable without hardware access (`docs/tasks/daemon-todos.json` E2
 //! acceptance criteria).
 
 use std::str::FromStr;

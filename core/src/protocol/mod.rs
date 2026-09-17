@@ -99,7 +99,7 @@ pub enum InputEvent {
 
 impl InputEvent {
     /// This event's own capture-time timestamp, common to every variant.
-    /// `daemon/todos.json` H4's replay guard reuses this existing field
+    /// `docs/tasks/daemon-todos.json` H4's replay guard reuses this existing field
     /// as its sequence check rather than adding a separate one.
     pub fn timestamp_ms(&self) -> u64 {
         match self {

@@ -1,7 +1,7 @@
 //! Pure translation from evdev's raw event model to `flow_core`'s
 //! platform-independent [`InputEvent`] (vision.md §11). Isolated from any
 //! device I/O so it's unit-testable without hardware access
-//! (`daemon/todos.json` E1 acceptance criteria).
+//! (`docs/tasks/daemon-todos.json` E1 acceptance criteria).
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -139,7 +139,7 @@ fn translate_mouse_button(
 /// `SYN_REPORT`, rather than a combined `(dx, dy)` sample — so a physical
 /// mouse move typically becomes two [`MouseEvent::Move`]s in quick
 /// succession (one per axis) rather than one. Deliberate simplification:
-/// documented in `daemon/todos.json` E1's `buildNote` rather than hidden.
+/// documented in `docs/tasks/daemon-todos.json` E1's `buildNote` rather than hidden.
 fn translate_relative_axis(
     code: RelativeAxisCode,
     value: i32,

@@ -1,5 +1,5 @@
 //! Manual, local-only sanity check for the end-to-end input streaming
-//! pipeline (`daemon/todos.json` G8): real capture -> the switch-aware
+//! pipeline (`docs/tasks/daemon-todos.json` G8): real capture -> the switch-aware
 //! gate -> a real (loopback) `TcpChannel` -> real injection, all in one
 //! process standing in for "two instances on one host" — the minimum
 //! way to exercise `pipeline::send_while_active`/`::receive_and_inject`

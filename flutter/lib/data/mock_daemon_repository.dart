@@ -115,7 +115,7 @@ class MockDaemonRepository implements DaemonRepository {
   Stream<IncomingPairingRequest?> watchIncomingPairingRequest() =>
       _incomingRequest.watch();
 
-  /// Exposed for the dev harness (`todos.json` task S2) to force any
+  /// Exposed for the dev harness (`docs/tasks/todos.json` task S2) to force any
   /// [DaemonLinkState] for visual QA of every banner variant. Not part of
   /// [DaemonRepository] — a real daemon reports its own link state, it
   /// isn't told what to report.

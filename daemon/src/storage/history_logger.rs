@@ -3,7 +3,7 @@
 //! [`ConnectionHistoryRepo`] row for meaningful transitions — device
 //! state changes, a pairing session reaching `paired`/`failed`, and link
 //! state changes — without any command handler in B3-B6 needing to
-//! remember to log anything explicitly (`daemon/todos.json` task P5).
+//! remember to log anything explicitly (`docs/tasks/daemon-todos.json` task P5).
 
 use flow_core::device::Device;
 use flow_core::pairing::{PairingSession, PairingStage};

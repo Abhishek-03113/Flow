@@ -116,7 +116,7 @@ pub enum ChannelMessage {
         generation: u64,
     },
     /// Raw bytes for session establishment. Carried by `NoiseChannel`
-    /// (`daemon/todos.json` H3) for handshake material before its wrapped
+    /// (`docs/tasks/daemon-todos.json` H3) for handshake material before its wrapped
     /// transport is established, and for an encrypted serialized
     /// `ChannelMessage` afterward; also carries the single cleartext
     /// public-key frame of `daemon::security`'s dev-only plaintext
@@ -139,7 +139,7 @@ pub enum ChannelError {
     #[error("medium not supported on this platform")]
     UnsupportedMedium,
     /// The Noise handshake failed, or the peer's identity proof over it
-    /// didn't verify (`daemon/todos.json` H3) — covers both "the bytes
+    /// didn't verify (`docs/tasks/daemon-todos.json` H3) — covers both "the bytes
     /// were corrupt/tampered with" and "the signature didn't match,"
     /// deliberately not distinguished further since Noise itself
     /// doesn't distinguish a malformed handshake from a tampered one.

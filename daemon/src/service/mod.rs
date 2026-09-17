@@ -5,7 +5,7 @@
 //! record, never fake remote devices or candidates — after the first
 //! run, whatever was actually persisted comes back instead.
 //! `ServiceState::seeded_for_test` is the mock-parity fixture
-//! (`daemon/todos.json` `sharedContractConstants.mockParitySeedData`)
+//! (`docs/tasks/daemon-todos.json` `sharedContractConstants.mockParitySeedData`)
 //! tests opt into explicitly instead.
 
 use std::collections::{HashMap, HashSet};
@@ -578,7 +578,7 @@ impl DaemonService {
     /// delay (`SWITCH_DEBOUNCE` — not part of
     /// `sharedContractConstants.mockParityTimings`, but present in the
     /// Dart mock it mirrors; see this module's `buildNote` in
-    /// `daemon/todos.json`).
+    /// `docs/tasks/daemon-todos.json`).
     #[tracing::instrument(skip(self))]
     pub async fn switch_active_device(&self, device_id: &str) -> Result<(), FlowError> {
         let target_id = DeviceId(device_id.to_string());
@@ -629,7 +629,7 @@ impl DaemonService {
     }
 
     /// Advances to the next switchable device for the local hotkey
-    /// trigger path (`daemon/todos.json` F2) — unlike
+    /// trigger path (`docs/tasks/daemon-todos.json` F2) — unlike
     /// `switch_active_device`, there's no requester to reject with an
     /// error and no target device id (a physical key press names no
     /// device), so a press with nothing else switchable simply does
@@ -1655,7 +1655,7 @@ impl Drop for PeerPipelineGuard {
 
 /// A real paired device's stable identity: derived from its proven `H1`
 /// public key, not its self-reported name — multiple machines can
-/// legitimately advertise the same display name (`daemon/todos.json`'s
+/// legitimately advertise the same display name (`docs/tasks/daemon-todos.json`'s
 /// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.

@@ -1,4 +1,4 @@
-//! Auto-reconnect (`daemon/todos.json` I1): keeps a `Channel` to a peer
+//! Auto-reconnect (`docs/tasks/daemon-todos.json` I1): keeps a `Channel` to a peer
 //! alive across drops, retrying with capped exponential backoff and
 //! re-running `G6`'s negotiation (`connect_best_available`) on every
 //! attempt — the medium that worked when first connected (e.g. Wi-Fi)

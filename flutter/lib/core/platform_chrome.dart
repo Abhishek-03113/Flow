@@ -10,7 +10,7 @@ enum ChromeControls { mac, win, gnome }
 
 /// Per-platform metadata for rendering the desktop bar and window chrome,
 /// mirroring `platformMeta()` in the Claude Design source
-/// (`todos.json`'s `sharedDesignTokens.platformChrome`).
+/// (`docs/tasks/todos.json`'s `sharedDesignTokens.platformChrome`).
 ///
 /// Keyed by [HostOs] (`domain/device.dart`) rather than a second
 /// "HostPlatform" enum — a daemon-reported device OS and "which platform
@@ -38,7 +38,7 @@ class PlatformChrome {
   /// "Accessibility access" / "Input access" / "Input device access" —
   /// daemon-supplied in the real contract (`PermissionStatus.name`); this
   /// static copy is only a fallback for previewing platforms the mock
-  /// isn't currently impersonating (see the dev harness, `todos.json` S2).
+  /// isn't currently impersonating (see the dev harness, `docs/tasks/todos.json` S2).
   final String permissionName;
 
   static const windowChromeBarHeight = 40.0;

@@ -5,7 +5,7 @@ import '../../../core/widgets/primitives.dart';
 import '../../../domain/pairing.dart';
 
 /// Step 2 — pairing, reusing the exact same [PairingSession] the tray
-/// popover's pairing flow uses (`todos.json` O3): the daemon has one
+/// popover's pairing flow uses (`docs/tasks/todos.json` O3): the daemon has one
 /// pairing state, not one per surface that shows it. Rendered as a
 /// single centered card rather than a list row, per the source's
 /// `obStage`/`permCard` treatment.

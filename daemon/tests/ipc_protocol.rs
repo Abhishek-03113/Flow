@@ -1,4 +1,4 @@
-//! End-to-end proof of the IPC contract (`daemon/todos.json` task C6):
+//! End-to-end proof of the IPC contract (`docs/tasks/daemon-todos.json` task C6):
 //! the real `flow-daemon` service and WebSocket listener, spawned
 //! in-process (not a subprocess), driven by a raw `tokio-tungstenite`
 //! client asserting the exact JSON shape of a full session — connect,

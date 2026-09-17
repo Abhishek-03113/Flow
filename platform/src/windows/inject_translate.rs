@@ -2,7 +2,7 @@
 //! `INPUT` structs — the inverse of `translate::EventTranslator`, used
 //! by [`super::injector::WindowsInputInjector`]. Isolated from
 //! `SendInput` itself so it's unit-testable without one
-//! (`daemon/todos.json` E7 acceptance criteria) — though, like the rest
+//! (`docs/tasks/daemon-todos.json` E7 acceptance criteria) — though, like the rest
 //! of this module, the tests here can only actually run on Windows.
 
 use windows::Win32::UI::Input::KeyboardAndMouse::{

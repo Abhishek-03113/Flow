@@ -1,4 +1,4 @@
-//! This daemon's own device identity (`daemon/todos.json` H1): a real,
+//! This daemon's own device identity (`docs/tasks/daemon-todos.json` H1): a real,
 //! mathematically valid ed25519 keypair, generated once and persisted
 //! across restarts via track P6's `IdentityRepo`.
 //!

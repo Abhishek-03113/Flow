@@ -517,7 +517,7 @@ async fn run_peer_pipeline(
     // fails today (see `InputCapture::set_suppress_local`) and streaming
     // is still useful there even while input also reaches local
     // applications; on Windows it is now real
-    // (`todos-fix-physical-input-switching.md`).
+    // (`docs/tasks/todos-fix-physical-input-switching.md`).
     let suppress_peer_name = peer_name.clone();
     let suppress_local = move |suppress: bool| {
         if let Err(err) = capture.set_suppress_local(suppress) {

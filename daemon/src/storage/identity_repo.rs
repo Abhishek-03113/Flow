@@ -1,5 +1,5 @@
 //! This daemon's own persisted identity key material
-//! (`daemon/todos.json` task P6). Generates and persists a fresh keypair
+//! (`docs/tasks/daemon-todos.json` task P6). Generates and persists a fresh keypair
 //! into the `identity` table on first run; every later run loads the
 //! same one back, so the daemon's identity survives restarts instead of
 //! being re-rolled every process start.

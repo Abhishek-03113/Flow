@@ -1,4 +1,4 @@
-//! [`NoiseChannel`]: an encrypted `Channel` decorator (`daemon/todos.json`
+//! [`NoiseChannel`]: an encrypted `Channel` decorator (`docs/tasks/daemon-todos.json`
 //! H3) wrapping any other `Channel` with an authenticated [Noise
 //! protocol](http://www.noiseprotocol.org/) session (the `snow` crate —
 //! confined to this module per the wrap-third-party-deps rule), so

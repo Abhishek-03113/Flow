@@ -1,4 +1,4 @@
-//! End-to-end pairing over a real `Channel` (`daemon/todos.json` G7):
+//! End-to-end pairing over a real `Channel` (`docs/tasks/daemon-todos.json` G7):
 //! two independent `DaemonService` instances complete a real
 //! `pair_with_candidate` handshake over an actual `TcpChannel`
 //! (loopback), each ending up with the other in its own devices list —
