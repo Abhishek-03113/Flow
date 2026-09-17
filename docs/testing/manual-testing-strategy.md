@@ -4,11 +4,11 @@
 
 **Approach:** don't wait for a second machine to start manual testing. Most of the stack is checkable today, on one machine, because of how the architecture is layered — the local IPC contract (`docs/contracts/`) never needed two machines to begin with, and even the daemon-to-daemon protocol (`docs/architecture/channels.md`) can be exercised correctly with two processes on one host before it's ever exercised across two real desktops. What genuinely needs something beyond one bare-metal OS is the *felt* experience — watching a keystroke happen on a different screen — and that's solved with a VM, not a purchase.
 
-This document is organized as tiers, ordered by what's actually testable **today** given `daemon/todos.json`'s real progress, through what becomes testable as tracks E/F/G/H land, through what still needs something beyond this one machine.
+This document is organized as tiers, ordered by what's actually testable **today** given `docs/tasks/daemon-todos.json`'s real progress, through what becomes testable as tracks E/F/G/H land, through what still needs something beyond this one machine.
 
 ## Where the daemon actually stands right now
 
-Tracks **A, P, B, C, D** are done: `flow-core`'s contract types, SQLite persistence, `DaemonService`, the local IPC WebSocket server, and Flutter's `IpcDaemonRepository` all exist and pass their test suites (`daemon/todos.json`). Concretely, **a real `flow-daemon` process and the real Flutter UI can already talk to each other today**, on this one machine — this isn't cross-device yet (a fresh daemon's device list is just this machine's own real local device until a second daemon is actually discovered/paired, per `daemon/README.md` "Removing mock runtime data"), but the entire IPC contract, the SQLite-backed persistence, and every screen's provider wiring are real, not mocked. That's Tier 0 below, and it's available *right now*, not after tracks E-J land.
+Tracks **A, P, B, C, D** are done: `flow-core`'s contract types, SQLite persistence, `DaemonService`, the local IPC WebSocket server, and Flutter's `IpcDaemonRepository` all exist and pass their test suites (`docs/tasks/daemon-todos.json`). Concretely, **a real `flow-daemon` process and the real Flutter UI can already talk to each other today**, on this one machine — this isn't cross-device yet (a fresh daemon's device list is just this machine's own real local device until a second daemon is actually discovered/paired, per `daemon/README.md` "Removing mock runtime data"), but the entire IPC contract, the SQLite-backed persistence, and every screen's provider wiring are real, not mocked. That's Tier 0 below, and it's available *right now*, not after tracks E-J land.
 
 Tracks **E** (platform input capture/injection), **F** (switch-hotkey), **G** (Channels — TCP/Bluetooth networking), and **H** (security) are not started. Those are what turn this into an actual keyboard/mouse-sharing product, and they're also where the one-device constraint starts to bite — captured in Tiers 2-4 below.
 
@@ -39,7 +39,7 @@ This tier stays valid and worth re-running after every track E-J change, since a
 
 ## Tier 1 — Real input capture/injection, one machine, loopback (needs track E)
 
-`daemon/todos.json` E3 is exactly this: capture real keyboard/mouse locally, inject into a virtual device, observe the result — all on one machine, no network involved.
+`docs/tasks/daemon-todos.json` E3 is exactly this: capture real keyboard/mouse locally, inject into a virtual device, observe the result — all on one machine, no network involved.
 
 **Safer than it sounds:** don't inject straight back into your live desktop session at first — a captured-then-immediately-reinjected real keyboard can cause feedback loops or just be confusing to watch. Recommended sequence:
 
@@ -57,9 +57,9 @@ This is fully testable on one machine, no second device needed at all: press you
 
 ## Tier 3 — Full Channel protocol, one machine, two processes (needs track G)
 
-This is the tier most people assume needs two computers. It doesn't — for *protocol correctness* — because TCP loopback and TCP-over-LAN are the same code path, and `daemon/todos.json`'s own G-track acceptance criteria are already written this way ("two daemon instances on the same host... discover each other via loopback broadcast," "two local daemon instances complete a real pair_with_candidate handshake"). Two `flow-daemon` processes on one machine, each with its own data directory and ports, validate discovery, negotiation, pairing, encryption, and message exchange for real.
+This is the tier most people assume needs two computers. It doesn't — for *protocol correctness* — because TCP loopback and TCP-over-LAN are the same code path, and `docs/tasks/daemon-todos.json`'s own G-track acceptance criteria are already written this way ("two daemon instances on the same host... discover each other via loopback broadcast," "two local daemon instances complete a real pair_with_candidate handshake"). Two `flow-daemon` processes on one machine, each with its own data directory and ports, validate discovery, negotiation, pairing, encryption, and message exchange for real.
 
-**Prerequisite to check when G lands:** confirm the discovery/Channel ports are overridable per-instance (env var or CLI flag) so two processes don't collide — `daemon/todos.json`'s own G3 task already assumes "bound to different ports for the test," so this should already be part of the implementation, not something to bolt on. The fixed IPC port (`47823`, Flutter-facing) is a separate concern: you don't need two of those for this tier, since only one side needs a visible UI (see below).
+**Prerequisite to check when G lands:** confirm the discovery/Channel ports are overridable per-instance (env var or CLI flag) so two processes don't collide — `docs/tasks/daemon-todos.json`'s own G3 task already assumes "bound to different ports for the test," so this should already be part of the implementation, not something to bolt on. The fixed IPC port (`47823`, Flutter-facing) is a separate concern: you don't need two of those for this tier, since only one side needs a visible UI (see below).
 
 Practical setup for a *manual* (not just automated) run:
 
@@ -94,12 +94,12 @@ Two `flow-daemon` processes on one OS still write to the same desktop session �
 
 ## Tier 5 — Cross-platform gap (macOS/Windows)
 
-`daemon/todos.json` E4-E7 are written and cross-compile-*checked* only — no macOS or Windows hardware exists in the development environment this plan was built in, and a VM doesn't fix that (macOS VMs are impractical without Apple hardware to license/run them on; a Windows VM is workable but still isn't "real Windows input APIs on real hardware" for every edge case). Realistic options, cheapest first:
+`docs/tasks/daemon-todos.json` E4-E7 are written and cross-compile-*checked* only — no macOS or Windows hardware exists in the development environment this plan was built in, and a VM doesn't fix that (macOS VMs are impractical without Apple hardware to license/run them on; a Windows VM is workable but still isn't "real Windows input APIs on real hardware" for every edge case). Realistic options, cheapest first:
 
 1. **Borrow a machine for an afternoon** (a friend's Windows laptop, a work-issued Mac) and run the Tier 5 checklist below once. Even a single manual pass beats zero.
 2. **A cloud VM** for the Windows side specifically (Azure/AWS Windows instance) — cheap for a short burst, good enough to confirm `SetWindowsHookEx`/`SendInput` behave as E6/E7 assume.
 3. **A cloud macOS instance** (MacStadium, AWS EC2 Mac) — pricier and less casual, but exists if a Mac genuinely can't be borrowed.
-4. Until one of the above happens: macOS/Windows capture/injection stay explicitly "written, not verified" — say so rather than implying parity with Linux, matching the honesty standard `daemon/todos.json` already holds E4-E7 to.
+4. Until one of the above happens: macOS/Windows capture/injection stay explicitly "written, not verified" — say so rather than implying parity with Linux, matching the honesty standard `docs/tasks/daemon-todos.json` already holds E4-E7 to.
 
 ## Tier 6 — Full real two-device checklist (run once real second hardware — VM, Pi, or borrowed machine — is in place)
 

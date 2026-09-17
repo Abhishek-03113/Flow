@@ -1,4 +1,4 @@
-//! Structured logging setup (`daemon/todos.json` I2): wraps
+//! Structured logging setup (`docs/tasks/daemon-todos.json` I2): wraps
 //! `tracing-subscriber`'s reload mechanism — confined to this module per
 //! the wrap-third-party-deps rule — so `settings.debug_logging` can
 //! change the daemon's log verbosity at runtime, without a restart,
@@ -182,7 +182,7 @@ pub fn init(debug_logging: bool, trace: bool) -> LoggingHandle {
 /// `settings.debug_logging` immediately (`init`'s own caller only ever
 /// had a hardcoded starting guess before settings actually loaded),
 /// then keeps it in sync as `DaemonService::update_settings` changes it
-/// — `daemon/todos.json` I2's "toggling debug_logging via
+/// — `docs/tasks/daemon-todos.json` I2's "toggling debug_logging via
 /// update_settings visibly changes log verbosity in a manual run"
 /// acceptance criterion, made real rather than aspirational.
 pub fn spawn_debug_logging_toggle(

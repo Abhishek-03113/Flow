@@ -1,6 +1,6 @@
 # Windows service (not yet implemented)
 
-This is a documentation-only stub (`daemon/todos.json` J4): there is no Windows service wrapper, installer, or unit file in this repository yet. It records the intended approach and its open design question so a future task has a concrete starting point, matching `daemon/README.md`'s "Process supervision" section.
+This is a documentation-only stub (`docs/tasks/daemon-todos.json` J4): there is no Windows service wrapper, installer, or unit file in this repository yet. It records the intended approach and its open design question so a future task has a concrete starting point, matching `daemon/README.md`'s "Process supervision" section.
 
 ## Two viable approaches
 

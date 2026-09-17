@@ -1,4 +1,4 @@
-//! Debounces repeated switch-key matches (`daemon/todos.json` F3).
+//! Debounces repeated switch-key matches (`docs/tasks/daemon-todos.json` F3).
 //!
 //! The daemon now reads raw, possibly-repeating key events directly —
 //! unlike the Dart mock, whose UI-visible debounce is a client concern

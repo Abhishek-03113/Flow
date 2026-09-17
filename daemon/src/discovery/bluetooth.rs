@@ -1,4 +1,4 @@
-//! Bluetooth peer discovery/advertisement (`daemon/todos.json` G5) — the
+//! Bluetooth peer discovery/advertisement (`docs/tasks/daemon-todos.json` G5) — the
 //! Bluetooth counterpart to `discovery::tcp`, producing the same
 //! [`DiscoveredPeer`] shape so `G6`'s channel negotiation can treat both
 //! discovery sources uniformly.

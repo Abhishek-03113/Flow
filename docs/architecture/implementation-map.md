@@ -5,7 +5,7 @@ two computers, Scroll Lock switches). Produced from a read of the current `main`
 `product-first-v1` tree. Not a redesign — a description of what exists.
 
 See [`../testing/user-journeys.md`](../testing/user-journeys.md) for the journeys these
-paths serve and their status, and [`../../todos-product-first.md`](../../todos-product-first.md)
+paths serve and their status, and [`docs/tasks/todos-product-first.md`](../tasks/todos-product-first.md)
 for the work queue.
 
 ## Runtime shape

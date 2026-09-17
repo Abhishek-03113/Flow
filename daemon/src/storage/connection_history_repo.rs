@@ -1,4 +1,4 @@
-//! Append-only connection history log (`daemon/todos.json` task P5).
+//! Append-only connection history log (`docs/tasks/daemon-todos.json` task P5).
 //! Rows are written by [`super::history_logger`], which observes
 //! `DaemonService`'s watch-channel event bus rather than requiring every
 //! command handler to remember to log a transition itself.

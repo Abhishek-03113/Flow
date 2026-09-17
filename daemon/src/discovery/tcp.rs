@@ -1,4 +1,4 @@
-//! TCP/Wi-Fi peer discovery (`daemon/todos.json` G3): a lightweight UDP
+//! TCP/Wi-Fi peer discovery (`docs/tasks/daemon-todos.json` G3): a lightweight UDP
 //! broadcast announce/listen loop so `start_pairing`'s candidate list
 //! can eventually be populated by real TCP-reachable peers, not just the
 //! mock-parity 2 hardcoded ones.

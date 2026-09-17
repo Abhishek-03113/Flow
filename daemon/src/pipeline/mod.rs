@@ -1,4 +1,4 @@
-//! The end-to-end input streaming pipeline (`daemon/todos.json` G8):
+//! The end-to-end input streaming pipeline (`docs/tasks/daemon-todos.json` G8):
 //! capture (E1) -> switch-aware gate (only while the *peer* is the
 //! active device, per F2/F3's switch state — see
 //! [`is_peer_receiving_input`]) -> `Channel::send` on the sending side;
@@ -49,7 +49,7 @@ fn is_peer_receiving_input(devices: &[Device], peer_id: &DeviceId) -> bool {
 
 /// The sending side: forwards every captured event onto `channel` as a
 /// `ChannelMessage::Input`, tagged with a per-connection sequence number
-/// (`daemon/todos.json` H4, revised — see `ChannelMessage::Input`'s own
+/// (`docs/tasks/daemon-todos.json` H4, revised — see `ChannelMessage::Input`'s own
 /// doc comment for why this replaced a timestamp-based check), but only
 /// while `peer_id` is the active (receiving) device per `devices` — an
 /// event captured while this machine is the active one is silently
@@ -96,7 +96,7 @@ pub async fn send_while_active(
 /// error. A single failed `inject` (e.g. a transient OS-level rejection)
 /// doesn't end the loop — only the `Channel` closing does.
 ///
-/// Replay protection (`daemon/todos.json` H4): each message's sender-
+/// Replay protection (`docs/tasks/daemon-todos.json` H4): each message's sender-
 /// assigned `sequence` must strictly increase from the last *accepted*
 /// message's — anything arriving with an equal or lower sequence is a
 /// duplicate or replayed frame and is dropped, not injected. Deliberately
@@ -144,7 +144,7 @@ where
 /// `ButtonDown` for with no matching `KeyUp`/`ButtonUp` seen yet, so
 /// [`receive_and_inject`] can synthesize the release itself once the
 /// `Channel` that would have carried a real one is gone — the mitigation
-/// `daemon/todos.json`'s review calls a "hard invariant": a dropped
+/// `docs/tasks/daemon-todos.json`'s review calls a "hard invariant": a dropped
 /// connection must never leave the remote OS believing input is
 /// permanently held.
 #[derive(Default)]

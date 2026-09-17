@@ -4,7 +4,7 @@
 //! building a `CGEvent` is itself a Core Graphics API call, not just
 //! struct construction, but it needs no event tap and no permission, so
 //! it's unit-testable the same way `translate.rs` is
-//! (`daemon/todos.json` E5 acceptance criteria) — and, like `translate.rs`,
+//! (`docs/tasks/daemon-todos.json` E5 acceptance criteria) — and, like `translate.rs`,
 //! these tests can only actually execute on macOS.
 
 use core_graphics::event::{

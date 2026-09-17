@@ -1,4 +1,4 @@
-//! Linux input adapter, bound to evdev for capture (`daemon/todos.json`
+//! Linux input adapter, bound to evdev for capture (`docs/tasks/daemon-todos.json`
 //! E1) and uinput for injection (E2).
 
 mod capture;

@@ -1,7 +1,7 @@
 //! Pure translation from Core Graphics' `CGEvent` model to `flow_core`'s
 //! platform-independent [`InputEvent`] (vision.md §11). Isolated from any
 //! event tap so it's unit-testable without installing one
-//! (`daemon/todos.json` E4 acceptance criteria) — though, like the rest of
+//! (`docs/tasks/daemon-todos.json` E4 acceptance criteria) — though, like the rest of
 //! this module, the tests here can only actually run on macOS; this
 //! session verified them by cross-compiling only (`daemon/README.md`).
 

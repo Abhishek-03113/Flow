@@ -1,4 +1,4 @@
-//! Persisted `FlowSettings` (`daemon/todos.json` task P3). `load()`
+//! Persisted `FlowSettings` (`docs/tasks/daemon-todos.json` task P3). `load()`
 //! bootstraps the single `settings` row with [`FlowSettings::defaults`]
 //! the first time it's called against an empty table; every later call
 //! (including after a restart) returns whatever was last saved.

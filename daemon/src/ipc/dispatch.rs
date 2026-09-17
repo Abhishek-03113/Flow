@@ -1,6 +1,6 @@
 //! `IpcRequest -> DaemonService` call, matching `req.command` against the
 //! 9 original commands from `sharedContractConstants.commands`
-//! (`daemon/todos.json` task C2) plus `retry_connection` (added once a
+//! (`docs/tasks/daemon-todos.json` task C2) plus `retry_connection` (added once a
 //! real daemon-to-daemon link could actually be `Disconnected`/`Error`,
 //! see `docs/contracts/CHANGELOG.md`). The single place a raw request
 //! string is matched against a command name and a JSON payload is

@@ -2,7 +2,7 @@
 //! (`KBDLLHOOKSTRUCT`/`MSLLHOOKSTRUCT`) to `flow_core`'s
 //! platform-independent [`InputEvent`] (vision.md §11). Isolated from any
 //! hook installation so it's unit-testable without one
-//! (`daemon/todos.json` E6 acceptance criteria) — though, like the rest
+//! (`docs/tasks/daemon-todos.json` E6 acceptance criteria) — though, like the rest
 //! of this module, the tests here can only actually run on Windows; this
 //! session verified them by cross-compiling only (`daemon/README.md`).
 

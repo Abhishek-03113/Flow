@@ -1,5 +1,5 @@
 //! Manual, local-only loopback sanity check for `flow-platform`'s Linux
-//! input adapters (`daemon/todos.json` E3): captures real keyboard/mouse
+//! input adapters (`docs/tasks/daemon-todos.json` E3): captures real keyboard/mouse
 //! input and immediately re-injects it into a Flow-owned virtual device,
 //! the minimum way to exercise `LinuxInputCapture` (E1) and
 //! `LinuxInputInjector` (E2) together on one machine, without a second

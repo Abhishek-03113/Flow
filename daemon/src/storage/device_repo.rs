@@ -1,4 +1,4 @@
-//! Paired-device storage and trust lookups (`daemon/todos.json` task P4).
+//! Paired-device storage and trust lookups (`docs/tasks/daemon-todos.json` task P4).
 //!
 //! A paired device's stored public key *is* its trust record — there is
 //! no separate trust file. [`DeviceState`] is never persisted: a device

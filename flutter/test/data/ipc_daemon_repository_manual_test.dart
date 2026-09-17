@@ -9,7 +9,7 @@ import 'package:flow_ui/domain/pairing.dart';
 import 'package:flow_ui/domain/switch_key_binding.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-/// Cross-language contract test (`daemon/todos.json` task D5): the same
+/// Cross-language contract test (`docs/tasks/daemon-todos.json` task D5): the same
 /// 14 scenarios `mock_daemon_repository_test.dart` proves against
 /// [MockDaemonRepository] run here against [IpcDaemonRepository]
 /// connected to a **real** `flow-daemon` process — confirming the two

@@ -1,5 +1,5 @@
 //! Windows input adapter, bound to `WH_KEYBOARD_LL`/`WH_MOUSE_LL` hooks
-//! for capture (`daemon/todos.json` E6) and `SendInput` for injection
+//! for capture (`docs/tasks/daemon-todos.json` E6) and `SendInput` for injection
 //! (E7).
 
 mod capture;

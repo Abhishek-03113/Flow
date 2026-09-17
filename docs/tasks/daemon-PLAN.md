@@ -1,6 +1,6 @@
 # Rust Daemon Development Plan
 
-Branch: `feat/rust-daemon` (off `feat/flutter-ui`) · Companion data file: [`daemon/todos.json`](./todos.json) · Contract: [`docs/contracts/`](../docs/contracts) v0.1.0
+Branch: `feat/rust-daemon` (off `feat/flutter-ui`) · Companion data file: [`docs/tasks/daemon-todos.json`](../docs/tasks/daemon-todos.json) · Contract: [`docs/contracts/`](../docs/contracts) v0.1.0
 
 This is the Rust-side counterpart to the Flutter phase's `todos.json`. Same discipline: one track per concern, tasks with explicit dependencies, a spec excerpt embedded in every task so it's resumable cold, one commit per completed task, `status` flipped `pending -> done` as work lands.
 
@@ -78,4 +78,4 @@ Matches `docs/contracts/daemon-ipc.md`'s own "deliberately out of scope for 0.1.
 
 ## How to pick this up mid-stream
 
-Read `daemon/todos.json`, find the first task with `"status": "pending"` whose `dependsOn` are all `"done"`, and its `specContext` field has the spec quote needed to implement it without re-reading this whole plan. Update `status` to `"done"` and fill in a `buildNote` (mirroring the Flutter phase's field) only when the implementation deviated from what the task described — commit with the task's `commit` message (adjusted if the implementation diverged) after each task, one commit per task, and push.
+Read `docs/tasks/daemon-todos.json`, find the first task with `"status": "pending"` whose `dependsOn` are all `"done"`, and its `specContext` field has the spec quote needed to implement it without re-reading this whole plan. Update `status` to `"done"` and fill in a `buildNote` (mirroring the Flutter phase's field) only when the implementation deviated from what the task described — commit with the task's `commit` message (adjusted if the implementation diverged) after each task, one commit per task, and push.
