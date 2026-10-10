@@ -86,7 +86,9 @@ New crates must add `[lints]\nworkspace = true` to their `Cargo.toml` to inherit
 
 - **Unit/integration:** `cargo test --workspace`; UI unit tests with `npm test` in `app/ui` (Vitest).
 - **Harness:** `just harness` starts N virtual daemons with virtual input devices, runs the OS-pair scenario matrix and
-  writes an HTML/JSON report (CI uploads it as the `harness-report` artifact). No hardware needed.
+  writes HTML/JSON/JUnit reports to `target/harness-report/` (CI uploads them as the `harness-report` artifact). No
+  hardware needed. `just harness --scenario 'held-*' --pairs win-mac` narrows a run; `flow-harness up` serves virtual
+  devices to the real UI. Reference: `docs/testing/harness.md`.
 - **E2E:** `just e2e` drives the real UI in headless Chromium with Playwright, against mock or real (virtual-platform)
   daemons. Install the browser once with `cd app/ui && npx playwright install chromium`.
 

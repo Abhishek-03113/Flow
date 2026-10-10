@@ -74,6 +74,8 @@ cmd_e2e() {
 
 cmd_harness() {
   if ! has_harness; then echo "-- skip: harness/ not present"; return 0; fi
+  # No arguments: the full matrix with reports, exactly as CI runs it.
+  if [ $# -eq 0 ]; then set -- --report-dir target/harness-report; fi
   cargo run -p flow-harness --release -- "$@"
 }
 
