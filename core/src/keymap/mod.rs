@@ -191,8 +191,10 @@ mod tests {
             let keymap = Keymap::embedded(os);
             for name in key_names::all() {
                 let missing = keymap.code_for_name(&name).is_none();
-                // Windows has no `Fn` key.
-                let expected_gap = os == HostOs::Windows && name == key_names::FUNCTION;
+                // Windows has no `Fn` key; Macs have no Scroll Lock or Pause.
+                let expected_gap = (os == HostOs::Windows && name == key_names::FUNCTION)
+                    || (os == HostOs::Macos
+                        && (name == key_names::SCROLLLOCK || name == key_names::PAUSE));
                 assert_eq!(missing, expected_gap, "{os:?} {name}");
             }
         }
@@ -207,6 +209,29 @@ mod tests {
                 assert_eq!(keymap.code_for_name(&entry.name), Some(entry.code));
             }
         }
+    }
+
+    #[test]
+    fn the_default_switch_key_can_be_captured_wherever_the_keyboard_has_it() {
+        use crate::switch_key::{default_binding, presets};
+        // The binding tokens are matched against captured key names, so each
+        // must be a key the OS's keymap can produce (Macs have no Scroll Lock).
+        for os in [HostOs::Windows, HostOs::Linux] {
+            let keymap = Keymap::embedded(os);
+            for token in &default_binding().keys {
+                assert!(
+                    keymap.code_for_name(&token.to_ascii_uppercase()).is_some(),
+                    "{os:?} {token}"
+                );
+            }
+        }
+        for os in ALL_OS {
+            assert!(
+                Keymap::embedded(os).code_for_name("F13").is_some(),
+                "{os:?} F13"
+            );
+        }
+        assert_eq!(presets()[1].keys, vec!["Pause"]);
     }
 
     #[test]
