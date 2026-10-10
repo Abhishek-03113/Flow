@@ -159,9 +159,17 @@ export interface RemapRule {
   whenTargetOs: HostOs | null;
 }
 
-export interface KeymapEntry {
-  from: string;
-  to: string;
+/** One key of a keymap file: the wire name and that OS's native key code. */
+export interface KeymapKey {
+  name: string;
+  code: number;
+}
+
+/** `get_keymap`'s answer: the effective keymap file (`config/keymaps/<os>.toml` + user overrides). */
+export interface Keymap {
+  version: number;
+  os: HostOs;
+  keys: KeymapKey[];
 }
 
 export type ConnectionStatus = 'connecting' | 'open' | 'closed';

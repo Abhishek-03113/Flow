@@ -10,7 +10,7 @@ import {
   type EngineDevice,
   type EngineState,
 } from './mockScenarios';
-import type { HostOs, KeymapEntry, LinkState, RemapRule, Role, ScreenLayout, SettingsPatch } from './types';
+import type { HostOs, Keymap, LinkState, RemapRule, Role, ScreenLayout, SettingsPatch } from './types';
 
 export interface MockOptions {
   scenario?: string;
@@ -25,19 +25,41 @@ export interface MockOptions {
 type Emit = (event: string, payload: unknown) => void;
 type Json = Record<string, unknown>;
 
-const KEYMAPS: Record<HostOs, KeymapEntry[]> = {
-  macos: [
-    { from: 'Meta', to: 'Ctrl' },
-    { from: 'Alt', to: 'Alt' },
-  ],
-  windows: [
-    { from: 'Ctrl', to: 'Meta' },
-    { from: 'Alt', to: 'Alt' },
-  ],
-  linux: [
-    { from: 'Ctrl', to: 'Meta' },
-    { from: 'Alt', to: 'Alt' },
-  ],
+/** A few keys of each embedded keymap (`config/keymaps/*.toml`), in the engine's file shape. */
+const KEYMAPS: Record<HostOs, Keymap> = {
+  macos: {
+    version: 1,
+    os: 'macos',
+    keys: [
+      { name: 'A', code: 0x00 },
+      { name: 'B', code: 0x0b },
+      { name: 'COMMAND', code: 0x37 },
+      { name: 'CONTROL', code: 0x3b },
+      { name: 'F13', code: 0x69 },
+    ],
+  },
+  windows: {
+    version: 1,
+    os: 'windows',
+    keys: [
+      { name: 'A', code: 0x41 },
+      { name: 'B', code: 0x42 },
+      { name: 'CONTROL', code: 0xa2 },
+      { name: 'COMMAND', code: 0x5b },
+      { name: 'SCROLLLOCK', code: 0x91 },
+    ],
+  },
+  linux: {
+    version: 1,
+    os: 'linux',
+    keys: [
+      { name: 'A', code: 30 },
+      { name: 'B', code: 48 },
+      { name: 'CONTROL', code: 29 },
+      { name: 'COMMAND', code: 125 },
+      { name: 'SCROLLLOCK', code: 70 },
+    ],
+  },
 };
 
 const err = (code: string, message: string) => new FlowCommandError(code, message);
@@ -180,7 +202,7 @@ export class MockEngine {
       case 'set_role':
         return this.setRole(p.role as Role);
       case 'get_keymap':
-        return { os: p.os, entries: KEYMAPS[(p.os as HostOs) ?? this.os] ?? [] };
+        return KEYMAPS[(p.os as HostOs) ?? this.os] ?? KEYMAPS[this.os];
       case 'set_remap_rules':
         return this.setRemapRules(p.rules as RemapRule[]);
       case 'reveal_config_dir':
@@ -485,6 +507,10 @@ export class MockEngine {
   private setRemapRules(rules: RemapRule[]): void {
     for (const r of rules) {
       if (!r.from || !r.to) throw err('invalid_remap_rule', 'Both keys are required.');
+      // Like the engine: a modifier maps to a modifier, a key to a key.
+      const mod = (t: string) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(t);
+      if (mod(r.from) !== mod(r.to))
+        throw err('invalid_remap_rule', 'cannot map a modifier to a key or the reverse');
     }
     this.s.remapRules = rules;
     this.push('remap_rules_changed', rules);
