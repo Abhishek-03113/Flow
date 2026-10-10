@@ -23,7 +23,12 @@ describe('MockEngine', () => {
     const s = client.getSnapshot();
     expect(s.loaded).toBe(true);
     expect(s.devices.map((d) => d.id)).toEqual(['d1', 'd2']);
-    expect(s.controlState).toEqual({ role: 'controller', activeScreen: 'local', controllerDeviceId: null });
+    expect(s.controlState).toEqual({
+      role: 'controller',
+      activeScreen: 'local',
+      controllerDeviceId: null,
+      entered: false,
+    });
     expect(s.screenLayout.screens).toHaveLength(2);
     expect(s.diagnostics?.switchLatencyMsP95).toBeGreaterThan(0);
   });
@@ -56,8 +61,10 @@ describe('MockEngine', () => {
   it('release_control hands the screen back to the controller; only valid when controlled', async () => {
     const { client } = setup('controlled');
     await flush();
+    expect(client.getSnapshot().controlState).toMatchObject({ activeScreen: 'local', entered: true });
     await client.releaseControl();
-    expect(client.getSnapshot().controlState?.activeScreen).toBe('d2');
+    // A controlled computer's active screen is always `local`; `entered` says who drives it.
+    expect(client.getSnapshot().controlState).toMatchObject({ activeScreen: 'local', entered: false });
     const other = setup('two-devices');
     await flush();
     await expect(other.client.releaseControl()).rejects.toMatchObject({ code: 'not_controlled' });

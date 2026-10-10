@@ -81,9 +81,55 @@ pub struct LoggingHandle {
     /// [`Self::set_debug`] must not fight them — the `debug_logging`
     /// toggle becomes an inert no-op for the rest of the run.
     env_controlled: bool,
+    /// The most recent log lines, for diagnostics bundles.
+    tail: LogTail,
+}
+
+/// The last [`LogTail::CAPACITY`] formatted log lines, kept in memory.
+#[derive(Clone, Default)]
+pub struct LogTail(std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>);
+
+impl LogTail {
+    const CAPACITY: usize = 500;
+
+    fn push(&self, line: &str) {
+        let mut lines = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if lines.len() == Self::CAPACITY {
+            lines.pop_front();
+        }
+        lines.push_back(line.trim_end().to_string());
+    }
+}
+
+impl std::io::Write for LogTail {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.push(&String::from_utf8_lossy(buf));
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogTail {
+    type Writer = LogTail;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
 }
 
 impl LoggingHandle {
+    /// The recent log lines, oldest first.
+    pub fn recent_lines(&self) -> Vec<String> {
+        self.tail
+            .0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .cloned()
+            .collect()
+    }
+
     /// Sets the effective log level on the scoped `flow` / `flow_daemon`
     /// filter: `true` shows `debug`-and-above — matching
     /// `docs/product/vision.md` §15's Advanced settings "Debug logging"
@@ -159,6 +205,7 @@ pub fn init(debug_logging: bool, trace: bool) -> LoggingHandle {
         EnvFilter::new(scoped_directives(base))
     };
     let (filter, reload_handle) = reload::Layer::new(initial);
+    let tail = LogTail::default();
     tracing_subscriber::registry()
         .with(filter)
         .with(
@@ -170,11 +217,17 @@ pub fn init(debug_logging: bool, trace: bool) -> LoggingHandle {
                 .with_target(trace)
                 .with_line_number(trace),
         )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(tail.clone()),
+        )
         .init();
     LoggingHandle {
         reload_handle,
         trace_floor: trace,
         env_controlled,
+        tail,
     }
 }
 
@@ -262,6 +315,7 @@ mod tests {
                 reload_handle,
                 trace_floor,
                 env_controlled: false,
+                tail: LogTail::default(),
             },
             subscriber,
         )
@@ -322,6 +376,7 @@ mod tests {
             reload_handle,
             trace_floor: false,
             env_controlled: true,
+            tail: LogTail::default(),
         };
         let before = handle.max_level();
         handle.set_debug(true);

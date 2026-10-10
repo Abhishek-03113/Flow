@@ -1,4 +1,5 @@
-import { LOCAL_DEVICE_ID } from './events';
+/** The mock's "this computer" (the engine's `d1`). */
+export const LOCAL_DEVICE_ID = 'd1';
 import type {
   ControlState,
   Diagnostics,
@@ -7,6 +8,8 @@ import type {
   IncomingPairingRequest,
   LinkState,
   PairingSession,
+  HowToFix,
+  PermissionItem,
   PermissionStatus,
   RemapRule,
   ScreenLayout,
@@ -66,11 +69,65 @@ export const defaultSettings = (): FlowSettings => ({
 const NOW = Date.now();
 const MIN = 60_000;
 
-const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => ({
-  name:
-    os === 'macos' ? 'Accessibility access' : os === 'windows' ? 'Input monitoring' : 'Input device access',
+const item = (name: string, granted: boolean, fix: HowToFix): PermissionItem => ({
+  name,
   granted,
+  howToFix: granted ? null : fix,
 });
+
+const macFix = (summary: string, pane: string, reopen = false): HowToFix => ({
+  summary,
+  steps: [
+    { text: `Open System Settings › Privacy & Security › ${pane}.`, command: null },
+    { text: 'Turn on Flow.', command: null },
+    ...(reopen ? [{ text: 'Reopen Flow if it does not pick it up.', command: null }] : []),
+  ],
+});
+
+/** What the engine reports per OS (same names and fix-it steps). */
+const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => {
+  const items: PermissionItem[] =
+    os === 'macos'
+      ? [
+          item(
+            'Accessibility',
+            granted,
+            macFix('Flow needs Accessibility access to type and click for you.', 'Accessibility'),
+          ),
+          item(
+            'Input Monitoring',
+            granted,
+            macFix('Flow needs Input Monitoring to notice your switch shortcut.', 'Input Monitoring', true),
+          ),
+        ]
+      : os === 'linux'
+        ? [
+            item('Read keyboard and mouse', granted, {
+              summary: 'Flow needs your account to be in the “input” group.',
+              steps: [
+                { text: 'Add yourself to the group:', command: 'sudo usermod -aG input $USER' },
+                { text: 'Log out and back in.', command: null },
+              ],
+            }),
+            item('Create virtual input device', granted, {
+              summary: 'Flow needs permission to create a virtual keyboard and mouse.',
+              steps: [
+                {
+                  text: 'Allow the input group to use /dev/uinput:',
+                  command:
+                    'echo \'KERNEL=="uinput", GROUP="input", MODE="0660"\' | sudo tee /etc/udev/rules.d/99-flow.rules && sudo udevadm control --reload && sudo udevadm trigger',
+                },
+                { text: 'Make sure you are in the “input” group, then log out and back in.', command: null },
+              ],
+            }),
+          ]
+        : [];
+  return {
+    name: items.map((i) => i.name).join(' and ') || 'Input access',
+    granted: items.length ? items.every((i) => i.granted) : granted,
+    items,
+  };
+};
 
 const local = (os: HostOs, role: 'controller' | 'controlled', active: boolean): EngineDevice => ({
   id: LOCAL_DEVICE_ID,
@@ -131,7 +188,7 @@ const base = (os: HostOs, devices: EngineDevice[]): EngineState => ({
   settings: defaultSettings(),
   permission: permissionFor(os, true),
   incomingPairingRequest: null,
-  controlState: { role: 'controller', activeScreen: 'local', controllerDeviceId: null },
+  controlState: { role: 'controller', activeScreen: 'local', controllerDeviceId: null, entered: false },
   screenLayout: layoutFor(devices),
   diagnostics: diagnostics(),
   remapRules: [{ from: 'Meta', to: 'Ctrl', whenTargetOs: 'windows' }],
@@ -152,7 +209,11 @@ export function seedScenario(name: string, os: HostOs): EngineState {
       return s;
     }
     case 'no-devices': {
+      // Exactly what a real engine reports on a fresh install: nothing to be
+      // connected to (`disconnected`) and no switch measured yet (null).
       const s = base(os, [me()]);
+      s.linkState = 'disconnected';
+      s.diagnostics = { ...diagnostics(), switchLatencyMsP50: null, switchLatencyMsP95: null };
       s.remapRules = [];
       return s;
     }
@@ -162,7 +223,7 @@ export function seedScenario(name: string, os: HostOs): EngineState {
     }
     case 'controlling-remote': {
       const s = base(os, [me(false), { ...officePc, state: 'active', lastSeenMs: NOW }, studioMini]);
-      s.controlState = { role: 'controller', activeScreen: 'd2', controllerDeviceId: null };
+      s.controlState = { role: 'controller', activeScreen: 'd2', controllerDeviceId: null, entered: false };
       return s;
     }
     case 'controlled': {
@@ -176,7 +237,7 @@ export function seedScenario(name: string, os: HostOs): EngineState {
       const myself = { ...local(os, 'controlled', true) };
       const s = base(os, [myself, controller]);
       s.settings.role = 'controlled';
-      s.controlState = { role: 'controlled', activeScreen: 'local', controllerDeviceId: 'd2' };
+      s.controlState = { role: 'controlled', activeScreen: 'local', controllerDeviceId: 'd2', entered: true };
       return s;
     }
     case 'role-conflict': {

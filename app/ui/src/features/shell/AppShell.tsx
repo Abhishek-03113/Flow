@@ -2,6 +2,7 @@ import { Activity, Home, Keyboard, Laptop, Settings } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
 import { Sidebar, SidebarItem, StatusDot, Toolbar, type DotTone } from '@flow/design-system';
 import { useFlow } from '../../state/FlowProvider';
+import { effectiveLink } from '../../state/selectors';
 import { useUi } from '../../state/ui';
 import { DevicesToolbarAction, DevicesView } from '../devices/DevicesView';
 import { DiagnosticsView } from '../diagnostics/DiagnosticsView';
@@ -44,6 +45,7 @@ const LINK: Record<string, [string, DotTone, boolean]> = {
   connecting: ['Connecting…', 'orange', true],
   reconnecting: ['Reconnecting…', 'orange', true],
   disconnected: ['Not connected', 'gray', false],
+  no_computers: ['No computers yet', 'gray', false],
   error: ['Needs attention', 'red', false],
   permission_required: ['Needs permission', 'red', false],
 };
@@ -56,7 +58,7 @@ export function AppShell({ route }: { route: string }) {
   const [text, tone, pulse] =
     s.connection === 'closed'
       ? (['Not responding', 'red', false] as const)
-      : (LINK[s.linkState] ?? LINK.connected!);
+      : (LINK[effectiveLink(s)] ?? LINK.connected!);
 
   // ⌘1…⌘5 / Ctrl+1…5 jump between sections.
   useEffect(() => {

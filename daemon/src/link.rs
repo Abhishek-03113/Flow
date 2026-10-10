@@ -207,6 +207,9 @@ async fn controller_loop(
             }
             received = channel.recv() => {
                 last_heard = Instant::now();
+                if received.is_ok() {
+                    env.service.note_heard(device_id).await;
+                }
                 match received {
                     Ok(ChannelMessage::ReleaseRequest) => {
                         env.service.router().release_requested(device_id);
@@ -275,6 +278,9 @@ async fn controlled_loop(
             }
             received = channel.recv() => {
                 last_heard = Instant::now();
+                if received.is_ok() {
+                    env.service.note_heard(device_id).await;
+                }
                 match received {
                     Ok(ChannelMessage::Goodbye { reason }) => {
                         outcome = peer_goodbye(reason);

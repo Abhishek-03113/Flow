@@ -23,7 +23,7 @@ export interface Device {
   /** Unix ms. Derived from the 0.1.x `last_seen` ISO string when `last_seen_ms` is absent. */
   lastSeenMs: number;
   linkError: LinkErrorCode | null;
-  /** True for "this computer" (the engine's `d1`). */
+  /** True for "this computer"; sent by the engine. */
   isLocal: boolean;
 }
 
@@ -88,9 +88,32 @@ export interface FlowSettings {
 
 export type SettingsPatch = Partial<Omit<FlowSettings, 'keymapOverridesPath'>>;
 
-export interface PermissionStatus {
+export interface FixStep {
+  text: string;
+  /** A shell command to copy, when the step is one. */
+  command: string | null;
+}
+
+/** One plain sentence, then ordered steps. */
+export interface HowToFix {
+  summary: string;
+  steps: FixStep[];
+}
+
+/** One thing the OS must allow (engine-supplied; macOS lists two, Linux two, Windows none). */
+export interface PermissionItem {
   name: string;
   granted: boolean;
+  /** `null` while granted. */
+  howToFix: HowToFix | null;
+}
+
+export interface PermissionStatus {
+  /** Summary label. */
+  name: string;
+  /** True when every item is granted. */
+  granted: boolean;
+  items: PermissionItem[];
 }
 
 export type ActiveScreen = 'local' | string;
@@ -99,11 +122,14 @@ export interface ControlState {
   role: Role;
   /**
    * Controller: `"local"` or the DeviceId of the screen receiving input.
-   * Controlled: `"local"` while the controller is driving THIS computer,
-   * otherwise the controller's DeviceId.
+   * Controlled: always `"local"` (this computer is the only screen it has);
+   * whether the controller is driving it right now is `entered`.
    */
   activeScreen: ActiveScreen;
+  /** Controlled only: the linked controller, if any. */
   controllerDeviceId: string | null;
+  /** Controlled only: true while the controller is driving THIS computer. */
+  entered: boolean;
 }
 
 export interface ScreenRect {
@@ -119,8 +145,9 @@ export interface ScreenLayout {
 }
 
 export interface Diagnostics {
-  switchLatencyMsP50: number;
-  switchLatencyMsP95: number;
+  /** `null` until the first switch happened. */
+  switchLatencyMsP50: number | null;
+  switchLatencyMsP95: number | null;
   eventsForwarded: number;
   eventsDropped: number;
   uptimeS: number;

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{PairingCandidate, PairingSession, PairingStage};
-use flow_core::permission::PermissionStatus;
+use flow_core::permission::{FixStep, HowToFix, PermissionItem, PermissionStatus};
 use flow_core::settings::{FlowSettings, PointerSensitivity, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
 
@@ -40,7 +40,8 @@ fn device_matches_data_model_example() {
             "last_seen_ms": 1787641080000i64,
             "role": null,
             "screen": null,
-            "link_error": null
+            "link_error": null,
+            "is_local": false
         })
     );
 }
@@ -56,6 +57,7 @@ fn pairing_session_matches_data_model_example() {
         }],
         target_name: Some("Office Mac Mini".to_string()),
         error: None,
+        code: Some("3f2a 91c4 8d10 6b57".to_string()),
     };
 
     assert_eq!(
@@ -64,7 +66,8 @@ fn pairing_session_matches_data_model_example() {
             "stage": "requesting",
             "candidates": [{ "id": "cand-1", "name": "Office Mac Mini", "os": "macos" }],
             "target_name": "Office Mac Mini",
-            "error": null
+            "error": null,
+            "code": "3f2a 91c4 8d10 6b57"
         })
     );
 }
@@ -87,7 +90,7 @@ fn flow_settings_defaults_match_data_model_example() {
     assert_eq!(
         value_of(&FlowSettings::defaults()),
         json!({
-            "launch_at_login": true,
+            "launch_at_login": false,
             "show_tray_icon": true,
             "auto_reconnect": true,
             "auto_connect_paired_devices": true,
@@ -117,14 +120,29 @@ fn settings_patch_only_serializes_the_keys_that_are_set() {
 
 #[test]
 fn permission_status_matches_data_model_example() {
-    let status = PermissionStatus {
-        name: "Accessibility access".to_string(),
+    let status = PermissionStatus::from_items(vec![PermissionItem {
+        name: "Accessibility".to_string(),
         granted: false,
-    };
+        how_to_fix: Some(HowToFix {
+            summary: "Allow Flow in Privacy & Security.".to_string(),
+            steps: vec![FixStep::text("Turn on Flow.")],
+        }),
+    }]);
 
     assert_eq!(
         value_of(&status),
-        json!({ "name": "Accessibility access", "granted": false })
+        json!({
+            "name": "Accessibility",
+            "granted": false,
+            "items": [{
+                "name": "Accessibility",
+                "granted": false,
+                "how_to_fix": {
+                    "summary": "Allow Flow in Privacy & Security.",
+                    "steps": [{ "text": "Turn on Flow.", "command": null }]
+                }
+            }]
+        })
     );
 }
 

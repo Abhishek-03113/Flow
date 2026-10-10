@@ -60,6 +60,12 @@ pub enum FlowError {
     #[error("invalid screen layout: {0}")]
     InvalidLayout(String),
 
+    #[error("no permission named {0:?}")]
+    PermissionNotFound(String),
+
+    #[error("link state is {0:?}, not reconnecting — nothing to cancel")]
+    NotReconnecting(crate::link::DaemonLinkState),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -85,6 +91,8 @@ impl FlowError {
             FlowError::NoController => "no_controller",
             FlowError::InvalidRemapRule(_) => "invalid_remap_rule",
             FlowError::InvalidLayout(_) => "invalid_layout",
+            FlowError::PermissionNotFound(_) => "permission_not_found",
+            FlowError::NotReconnecting(_) => "not_reconnecting",
             FlowError::Internal(_) => "internal_error",
         }
     }

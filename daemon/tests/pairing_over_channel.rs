@@ -146,6 +146,12 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
     sessions.changed().await.expect("requesting");
     assert_eq!(sessions.borrow_and_update().stage, PairingStage::Requesting);
 
+    // The initiator learns the verification code while the other person decides.
+    sessions.changed().await.expect("verification code");
+    let requesting = sessions.borrow_and_update().clone();
+    assert_eq!(requesting.stage, PairingStage::Requesting);
+    assert!(requesting.code.is_some(), "the initiator shows a code");
+
     sessions.changed().await.expect("paired");
     assert_eq!(sessions.borrow_and_update().stage, PairingStage::Paired);
 
@@ -373,6 +379,7 @@ async fn a_rejected_real_pairing_request_lands_in_failed_not_paired() {
         .expect("pair with the live candidate");
 
     sessions.changed().await.expect("requesting");
+    sessions.changed().await.expect("verification code");
     sessions.changed().await.expect("failed");
     let failed = sessions.borrow_and_update().clone();
     assert_eq!(failed.stage, PairingStage::Failed);
@@ -468,6 +475,7 @@ async fn a_rejected_incoming_request_fails_the_initiator() {
         .expect("pair with the live candidate");
 
     sessions.changed().await.expect("requesting");
+    sessions.changed().await.expect("verification code");
     sessions.changed().await.expect("failed");
     let failed = sessions.borrow_and_update().clone();
     assert_eq!(failed.stage, PairingStage::Failed);

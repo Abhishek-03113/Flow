@@ -3,8 +3,10 @@
 //! engine (`flow-daemon`); this crate only adapts it to a window.
 
 mod bridge;
+mod integrations;
 mod shell;
 mod tray;
+mod tray_model;
 
 use std::sync::Arc;
 
@@ -15,6 +17,7 @@ use flow_daemon::platform_backend::NativeBackend;
 use tauri::{Manager, RunEvent, WindowEvent};
 
 use bridge::{Engine, StateObserver, WebviewForwarder};
+use integrations::{PairingNotifier, SettingsSync};
 
 /// Starts the engine in-process: same configuration builder as the
 /// headless `flow-daemon`, without a local socket.
@@ -40,17 +43,27 @@ pub fn run() {
         shell::show_main(app);
     }));
 
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        Some(vec![shell::MINIMIZED_FLAG]),
+    ));
+
     builder
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![bridge::flow_command])
-        .on_window_event(|window, event| {
-            // Closing the window hides it: Flow keeps running in the tray.
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == shell::MAIN_WINDOW {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
+        .on_window_event(|window, event| match event {
+            // Closing the window hides it: Flow keeps running in the tray
+            // (unless the tray icon is turned off, then closing quits).
+            WindowEvent::CloseRequested { api, .. }
+                if window.label() == shell::MAIN_WINDOW && integrations::tray_is_visible() =>
+            {
+                api.prevent_close();
+                let _ = window.hide();
             }
+            WindowEvent::Focused(focused) => tray::hide_popover_on_blur(window, *focused),
+            _ => {}
         })
         .setup(|app| {
             let handle = start_engine()?;
@@ -58,10 +71,16 @@ pub fn run() {
                 tracing::info!("developer WebSocket enabled on {addr}");
             }
             tracing::info!("engine started in-process");
-            let observers: Vec<Box<dyn StateObserver>> = vec![Box::new(WebviewForwarder)];
+            let observers: Vec<Box<dyn StateObserver>> = vec![
+                Box::new(WebviewForwarder),
+                Box::new(tray::TrayObserver::new()),
+                Box::new(SettingsSync),
+                Box::new(PairingNotifier::new()),
+            ];
             let engine = Arc::new(Engine::new(handle, observers));
             app.manage(Arc::clone(&engine));
             tray::install(app)?;
+            shell::show_main_unless_minimized(app.handle());
             engine.start_pump(app.handle().clone());
             Ok(())
         })

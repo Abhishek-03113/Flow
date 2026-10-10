@@ -2,6 +2,8 @@ import { FlowCommandError } from './errors';
 import type { Transport, TransportHandlers, WireEvent } from './transport';
 
 export const TAURI_EVENT = 'flow://event';
+/** Shell → main window requests (open a route or sheet). */
+export const TAURI_EVENT_NAVIGATE = 'flow://navigate';
 export const isTauriRuntime = (): boolean => typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 /**

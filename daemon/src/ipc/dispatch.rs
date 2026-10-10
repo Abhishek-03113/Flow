@@ -7,7 +7,7 @@ use flow_core::ipc::{ErrorPayload, IpcRequest, IpcResponse};
 use flow_core::settings::SettingsPatch;
 use flow_core::switch_key::SwitchKeyBinding;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::events::RESYNC_COMMAND;
 use crate::service::DaemonService;
@@ -44,9 +44,33 @@ pub async fn run_command(
     payload: Value,
 ) -> Result<Option<Value>, ErrorPayload> {
     // Commands with an answer return it directly; the rest are acks only.
-    if command == "get_keymap" {
-        let args: OsPayload = parse_payload(payload)?;
-        return Ok(Some(service.keymap_for(args.os)));
+    match command {
+        "get_keymap" => {
+            let args: OsPayload = parse_payload(payload)?;
+            return Ok(Some(service.keymap_for(args.os)));
+        }
+        // The engine decides *what* to open; a headless client just gets
+        // the path/URL, the desktop app's shell opens it.
+        "reveal_config_dir" => {
+            let path = service.reveal_config_dir().map_err(ErrorPayload::from)?;
+            return Ok(Some(json!({ "path": path.display().to_string() })));
+        }
+        "export_diagnostics" => {
+            let path = service
+                .export_diagnostics()
+                .await
+                .map_err(ErrorPayload::from)?;
+            return Ok(Some(json!({ "path": path.display().to_string() })));
+        }
+        "open_permission_settings" => {
+            let args: NamePayload = parse_payload(payload)?;
+            let url = service
+                .permission_settings_url(&args.name)
+                .await
+                .map_err(ErrorPayload::from)?;
+            return Ok(Some(json!({ "url": url })));
+        }
+        _ => {}
     }
     handle_ack_only(service, command, payload)
         .await
@@ -138,6 +162,12 @@ async fn handle_ack_only(
             .await
             .map_err(ErrorPayload::from),
         "retry_connection" => service.retry_connection().await.map_err(ErrorPayload::from),
+        // "Check Again": re-run the OS permission probe now.
+        "recheck_permissions" => {
+            service.refresh_permissions().await;
+            Ok(())
+        }
+        "cancel_reconnect" => service.cancel_reconnect().await.map_err(ErrorPayload::from),
         // The state re-send itself belongs to the transport (it owns the
         // sink); the command is part of the contract, so ack it here.
         RESYNC_COMMAND => Ok(()),
@@ -160,6 +190,11 @@ async fn handle_ack_only(
 #[derive(serde::Deserialize)]
 struct DeviceIdPayload {
     device_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct NamePayload {
+    name: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -477,6 +512,48 @@ mod tests {
                 }
             )
         );
+    }
+
+    #[tokio::test]
+    async fn support_commands_answer_with_a_path_or_url() {
+        let service = service().await;
+        let err = run_command(&service, "export_diagnostics", Value::Null)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.code, "internal_error",
+            "no export folder in a test service"
+        );
+        let err = run_command(
+            &service,
+            "open_permission_settings",
+            json!({ "name": "Nope" }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "permission_not_found");
+        let err = run_command(&service, "cancel_reconnect", Value::Null)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "not_reconnecting");
+        assert_eq!(
+            run_command(&service, RESYNC_COMMAND, Value::Null).await,
+            Ok(None)
+        );
+    }
+
+    #[tokio::test]
+    async fn devices_say_whether_they_are_this_computer() {
+        let service = service().await;
+        let devices = serde_json::to_value(&*service.watch_devices().borrow()).unwrap();
+        let local: Vec<_> = devices
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["is_local"] == true)
+            .collect();
+        assert_eq!(local.len(), 1);
+        assert_eq!(local[0]["id"], "d1");
     }
 
     #[tokio::test]

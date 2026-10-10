@@ -385,3 +385,16 @@
   display: grid;
   place-items: center;
 }
+
+/* Permission fix-it steps ------------------------------------------------------------------------------------ */
+.fl-steps {
+  margin: 0;
+  padding: var(--s-1) var(--s-4) var(--s-3) calc(var(--s-4) + var(--s-5));
+  display: grid;
+  gap: var(--s-2);
+  text-align: left;
+}
+.fl-steps li {
+  display: grid;
+  gap: var(--s-1);
+}

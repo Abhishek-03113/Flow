@@ -12,7 +12,7 @@ use flow_core::ipc::ErrorPayload;
 use flow_daemon::engine::EngineHandle;
 use flow_daemon::ipc::dispatch::run_command;
 use flow_daemon::ipc::events::{StateEvent, StateStream, RESYNC_COMMAND};
-use flow_daemon::service::DaemonService;
+use flow_daemon::service::{DaemonService, IpcClientGuard};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -44,12 +44,17 @@ impl StateObserver for WebviewForwarder {
 pub struct Engine {
     service: Arc<DaemonService>,
     handle: Mutex<Option<EngineHandle>>,
+    /// The app is the engine's UI for as long as it runs, so incoming
+    /// pairing requests are surfaced (as a notification while the window
+    /// is hidden) instead of being declined for lack of a UI.
+    _ui_attached: IpcClientGuard,
     observers: Vec<Box<dyn StateObserver>>,
 }
 
 impl Engine {
     pub fn new(handle: EngineHandle, observers: Vec<Box<dyn StateObserver>>) -> Self {
         Self {
+            _ui_attached: handle.service().register_ipc_client(),
             service: Arc::clone(handle.service()),
             handle: Mutex::new(Some(handle)),
             observers,
@@ -119,6 +124,9 @@ pub async fn flow_command(
     payload: Value,
 ) -> Result<Value, ErrorPayload> {
     tracing::debug!(%command, "flow_command");
+    if let Some(answer) = shell::app_command(&app, &command, &payload) {
+        return answer;
+    }
     if command == RESYNC_COMMAND {
         engine.resync(&app);
         return Ok(Value::Null);

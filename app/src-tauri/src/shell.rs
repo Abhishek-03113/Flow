@@ -5,6 +5,15 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, WebviewWindow};
 
 pub const MAIN_WINDOW: &str = "main";
+/// Passed by the login item so Flow starts in the tray, not in your face.
+pub const MINIMIZED_FLAG: &str = "--minimized";
+
+/// Shows the main window at startup, except when launched at login.
+pub fn show_main_unless_minimized(app: &AppHandle) {
+    if !std::env::args().any(|a| a == MINIMIZED_FLAG) {
+        show_main(app);
+    }
+}
 
 /// Shows and focuses the main window.
 pub fn show_main(app: &AppHandle) {
@@ -38,5 +47,30 @@ pub fn after_command(app: &AppHandle, command: &str, result: &Value) {
         if let Err(err) = opened {
             tracing::warn!("could not open {target}: {err}");
         }
+    }
+}
+
+/// Commands only the shell can answer (they never reach the engine).
+/// `None` means "not a shell command".
+pub fn app_command(
+    app: &AppHandle,
+    command: &str,
+    payload: &Value,
+) -> Option<Result<Value, flow_core::ipc::ErrorPayload>> {
+    use tauri::Emitter;
+    match command {
+        // The tray popover asks for the full window, optionally with a
+        // sheet (`pairing`, `permission`) or a route open.
+        "open_main_window" => {
+            show_main(app);
+            if let Some(window) = app.get_webview_window(MAIN_WINDOW) {
+                let _ = window.emit("flow://navigate", payload);
+            }
+            if let Some(popover) = app.get_webview_window(crate::tray::POPOVER) {
+                let _ = popover.hide();
+            }
+            Some(Ok(Value::Null))
+        }
+        _ => None,
     }
 }

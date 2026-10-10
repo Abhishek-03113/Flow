@@ -1,7 +1,7 @@
 import { Check, Plus } from 'lucide-react';
 import { Banner, Button, KeyCombo, StatusDot, type DotTone } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
-import { isReachable, localDevice, localOs, myRole, situation } from '../../state/selectors';
+import { effectiveLink, isReachable, localDevice, localOs, myRole, situation } from '../../state/selectors';
 import { useAction } from '../../state/useAction';
 import { useUi } from '../../state/ui';
 import { DeviceGlyph } from '../DeviceGlyph';
@@ -12,6 +12,7 @@ const LINK: Record<string, [string, DotTone]> = {
   connecting: ['Connecting…', 'orange'],
   reconnecting: ['Reconnecting…', 'orange'],
   disconnected: ['Not connected', 'gray'],
+  no_computers: ['No computers yet', 'gray'],
   error: ['Needs attention', 'red'],
   permission_required: ['Needs permission', 'red'],
 };
@@ -32,8 +33,15 @@ export function TrayView() {
   const s = useFlow();
   const client = useClient();
   const { run, busy } = useAction();
-  const { navigate, openPairing, openPermission } = useUi();
-  const [text, tone] = LINK[s.linkState] ?? LINK.connected!;
+  const ui = useUi();
+  const { navigate } = ui;
+  // In the desktop app the popover is its own small window: anything bigger
+  // than a switch opens the full window instead of a sheet in here.
+  const inMain = (target: { route?: string; sheet?: 'pairing' | 'permission' }, local: () => void) =>
+    client.hasDesktopShell ? void run(() => client.openMainWindow(target)) : local();
+  const openPairing = () => inMain({ sheet: 'pairing' }, ui.openPairing);
+  const openPermission = () => inMain({ sheet: 'permission' }, ui.openPermission);
+  const [text, tone] = LINK[effectiveLink(s)] ?? LINK.connected!;
   const me = localDevice(s);
   const sit = situation(s);
   const controller = myRole(s) === 'controller';
@@ -42,7 +50,7 @@ export function TrayView() {
     s.linkState === 'error' &&
     s.devices.some((d) => d.linkError) &&
     s.devices.filter((d) => d.linkError).every((d) => d.linkError === 'role_conflict');
-  const banner = roleConflictOnly ? undefined : BANNER[s.linkState];
+  const banner = roleConflictOnly ? undefined : BANNER[effectiveLink(s)];
 
   const summary =
     sit.kind === 'controller-remote'
@@ -159,7 +167,7 @@ export function TrayView() {
           Add Computer…
         </Button>
         <span style={{ flex: 1 }} />
-        <Button onClick={() => navigate('/home')}>Open Flow</Button>
+        <Button onClick={() => inMain({ route: '/home' }, () => navigate('/home'))}>Open Flow</Button>
       </div>
     </div>
   );
