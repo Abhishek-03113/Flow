@@ -23,3 +23,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
