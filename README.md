@@ -69,11 +69,20 @@ core/       flow-core — protocol, device, pairing, transport, state, and
 daemon/     flow-daemon — the daemon binary; wires core + platform together
 platform/   flow-platform — per-OS input adapters (macos/, windows/, linux/),
             each implementing the traits from core
+config/     keymaps/ — default per-OS key tables and remap rules (TOML, embedded
+            at build time; users override without rebuilding, see
+            config/keymaps/README.md)
 flutter/    Flutter control-plane app (devices, onboarding, settings, tray,
             services); see flutter/README.md
 ```
 
 Build the daemon workspace with `cargo build --workspace`; see `flutter/README.md` for the UI.
+
+## Development
+
+Toolchain pinned via `rust-toolchain.toml`; common tasks run through `just` (or `./scripts/dev.sh <verb>`):
+`just setup`, `just lint`, `just test`, `just ci`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup per OS,
+commit conventions and the PR checklist.
 
 ## POC roadmap
 

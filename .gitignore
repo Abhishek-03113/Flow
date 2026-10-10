@@ -23,3 +23,29 @@ test-results
 playwright-report
 app/src-tauri/target
 app/src-tauri/gen
+# Node / frontend
+node_modules/
+app/ui/dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Tauri
+app/src-tauri/target/
+app/src-tauri/gen/
+app/src-tauri/WixTools/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Harness output
+harness-report/
+/target/harness-report/
+
+# Env
+.env
+.env.*
+!.env.example

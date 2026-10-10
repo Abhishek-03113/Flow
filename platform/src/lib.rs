@@ -7,6 +7,8 @@
 //! never a per-OS type name directly — so this crate stays the only
 //! place that needs to know which operating system it's running on.
 
+pub mod keymap;
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

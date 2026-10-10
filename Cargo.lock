@@ -1237,6 +1237,7 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+ "toml 0.8.2",
 ]
 
 [[package]]
@@ -1274,6 +1275,7 @@ version = "0.1.0"
 dependencies = [
  "core-foundation",
  "core-graphics 0.24.0",
+ "directories",
  "evdev",
  "flow-core",
  "foreign-types",

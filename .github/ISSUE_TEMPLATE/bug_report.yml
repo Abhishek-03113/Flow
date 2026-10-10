@@ -1,0 +1,39 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations: { required: true }
+  - type: dropdown
+    id: controller_os
+    attributes:
+      label: Controller OS (the machine with the keyboard and mouse)
+      options: [macOS, Windows, Linux (X11), Linux (Wayland)]
+    validations: { required: true }
+  - type: dropdown
+    id: controlled_os
+    attributes:
+      label: Controlled OS (the machine receiving input)
+      options: [macOS, Windows, Linux (X11), Linux (Wayland)]
+    validations: { required: true }
+  - type: input
+    id: version
+    attributes:
+      label: Flow version on both machines
+      placeholder: "2.0.0 / commit sha"
+    validations: { required: true }
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: "1. Pair the two devices\n2. ..."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Use Settings > Export diagnostics, or run the daemon with `RUST_LOG=debug`. Redact keys and tokens.
+      render: shell
