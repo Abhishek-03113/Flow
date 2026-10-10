@@ -68,6 +68,7 @@ All switching is decided on the controller:
 | `Enter { seq, x, y, held_modifiers }` | ctl → ctd | controlled side becomes the input target; warp cursor to (x,y) |
 | `Leave { seq }` | ctl → ctd | stop being the target; controlled side **must release every held key/button** |
 | `Input { seq, event }` | ctl → ctd | only valid between `Enter` and `Leave`; dropped otherwise (defence in depth) |
+| `Arrangement { controller, controlled }` | ctl → ctd | where the two screens sit (rects in the controller's layout); sent on link-up and on layout change (`protocol_version = 3`) |
 | `ScreenInfo { width, height }` | ctd → ctl | resolution change |
 | `ReleaseRequest` | ctd → ctl | user asked to get their machine back |
 | `Heartbeat` / `Goodbye { reason }` | both | liveness / orderly close |
@@ -100,5 +101,5 @@ in the pipeline, `spawn_pipeline_switch_filter`, and the standalone `hotkey::run
 - Fixes "can't regain control" by construction: the controller's keyboard always reaches the controller's router.
 - Fixes "Mac input flows back": controlled devices never capture.
 - Multi-device (3+) becomes natural (`Remote(d)` over a set of links), as does deskflow-style screen arrangement.
-- Breaking change to the daemon↔daemon wire protocol (`protocol_version = 2`); V1 peers are refused with a clear message.
+- Breaking change to the daemon↔daemon wire protocol (`protocol_version = 2` then 3); V1 peers are refused with a clear message.
 - The UI needs a role choice, a screen-arrangement editor and an active-screen indicator (see `docs/redesign/PLAN.md`).

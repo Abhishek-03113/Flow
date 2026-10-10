@@ -3,11 +3,7 @@ import { cx } from "../cx";
 import { Spinner } from "./Spinner";
 
 export type ButtonVariant =
-  | "bordered"
-  | "prominent"
-  | "plain"
-  | "destructive"
-  | "destructive-prominent";
+  "bordered" | "prominent" | "plain" | "destructive" | "destructive-prominent";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
