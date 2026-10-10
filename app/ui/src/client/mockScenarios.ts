@@ -238,6 +238,16 @@ export function seedScenario(name: string, os: HostOs): EngineState {
       const s = base(os, [myself, controller]);
       s.settings.role = 'controlled';
       s.controlState = { role: 'controlled', activeScreen: 'local', controllerDeviceId: 'd2', entered: true };
+      // What the controller sent over the link: the controller's own arrangement
+      // (here the Desk PC sits above this computer), read-only on this side.
+      const theirs = controller.screen!;
+      const mine = myself.screen!;
+      s.screenLayout = {
+        screens: [
+          { deviceId: 'd1', x: 0, y: theirs.height, width: mine.width, height: mine.height },
+          { deviceId: 'd2', x: 0, y: 0, width: theirs.width, height: theirs.height },
+        ],
+      };
       return s;
     }
     case 'role-conflict': {
