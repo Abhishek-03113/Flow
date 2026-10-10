@@ -82,6 +82,15 @@ describe('MockEngine', () => {
     expect(d2?.linkError).toBeNull();
     expect(client.getSnapshot().settings?.role).toBe('controlled');
     expect(client.getSnapshot().controlState?.role).toBe('controlled');
+    expect(client.getSnapshot().linkState).toBe('connected');
+  });
+
+  it('a role change that conflicts with the only peer makes the link error, not reconnecting', async () => {
+    const { client } = setup('two-devices');
+    await flush();
+    await client.setRole('controlled'); // d2 is controlled too
+    expect(client.getSnapshot().devices.find((d) => d.id === 'd2')?.linkError).toBe('role_conflict');
+    expect(client.getSnapshot().linkState).toBe('error');
   });
 
   it('remove_device protects this computer and cleans the layout', async () => {
