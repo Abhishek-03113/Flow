@@ -23,6 +23,13 @@ use integrations::{PairingNotifier, SettingsSync};
 /// headless `flow-daemon`, without a local socket.
 fn start_engine() -> Result<flow_daemon::engine::EngineHandle, String> {
     let dev = DevMode::from_env();
+    // Test hooks and insecure mode exist for the headless daemon, the
+    // harness and debug builds; a release app never honours them.
+    let dev = if cfg!(debug_assertions) {
+        dev
+    } else {
+        dev.without_test_switches()
+    };
     let logging = flow_daemon::logging::init(false, dev.trace);
     dev.announce();
     let config = env_config::engine_config(

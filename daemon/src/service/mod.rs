@@ -95,6 +95,27 @@ mod permissions;
 /// a peer which never answers doesn't hold a caller indefinitely.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long an *inbound* peer connection may take to prove who it is
+/// (WebSocket upgrade, Noise handshake) and, when it is not trusted yet,
+/// to send its pairing request. Anything on the LAN can connect to the
+/// peer port, so nothing unauthenticated may hold a connection open
+/// longer than this. The wait for the local user's decision is separate
+/// ([`PAIRING_DECISION_TIMEOUT`]).
+pub const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Runs `step` of an unauthenticated inbound connection under
+/// [`INBOUND_HANDSHAKE_TIMEOUT`]; a stall ends it like a dropped socket.
+async fn inbound_step<T>(
+    step: impl std::future::Future<Output = Result<T, ChannelError>>,
+) -> Result<T, ChannelError> {
+    tokio::time::timeout(INBOUND_HANDSHAKE_TIMEOUT, step)
+        .await
+        .unwrap_or_else(|_| {
+            tracing::debug!("an inbound peer connection timed out before authenticating");
+            Err(ChannelError::ConnectionLost)
+        })
+}
+
 /// What a service needs to know about the machine it runs on, beyond the
 /// database. Defaults describe the real host; the engine overrides them
 /// from its config (and a virtual platform pretends to be another OS).
@@ -1529,7 +1550,8 @@ impl DaemonService {
         channel: Box<dyn Channel>,
         peer_addr: Option<SocketAddr>,
     ) -> Result<(), ChannelError> {
-        let (mut session, peer_key) = self.security.accept(channel, &self.identity).await?;
+        let (mut session, peer_key) =
+            inbound_step(self.security.accept(channel, &self.identity)).await?;
         self.accept_pairing_over(session.as_mut(), peer_key.to_vec(), peer_addr)
             .await
     }
@@ -1559,7 +1581,7 @@ impl DaemonService {
         peer_public_key: Vec<u8>,
         peer_addr: Option<SocketAddr>,
     ) -> Result<(), ChannelError> {
-        let request = handshake::recv_pairing_request(channel).await?;
+        let request = inbound_step(handshake::recv_pairing_request(channel)).await?;
 
         let decision = if self.security.pairing_auto_accepts() {
             // Insecure dev profile: accept with no prompt and no consent
@@ -1716,7 +1738,8 @@ impl DaemonService {
         channel: Box<dyn Channel>,
         peer_addr: Option<SocketAddr>,
     ) -> Result<IncomingPeerConnection, ChannelError> {
-        let (mut session, peer_key) = self.security.accept(channel, &self.identity).await?;
+        let (mut session, peer_key) =
+            inbound_step(self.security.accept(channel, &self.identity)).await?;
         let peer_public_key = peer_key.to_vec();
 
         // The trust check itself is unchanged in the insecure profile:
@@ -3372,6 +3395,18 @@ mod tests {
     /// user's decision, so a test must drive `watch_incoming_request()` /
     /// `respond_to_pairing_request()` (or advance past the timeout)
     /// before awaiting either handle.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_inbound_connection_is_dropped_at_the_handshake_deadline() {
+        let service = seeded().await;
+        let (ours, _silent_peer) = crate::channel::memory::pair();
+        let started = tokio::time::Instant::now();
+        let result = service
+            .accept_incoming_peer_channel(Box::new(ours), None)
+            .await;
+        assert!(matches!(result, Err(ChannelError::ConnectionLost)));
+        assert!(started.elapsed() >= INBOUND_HANDSHAKE_TIMEOUT);
+    }
+
     async fn spawn_incoming_pairing(service: &DaemonService, device_name: &str) -> IncomingAttempt {
         use crate::channel::tcp::TcpChannel;
         use tokio::net::TcpListener;
@@ -3518,7 +3553,7 @@ mod tests {
     /// No decision within `PAIRING_DECISION_TIMEOUT` ⇒ the daemon rejects
     /// on the user's behalf; the initiator sees Reject and nothing is
     /// persisted.
-    #[tokio::test(start_paused = true)]
+    #[tokio::test]
     async fn no_answer_auto_rejects_after_timeout() {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new_seeded_for_test(storage).await;
@@ -3529,6 +3564,9 @@ mod tests {
         let pending = next_published_request(&mut requests).await;
         assert!(pending.request_id.starts_with("ipr-"));
 
+        // Paused only now: a paused clock auto-advances while real sockets
+        // are pending, which would trip the handshake deadline above.
+        tokio::time::pause();
         tokio::time::advance(PAIRING_DECISION_TIMEOUT + Duration::from_millis(1)).await;
 
         assert_eq!(

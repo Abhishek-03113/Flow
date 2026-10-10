@@ -113,7 +113,7 @@ export function DevicesView() {
                         Switch
                       </Button>
                     )}
-                    <Tooltip label="Forget this computer">
+                    <Tooltip label="Forget this computer" align="end">
                       <Button
                         size="small"
                         aria-label={`Forget ${d.name}`}
