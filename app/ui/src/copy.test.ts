@@ -33,3 +33,17 @@ describe('linkErrorCopy', () => {
     }
   });
 });
+
+describe('friendlyError', () => {
+  it('has copy for every engine error code', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    const { ERRORS } = await import('./copy');
+    const rust = readFileSync(resolve(process.cwd(), '../../core/src/error/mod.rs'), 'utf8');
+    const codes = [...rust.matchAll(/=> "([a-z_]+)",/g)]
+      .map((m) => m[1] as string)
+      .filter((c) => c !== 'internal_error');
+    expect(codes).toContain('no_controller');
+    for (const code of codes) expect(ERRORS[code], code).toBeTruthy();
+  });
+});
