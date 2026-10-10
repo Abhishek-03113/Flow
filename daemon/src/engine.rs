@@ -46,6 +46,8 @@ pub struct DiscoveryConfig {
     /// Where announces are sent. `None` broadcasts on every LAN interface;
     /// explicit addresses isolate engines sharing a host.
     pub targets: Option<Vec<SocketAddr>>,
+    /// How often this engine announces itself.
+    pub announce_interval: Duration,
 }
 
 pub struct EngineConfig {
@@ -438,9 +440,10 @@ impl Runtime {
                 .unwrap_or_else(|| DiscoveryService::broadcast_destinations(port)),
         ));
         let announce_targets = Arc::clone(&targets);
+        let announce = config.announce_interval;
         let runtime = self.clone();
         self.tasks.spawn(async move {
-            let mut announce_interval = tokio::time::interval(Duration::from_secs(5));
+            let mut announce_interval = tokio::time::interval(announce);
             loop {
                 tokio::select! {
                     _ = announce_interval.tick() => {

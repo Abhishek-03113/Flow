@@ -11,13 +11,13 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use flow_core::channel::{Channel, ChannelAddress, ChannelError};
 use flow_core::control::layout::ScreenLayout;
-use flow_core::control::{ActiveScreen, ControlState, Role};
+use flow_core::control::{ActiveScreen, ControlState, Diagnostics, Role};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
 use flow_core::keymap::remap::RemapRule;
@@ -347,6 +347,11 @@ pub struct DaemonService {
     control_tx: watch::Sender<ControlState>,
     remap_rules_tx: watch::Sender<Vec<RemapRule>>,
     layout_tx: watch::Sender<ScreenLayout>,
+    diagnostics_tx: watch::Sender<Diagnostics>,
+    started: std::time::Instant,
+    /// Input dropped on the controlled side (outside `Enter`..`Leave`,
+    /// replays), added to the router's own count.
+    dropped_remote: Arc<AtomicU64>,
     /// Live peer links, keyed by the peer's proven identity.
     links: Arc<std::sync::Mutex<HashMap<DeviceId, LinkEntry>>>,
     local_screen: ScreenSize,
@@ -432,6 +437,7 @@ impl DaemonService {
         router.set_local_screen(options.screen);
         router.set_layout(layout.clone());
         let (layout_tx, _) = watch::channel(layout);
+        let (diagnostics_tx, _) = watch::channel(Diagnostics::from_samples(vec![], 0, 0, 0));
 
         let (devices_tx, _) = watch::channel(devices_list(&state));
         let (link_state_tx, _) = watch::channel(state.link_state);
@@ -459,11 +465,15 @@ impl DaemonService {
             control_tx,
             remap_rules_tx,
             layout_tx,
+            diagnostics_tx,
+            started: std::time::Instant::now(),
+            dropped_remote: Arc::new(AtomicU64::new(0)),
             links: Arc::new(std::sync::Mutex::new(HashMap::new())),
             local_screen: options.screen,
             keymap_dir: options.keymap_dir,
         };
         service.spawn_active_screen_follower();
+        service.spawn_diagnostics_ticker();
         service
     }
 
@@ -659,6 +669,39 @@ impl DaemonService {
         self.router.set_remap_rules(rules.clone());
         self.remap_rules_tx.send_replace(rules);
         Ok(())
+    }
+
+    pub fn watch_diagnostics(&self) -> watch::Receiver<Diagnostics> {
+        self.diagnostics_tx.subscribe()
+    }
+
+    /// Counts input the controlled side refused to inject.
+    pub fn note_dropped(&self, count: u64) {
+        self.dropped_remote.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Current diagnostics, computed now.
+    pub fn diagnostics(&self) -> Diagnostics {
+        diagnostics_of(&self.router, &self.dropped_remote, self.started)
+    }
+
+    /// Publishes fresh diagnostics every couple of seconds while the
+    /// service lives.
+    fn spawn_diagnostics_ticker(&self) {
+        let router = Arc::downgrade(&self.router);
+        let dropped = Arc::clone(&self.dropped_remote);
+        let started = self.started;
+        let tx = self.diagnostics_tx.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(2));
+            loop {
+                tick.tick().await;
+                let Some(router) = router.upgrade() else {
+                    return;
+                };
+                tx.send_replace(diagnostics_of(&router, &dropped, started));
+            }
+        });
     }
 
     pub fn watch_screen_layout(&self) -> watch::Receiver<ScreenLayout> {
@@ -1849,6 +1892,20 @@ impl Drop for IpcClientGuard {
     fn drop(&mut self) {
         self.counter.fetch_sub(1, Ordering::Relaxed);
     }
+}
+
+fn diagnostics_of(
+    router: &InputRouter,
+    dropped_remote: &AtomicU64,
+    started: std::time::Instant,
+) -> Diagnostics {
+    let stats = router.stats();
+    Diagnostics::from_samples(
+        stats.switch_latencies_ms,
+        stats.events_forwarded,
+        stats.events_dropped + dropped_remote.load(Ordering::Relaxed),
+        started.elapsed().as_secs(),
+    )
 }
 
 /// A claimed link slot (see [`DaemonService::register_link`]): the

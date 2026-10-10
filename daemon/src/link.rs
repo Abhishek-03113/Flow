@@ -282,9 +282,11 @@ async fn controlled_loop(
                     }
                     Err(_) => break,
                     Ok(message) => {
+                        let dropped_before = endpoint.dropped;
                         if let Some(entered) = endpoint.handle(&message) {
                             env.service.set_entered(entered);
                         }
+                        env.service.note_dropped(endpoint.dropped - dropped_before);
                     }
                 }
             }
@@ -385,21 +387,28 @@ impl ControlledEndpoint {
 
     fn inject(&mut self, event: &InputEvent) {
         match self.injector.inject(event) {
-            Ok(()) => match event {
-                InputEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) => {
-                    self.held_keys.insert(key.clone());
+            Ok(()) => {
+                crate::hop!(
+                    stage = "injected",
+                    role = "receiver",
+                    "event injected into this machine"
+                );
+                match event {
+                    InputEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) => {
+                        self.held_keys.insert(key.clone());
+                    }
+                    InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
+                        self.held_keys.remove(key);
+                    }
+                    InputEvent::Mouse(MouseEvent::ButtonDown { button, .. }) => {
+                        self.held_buttons.insert(*button);
+                    }
+                    InputEvent::Mouse(MouseEvent::ButtonUp { button, .. }) => {
+                        self.held_buttons.remove(button);
+                    }
+                    InputEvent::Mouse(_) => {}
                 }
-                InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) => {
-                    self.held_keys.remove(key);
-                }
-                InputEvent::Mouse(MouseEvent::ButtonDown { button, .. }) => {
-                    self.held_buttons.insert(*button);
-                }
-                InputEvent::Mouse(MouseEvent::ButtonUp { button, .. }) => {
-                    self.held_buttons.remove(button);
-                }
-                InputEvent::Mouse(_) => {}
-            },
+            }
             Err(err) => crate::logging::product::error("inject input", &err),
         }
     }

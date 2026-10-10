@@ -41,6 +41,7 @@ async fn main() {
     config.discovery = Some(DiscoveryConfig {
         port: env_port("FLOW_DISCOVERY_PORT").unwrap_or(DISCOVERY_PORT),
         targets: discovery_targets(),
+        announce_interval: std::time::Duration::from_secs(5),
     });
 
     let engine = match Engine::start(config).await {

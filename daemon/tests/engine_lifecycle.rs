@@ -26,6 +26,7 @@ fn config(dir: &std::path::Path, os: HostOs) -> EngineConfig {
     config.discovery = Some(DiscoveryConfig {
         port: 0,
         targets: Some(Vec::new()),
+        announce_interval: std::time::Duration::from_secs(5),
     });
     config
 }

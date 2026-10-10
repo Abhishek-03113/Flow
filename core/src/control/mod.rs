@@ -78,8 +78,67 @@ impl ControlState {
     }
 }
 
+/// What the Advanced settings page shows about how the engine is doing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Diagnostics {
+    /// Time from a switch request to the target being told to take over;
+    /// `null` until a switch happened.
+    pub switch_latency_ms_p50: Option<f64>,
+    pub switch_latency_ms_p95: Option<f64>,
+    pub events_forwarded: u64,
+    pub events_dropped: u64,
+    pub uptime_s: u64,
+}
+
+impl Diagnostics {
+    pub fn from_samples(
+        mut latencies_ms: Vec<f64>,
+        events_forwarded: u64,
+        events_dropped: u64,
+        uptime_s: u64,
+    ) -> Self {
+        latencies_ms.sort_by(f64::total_cmp);
+        Self {
+            switch_latency_ms_p50: percentile(&latencies_ms, 50),
+            switch_latency_ms_p95: percentile(&latencies_ms, 95),
+            events_forwarded,
+            events_dropped,
+            uptime_s,
+        }
+    }
+}
+
+/// Nearest-rank percentile of an ascending sample.
+fn percentile(sorted: &[f64], pct: usize) -> Option<f64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let rank = (pct * sorted.len()).div_ceil(100).max(1);
+    Some(sorted[rank - 1])
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn percentiles_use_the_nearest_rank() {
+        let samples: Vec<f64> = (1..=100).map(f64::from).collect();
+        let d = Diagnostics::from_samples(samples, 5, 1, 9);
+        assert_eq!(d.switch_latency_ms_p50, Some(50.0));
+        assert_eq!(d.switch_latency_ms_p95, Some(95.0));
+        assert_eq!(
+            (d.events_forwarded, d.events_dropped, d.uptime_s),
+            (5, 1, 9)
+        );
+        assert_eq!(
+            Diagnostics::from_samples(vec![], 0, 0, 0).switch_latency_ms_p50,
+            None
+        );
+        assert_eq!(
+            Diagnostics::from_samples(vec![7.0], 0, 0, 0).switch_latency_ms_p95,
+            Some(7.0)
+        );
+    }
+
     use super::*;
     use serde_json::json;
 

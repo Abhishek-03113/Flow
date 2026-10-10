@@ -2,7 +2,7 @@
 //! the real `flow-daemon` service and WebSocket listener, spawned
 //! in-process (not a subprocess), driven by a raw `tokio-tungstenite`
 //! client asserting the exact JSON shape of a full session — connect,
-//! the 9 initial events, one of each of the 11 commands, and at least 2
+//! the 10 initial events, one of each of the 11 commands, and at least 2
 //! error-code paths. The Rust-side equivalent of what track D proves
 //! from the Dart side against a real daemon.
 
@@ -101,7 +101,7 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
     let addr = spawn_daemon().await;
     let mut ws = connect(addr).await;
 
-    // 1. Connect -> exactly 9 initial events, in the fixed order, before
+    // 1. Connect -> exactly 10 initial events, in the fixed order, before
     // anything else — "connecting... is the initial fetch".
     let expected_initial_events = [
         "devices_changed",
@@ -113,6 +113,7 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
         "control_state_changed",
         "remap_rules_changed",
         "screen_layout_changed",
+        "diagnostics_changed",
     ];
     for expected in expected_initial_events {
         let value = recv_json(&mut ws).await;

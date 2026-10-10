@@ -122,6 +122,7 @@ pub async fn handle_connection(
     let mut control_state_rx = service.watch_control_state();
     let mut remap_rules_rx = service.watch_remap_rules();
     let mut layout_rx = service.watch_screen_layout();
+    let mut diagnostics_rx = service.watch_diagnostics();
 
     // "Connecting to the channel and subscribing IS the initial fetch"
     // (daemon-ipc.md) — one Event per watch* stream's current value,
@@ -200,8 +201,25 @@ pub async fn handle_connection(
         return;
     }
 
+    diagnostics_rx.borrow_and_update();
+    if send_event(&mut sink, "diagnostics_changed", &service.diagnostics())
+        .await
+        .is_err()
+    {
+        return;
+    }
+
     loop {
         tokio::select! {
+            changed = diagnostics_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let value = diagnostics_rx.borrow_and_update().clone();
+                if send_event(&mut sink, "diagnostics_changed", &value).await.is_err() {
+                    break;
+                }
+            }
             changed = layout_rx.changed() => {
                 if changed.is_err() {
                     break;
@@ -414,8 +432,8 @@ mod tests {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
 
-        // Drain the 9 initial events.
-        for _ in 0..9 {
+        // Drain the 10 initial events.
+        for _ in 0..10 {
             ws.next().await.expect("frame").expect("ok frame");
         }
 
@@ -552,7 +570,7 @@ mod tests {
     async fn an_oversized_frame_ends_the_connection_instead_of_being_processed() {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
-        for _ in 0..9 {
+        for _ in 0..10 {
             ws.next().await.expect("frame").expect("initial event");
         }
 
