@@ -1730,6 +1730,14 @@ impl DaemonService {
                 peer = %device_id.0,
                 "inbound peer connection is an already-trusted device; handing off to the pipeline"
             );
+            // A peer this device refused dials again only after its role
+            // changed: dial it back. When this side is the designated
+            // dialer (`connection_precedence`) this inbound connection is
+            // dropped, and without this the pair would never relink.
+            self.refused_peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&device_id);
             return Ok(IncomingPeerConnection::TrustedPeer(
                 session,
                 device_id,
