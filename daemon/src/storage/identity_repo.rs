@@ -15,7 +15,7 @@
 use rand::Rng;
 use rusqlite::OptionalExtension;
 
-use super::Storage;
+use super::{Storage, StorageError};
 
 /// Raw persisted key material: 32 bytes each, matching an ed25519
 /// keypair's byte layout so track H1 can adopt these bytes directly.
@@ -37,7 +37,7 @@ impl IdentityRepo {
 
     /// Loads the persisted identity, generating and persisting a fresh
     /// one on an empty `identity` table (first run).
-    pub async fn load_or_generate(&self) -> IdentityKeyBytes {
+    pub async fn load_or_generate(&self) -> Result<IdentityKeyBytes, StorageError> {
         self.storage
             .with_connection(|conn| {
                 let existing = conn
@@ -51,20 +51,18 @@ impl IdentityRepo {
                             })
                         },
                     )
-                    .optional()
-                    .expect("query identity row");
+                    .optional()?;
 
                 match existing {
-                    Some(keys) => keys,
+                    Some(keys) => Ok(keys),
                     None => {
                         let keys = generate();
                         conn.execute(
                             "INSERT INTO identity (id, public_key, private_key)
                              VALUES (1, ?1, ?2)",
                             rusqlite::params![keys.public_key, keys.private_key],
-                        )
-                        .expect("insert identity row");
-                        keys
+                        )?;
+                        Ok(keys)
                     }
                 }
             })
@@ -93,11 +91,11 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let repo = IdentityRepo::new(storage);
 
-        let first = repo.load_or_generate().await;
+        let first = repo.load_or_generate().await.expect("load identity");
         assert_eq!(first.public_key.len(), 32);
         assert_eq!(first.private_key.len(), 32);
 
-        let second = repo.load_or_generate().await;
+        let second = repo.load_or_generate().await.expect("load identity");
         assert_eq!(first, second);
     }
 
@@ -113,8 +111,8 @@ mod tests {
         let repo_a = IdentityRepo::new(storage.clone());
         let repo_b = IdentityRepo::new(storage);
 
-        let generated = repo_a.load_or_generate().await;
-        let loaded = repo_b.load_or_generate().await;
+        let generated = repo_a.load_or_generate().await.expect("load identity");
+        let loaded = repo_b.load_or_generate().await.expect("load identity");
         assert_eq!(generated, loaded);
     }
 }

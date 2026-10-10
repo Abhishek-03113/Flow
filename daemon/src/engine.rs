@@ -138,7 +138,7 @@ impl Engine {
                     backend: Some(Arc::clone(&config.backend)),
                 },
             )
-            .await
+            .await?
         };
         let service = Arc::new(
             service

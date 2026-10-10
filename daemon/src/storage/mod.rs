@@ -24,13 +24,25 @@ use chrono::{DateTime, Utc};
 use rusqlite::Connection;
 use tokio::sync::Mutex;
 
-/// Everything that can go wrong opening or migrating the database.
+/// Everything that can go wrong talking to the database: opening or
+/// migrating it, running a query (full disk, locked file, ...), or the
+/// blocking task that runs the query failing.
 #[derive(Debug, thiserror::Error)]
 pub enum StorageError {
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error("migration error: {0}")]
     Migration(#[from] rusqlite_migration::Error),
+    #[error("storage task failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
+    #[error("stored value could not be (de)serialized: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+impl From<StorageError> for flow_core::error::FlowError {
+    fn from(err: StorageError) -> Self {
+        flow_core::error::FlowError::Internal(format!("storage: {err}"))
+    }
 }
 
 /// A handle to the daemon's single SQLite connection. Cheap to clone —
@@ -47,8 +59,7 @@ impl Storage {
         let path = path.as_ref().to_path_buf();
         let conn =
             tokio::task::spawn_blocking(move || Self::open_and_configure(Connection::open(path)?))
-                .await
-                .expect("storage init task panicked")?;
+                .await??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -60,8 +71,7 @@ impl Storage {
     pub async fn open_in_memory() -> Result<Self, StorageError> {
         let conn =
             tokio::task::spawn_blocking(|| Self::open_and_configure(Connection::open_in_memory()?))
-                .await
-                .expect("storage init task panicked")?;
+                .await??;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -78,9 +88,9 @@ impl Storage {
     /// serialized through the connection's mutex. This is the single entry
     /// point every repository (`SettingsRepo`, `DeviceRepo`, ...) builds
     /// its queries on top of.
-    pub async fn with_connection<F, T>(&self, f: F) -> T
+    pub async fn with_connection<F, T>(&self, f: F) -> Result<T, StorageError>
     where
-        F: FnOnce(&mut Connection) -> T + Send + 'static,
+        F: FnOnce(&mut Connection) -> Result<T, StorageError> + Send + 'static,
         T: Send + 'static,
     {
         let conn = Arc::clone(&self.conn);
@@ -88,8 +98,7 @@ impl Storage {
             let mut guard = conn.blocking_lock();
             f(&mut guard)
         })
-        .await
-        .expect("storage worker task panicked")
+        .await?
     }
 }
 
@@ -111,10 +120,10 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open in-memory db");
         let journal_mode: String = storage
             .with_connection(|conn| {
-                conn.pragma_query_value(None, "journal_mode", |row| row.get(0))
-                    .expect("read journal_mode")
+                Ok(conn.pragma_query_value(None, "journal_mode", |row| row.get(0))?)
             })
-            .await;
+            .await
+            .expect("read journal_mode");
         // SQLite silently keeps in-memory DBs in "memory" mode regardless
         // of the WAL pragma — this just proves the pragma call didn't error.
         assert_eq!(journal_mode, "memory");
@@ -125,10 +134,11 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open in-memory db");
         storage
             .with_connection(|conn| {
-                conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", [])
-                    .expect("create test table");
+                conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)", [])?;
+                Ok(())
             })
-            .await;
+            .await
+            .expect("create test table");
 
         let mut handles = Vec::new();
         for i in 0..16 {
@@ -136,10 +146,11 @@ mod tests {
             handles.push(tokio::spawn(async move {
                 storage
                     .with_connection(move |conn| {
-                        conn.execute("INSERT INTO t (id) VALUES (?1)", [i])
-                            .expect("insert row");
+                        conn.execute("INSERT INTO t (id) VALUES (?1)", [i])?;
+                        Ok(())
                     })
-                    .await;
+                    .await
+                    .expect("insert row");
             }));
         }
         for handle in handles {
@@ -148,10 +159,10 @@ mod tests {
 
         let count: i64 = storage
             .with_connection(|conn| {
-                conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))
-                    .expect("count rows")
+                Ok(conn.query_row("SELECT COUNT(*) FROM t", [], |row| row.get(0))?)
             })
-            .await;
+            .await
+            .expect("count rows");
         assert_eq!(count, 16);
     }
 }
