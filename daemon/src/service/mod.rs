@@ -1545,10 +1545,19 @@ impl DaemonService {
             }
             self.incoming_request_tx.send_replace(Some(info));
 
+            // The initiator sends nothing while it waits for our answer, so
+            // anything arriving now (in practice: the connection closing
+            // because its user cancelled) withdraws the request.
+            let mut withdrawn = false;
             let decision = tokio::select! {
                 received = rx => received.unwrap_or(PairingDecision::Reject),
                 _ = tokio::time::sleep(PAIRING_DECISION_TIMEOUT) => {
                     tracing::info!("incoming pairing request timed out with no decision");
+                    PairingDecision::Reject
+                }
+                _ = channel.recv() => {
+                    tracing::info!("the other computer withdrew its pairing request");
+                    withdrawn = true;
                     PairingDecision::Reject
                 }
             };
@@ -1558,6 +1567,9 @@ impl DaemonService {
                 state.incoming_request = None;
             }
             self.incoming_request_tx.send_replace(None);
+            if withdrawn {
+                return Ok(());
+            }
             decision
         };
 

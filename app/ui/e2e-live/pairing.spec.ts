@@ -90,3 +90,21 @@ test('1. first run: onboarding, role, pairing with matching codes, Home shows th
   await mac.tap('Q');
   await expect.poll(async () => keyLog((await pc.virtualIo()).injected)).toEqual(['down Q', 'up Q']);
 });
+
+test('1b. cancelling while the other computer decides withdraws the request there too', async ({ live }) => {
+  const mac = live.daemon('Mac');
+  const macPage = await live.open('Mac', { hash: '#/devices' });
+  const pcPage = await live.open('PC');
+
+  await macPage.getByRole('button', { name: 'Add Computer…' }).first().click();
+  await macPage.getByRole('button', { name: 'Connect to PC' }).click({ timeout: 20_000 });
+  const requesting = macPage.getByTestId('pairing-requesting');
+  await expect(requesting).toBeVisible();
+  await expect(pcPage.getByTestId('incoming-request')).toBeVisible();
+
+  await requesting.getByRole('button', { name: 'Cancel' }).click();
+  await expect(pcPage.getByTestId('incoming-request')).toBeHidden();
+  // Back to the list of nearby computers, nothing paired.
+  await expect(macPage.getByRole('button', { name: 'Connect to PC' })).toBeVisible({ timeout: 20_000 });
+  expect(mac.devices().filter((d) => !d.is_local)).toEqual([]);
+});
