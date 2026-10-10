@@ -1088,6 +1088,25 @@ impl DaemonService {
             .get(device_id)
             .and_then(|d| d.role);
         let same_role = peer_role == Some(self.local_role());
+        // A redial that drops before its Hello (lost, timed out, or closed as a
+        // duplicate connection) says nothing about the peer: while the roles
+        // still conflict, keep the refusal the device is already showing.
+        let standing_refusal = !refused
+            && same_role
+            && self
+                .state
+                .read()
+                .await
+                .devices
+                .get(device_id)
+                .and_then(|d| d.link_error.as_deref())
+                == Some(link_error::ROLE_CONFLICT);
+        let refused = refused || standing_refusal;
+        let error = if standing_refusal {
+            Some(link_error::ROLE_CONFLICT)
+        } else {
+            error
+        };
         if (refused && same_role) || error == Some(link_error::PROTOCOL_MISMATCH) {
             self.refused_peers
                 .lock()
