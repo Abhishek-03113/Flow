@@ -68,3 +68,50 @@ test('2. switching from the UI: controller drives the PC, keys land only there, 
   expect((await mac.virtualIo()).suppressed).toBe(false);
   expect(keyLog((await pc.virtualIo()).injected)).toEqual([]);
 });
+
+test('3. the switch hotkey on the controller updates both pages live', async ({ live }) => {
+  const mac = live.daemon('Mac');
+  const pc = live.daemon('PC');
+  const macPage = await live.open('Mac');
+  const pcPage = await live.open('PC');
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+
+  // The harness gives a Mac controller the F13 preset (no Scroll Lock key).
+  expect((mac.settings()?.switch_key as { keys: string[] }).keys).toEqual(['F13']);
+  await mac.clearIo();
+  await mac.chord(['F13']);
+  await expect(macPage.getByTestId('status-title')).toHaveText('Controlling PC');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('Mac is controlling this computer');
+  // The hotkey itself reaches no OS.
+  expect((await mac.virtualIo()).delivered_locally).toEqual([]);
+  expect((await pc.virtualIo()).injected).toEqual([]);
+
+  await mac.chord(['F13']);
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('This computer is ready');
+  expect(mac.controlState()?.active_screen).toBe('local');
+});
+
+test('4. "Release control" on the controlled page sends the controller home', async ({ live }) => {
+  const mac = live.daemon('Mac');
+  const pc = live.daemon('PC');
+  const macPage = await live.open('Mac');
+  const pcPage = await live.open('PC');
+  await macPage.getByRole('button', { name: 'Switch to PC' }).click();
+  await expect(pcPage.getByTestId('status-title')).toHaveText('Mac is controlling this computer');
+
+  await pcPage.getByRole('button', { name: 'Release control' }).click();
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('This computer is ready');
+  await expect.poll(() => mac.controlState()?.active_screen).toBe('local');
+  await expect.poll(() => pc.controlState()?.entered).toBe(false);
+
+  // Typing on the controller stays on the controller now.
+  await mac.clearIo();
+  await pc.clearIo();
+  await mac.tap('K');
+  await expect
+    .poll(async () => keyLog((await mac.virtualIo()).delivered_locally))
+    .toEqual(['down K', 'up K']);
+  expect((await pc.virtualIo()).injected).toEqual([]);
+});
