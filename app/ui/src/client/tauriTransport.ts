@@ -13,15 +13,17 @@ export const isTauriRuntime = (): boolean => typeof window !== 'undefined' && '_
 export class TauriTransport implements Transport {
   readonly kind = 'tauri' as const;
   private unlisten: (() => void) | null = null;
-  private closed = false;
+  /** Bumped by every connect/close so a stale async connect (React StrictMode) undoes itself. */
+  private generation = 0;
 
   connect(h: TransportHandlers): void {
+    const generation = ++this.generation;
     h.onStatus('connecting');
     void (async () => {
       try {
         const { listen } = await import('@tauri-apps/api/event');
         const un = await listen<WireEvent>(TAURI_EVENT, (e) => h.onEvent(e.payload));
-        if (this.closed) return un();
+        if (generation !== this.generation) return un();
         this.unlisten = un;
         await this.send('resync');
         h.onStatus('open');
@@ -45,7 +47,8 @@ export class TauriTransport implements Transport {
   }
 
   close(): void {
-    this.closed = true;
+    this.generation++;
     this.unlisten?.();
+    this.unlisten = null;
   }
 }

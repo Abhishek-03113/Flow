@@ -14,7 +14,7 @@ export interface TransportHandlers {
 /**
  * How `FlowClient` reaches an engine. Three implementations: Tauri (IPC),
  * WebSocket (daemon contract) and Mock (in-memory simulation).
- * `send` resolves with the ack's optional `data` and rejects with `FlowCommandError`.
+ * `send` resolves with the ack's optional `result` and rejects with `FlowCommandError`.
  */
 export interface Transport {
   readonly kind: 'tauri' | 'websocket' | 'mock';

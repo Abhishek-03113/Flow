@@ -4,7 +4,7 @@ import type { Transport, TransportHandlers, WireEvent } from './transport';
 interface Ack {
   id: string;
   ok: boolean;
-  data?: unknown;
+  result?: unknown;
   error?: { code: string; message: string };
 }
 
@@ -20,7 +20,7 @@ export interface WebSocketTransportOptions {
   reconnectMs?: number;
 }
 
-/** Speaks `docs/contracts/daemon-ipc.md`: `{id,command,payload}` → `{id,ok,error?}` + `{event,payload}` pushes. */
+/** Speaks `docs/contracts/daemon-ipc.md`: `{id,command,payload}` → `{id,ok,result?|error?}` + `{event,payload}` pushes. */
 export class WebSocketTransport implements Transport {
   readonly kind = 'websocket' as const;
   private ws: WebSocket | null = null;
@@ -77,7 +77,7 @@ export class WebSocketTransport implements Transport {
     const p = this.pending.get(msg.id);
     if (!p) return;
     this.pending.delete(msg.id);
-    if (msg.ok) p.resolve(msg.data);
+    if (msg.ok) p.resolve(msg.result);
     else p.reject(new FlowCommandError(msg.error?.code ?? 'unknown', msg.error?.message ?? 'Command failed'));
   }
 
