@@ -967,8 +967,12 @@ impl DaemonService {
     /// The layout this device owns: the saved one, else just its own screen.
     async fn own_layout(&self) -> ScreenLayout {
         match LayoutRepo::new(self.storage.clone()).load().await {
-            Some(layout) if layout.validate().is_ok() => layout,
-            _ => ScreenLayout::local_only(self.local_screen),
+            Ok(Some(layout)) if layout.validate().is_ok() => layout,
+            Ok(_) => ScreenLayout::local_only(self.local_screen),
+            Err(err) => {
+                tracing::warn!("could not load the screen layout: {err}");
+                ScreenLayout::local_only(self.local_screen)
+            }
         }
     }
 
