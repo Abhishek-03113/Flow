@@ -663,6 +663,7 @@ version = "0.1.0"
 dependencies = [
  "core-foundation",
  "core-graphics",
+ "directories",
  "evdev",
  "flow-core",
  "foreign-types",

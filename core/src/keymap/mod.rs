@@ -6,6 +6,8 @@
 //! and lookup are OS-independent — the per-OS difference is data. Loading
 //! files from disk lives in `flow_platform::keymap`.
 
+pub mod remap;
+
 use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
@@ -113,9 +115,10 @@ impl Keymap {
         Self::parse(text).expect("embedded keymap is valid (checked by tests)")
     }
 
-    /// Applies a user override: its entries replace any default entry that
+    /// Applies a user override file: its entries replace any default entry that
     /// shares their code or any of their names; everything else is kept.
-    pub fn with_overrides(&self, user: KeymapFile) -> Result<Self, KeymapError> {
+    pub fn with_overrides(&self, user_toml: &str) -> Result<Self, KeymapError> {
+        let user: KeymapFile = toml::from_str(user_toml)?;
         if user.os != self.file.os {
             return Err(KeymapError::OsMismatch {
                 expected: self.file.os,
@@ -273,11 +276,11 @@ mod tests {
     #[test]
     fn overrides_replace_by_name_or_code_and_keep_the_rest() {
         let base = Keymap::embedded(HostOs::Linux);
-        let user: KeymapFile = toml::from_str(
-            "os = \"linux\"\nkeys = [{ name = \"CAPS_LOCK\", code = 1 }, { name = \"TAB\", code = 30 }]",
-        )
-        .unwrap();
-        let merged = base.with_overrides(user).unwrap();
+        let merged = base
+            .with_overrides(
+                "os = \"linux\"\nkeys = [{ name = \"CAPS_LOCK\", code = 1 }, { name = \"TAB\", code = 30 }]",
+            )
+            .unwrap();
         // CAPS_LOCK moved onto code 1, displacing ESCAPE which sat there.
         assert_eq!(merged.code_for_name("CAPS_LOCK"), Some(1));
         assert_eq!(merged.name_for_code(1), Some("CAPS_LOCK"));
@@ -292,9 +295,8 @@ mod tests {
 
     #[test]
     fn overrides_for_another_os_are_rejected() {
-        let user: KeymapFile = toml::from_str("os = \"macos\"").unwrap();
         let err = Keymap::embedded(HostOs::Linux)
-            .with_overrides(user)
+            .with_overrides("os = \"macos\"")
             .unwrap_err();
         assert!(matches!(err, KeymapError::OsMismatch { .. }));
     }
