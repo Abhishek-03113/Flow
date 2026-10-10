@@ -9,6 +9,8 @@
   "include": [
     "src",
     "e2e",
+    "e2e-live",
+    "playwright.live.config.ts",
     "../../design-system/src",
     "../../design-system/gallery",
     "vite.config.ts",

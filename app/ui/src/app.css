@@ -68,6 +68,16 @@
   color: #0b4fb3;
 }
 
+/* The design system's prominent hover/pressed colours are the accent itself:
+   on the blue live card that would turn the button blue-on-blue. */
+.fl-status--live .fl-btn--prominent:hover:not(:disabled) {
+  background: #eaf1ff;
+}
+
+.fl-status--live .fl-btn--prominent:active:not(:disabled) {
+  background: #d6e4ff;
+}
+
 .fl-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

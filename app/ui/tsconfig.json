@@ -21,6 +21,8 @@
     "../../design-system/src",
     "../../design-system/gallery",
     "e2e",
+    "e2e-live",
+    "playwright.live.config.ts",
     "vite.config.ts",
     "playwright.config.ts",
     "eslint.config.js"
