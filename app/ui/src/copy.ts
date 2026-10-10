@@ -92,5 +92,7 @@ export const trayName = (os: HostOs): string => (os === 'macos' ? 'menu bar' : '
 /** A latency in milliseconds, or a dash while nothing has been measured. */
 export function formatMs(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
+  // The engine measures the switch itself, which on a fast machine is well under 1 ms.
+  if (ms < 1) return '<1 ms';
   return `${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
 }
