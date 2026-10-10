@@ -1,5 +1,11 @@
 # Contract Changelog
 
+## 0.2.2 — behaviour found by the live UI suite (no shape changes)
+
+- **Refused links are `error`, not `reconnecting`**: a link refused for `role_conflict` or `protocol_mismatch` sets the link state to `error` (the device's `link_error` says why) and the engine stops dialling that peer until this device's role changes; the peer, when its role changes, dials back and the link comes up with no `retry_connection`. A controlled device refusing a second controller is the exception: that controller keeps dialling, since the controlled device may accept it once its current controller leaves.
+- **`Device.role` / `os` follow the refused `Hello`**: a peer that changed its role shows its new role even though no link came up.
+- **Incoming pairing requests are withdrawn** when the initiator cancels (its connection closes): `incoming_pairing_request_changed` goes back to `null`.
+
 ## 0.2.1 — embedded engine and honest permissions (additive, one rename)
 
 The desktop app now runs the engine in-process; the same command/event contract is served by the Tauri bridge (`flow_command` + `flow://event`) and, for the headless daemon and debugging (`FLOW_DEV_WS=1`), by the WebSocket.

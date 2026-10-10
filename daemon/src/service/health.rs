@@ -109,6 +109,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_role_conflict_is_an_error_not_a_reconnect_and_is_not_redialled() {
+        use flow_core::control::Role;
+        use flow_core::device::{HostOs, ScreenSize};
+
+        let service = service().await;
+        let id = DeviceId("d2".to_string());
+        let link = service.connect_peer_for_test("d2").await;
+        drop(link);
+        // The peer came back as a controller too and was refused.
+        let peer = super::super::PeerInfo {
+            role: Role::Controller,
+            os: HostOs::Windows,
+            screen: ScreenSize {
+                width: 1920,
+                height: 1080,
+            },
+        };
+        service.note_refused_peer(&id, &peer).await;
+        service.link_down(&id, Some("role_conflict")).await;
+
+        assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Error);
+        let device = service
+            .watch_devices()
+            .borrow()
+            .iter()
+            .find(|d| d.id == id)
+            .cloned()
+            .expect("device");
+        assert_eq!(device.role, Some(Role::Controller), "the role it announced");
+        assert_eq!(device.link_error.as_deref(), Some("role_conflict"));
+        let refused = |s: &DaemonService| s.refused_peers.lock().unwrap().contains(&id);
+        assert!(refused(&service), "not redialled");
+
+        service.set_role(Role::Controlled).await.expect("role");
+        assert!(!refused(&service), "a role change dials again");
+    }
+
+    #[tokio::test]
     async fn auto_connect_paired_devices_gates_dialling() {
         let service = service().await;
         assert!(service.may_dial());

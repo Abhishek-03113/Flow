@@ -528,6 +528,11 @@ impl Runtime {
         if self.link.service.has_link_to_instance(instance_id) {
             return;
         }
+        // Refused for its role: redialling cannot help until a role changes
+        // (ours clears this; a peer that changes dials us instead).
+        if self.link.service.refused_instance(instance_id) {
+            return;
+        }
 
         let runtime = self.clone();
         self.tasks.spawn(async move {

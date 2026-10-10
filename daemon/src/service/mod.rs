@@ -373,6 +373,11 @@ pub struct DaemonService {
     /// Set by `cancel_reconnect`: stop redialling paired computers until
     /// the user retries (or a computer connects to us).
     redial_paused: Arc<AtomicBool>,
+    /// Peers whose link was refused (`role_conflict`, `protocol_mismatch`):
+    /// not redialled, since that cannot help until a role changes. Cleared
+    /// when this device's role changes; the peer, when its role changes,
+    /// dials us and the link comes up.
+    refused_peers: Arc<std::sync::Mutex<HashSet<DeviceId>>>,
     /// When each peer's `last_seen` was last published, so the heartbeat
     /// does not flood `devices_changed`.
     heard_published: Arc<std::sync::Mutex<HashMap<DeviceId, std::time::Instant>>>,
@@ -499,6 +504,7 @@ impl DaemonService {
             keymap_dir: options.keymap_dir,
             backend: options.backend,
             redial_paused: Arc::new(AtomicBool::new(false)),
+            refused_peers: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
             export_dir: None,
             log_tail: None,
@@ -702,6 +708,11 @@ impl DaemonService {
             return Ok(());
         }
         let _ = self.router.switch_to(ActiveScreen::Local);
+        // A new role may resolve every refusal: dial those peers again.
+        self.refused_peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         self.apply_settings_patch(SettingsPatch {
             role: Some(role),
             ..Default::default()
@@ -883,6 +894,17 @@ impl DaemonService {
             .contains_key(&id)
     }
 
+    /// Whether the peer announcing `instance_id` refused (or was refused)
+    /// a link and no role has changed here since: dialling it again would
+    /// only be refused again.
+    pub fn refused_instance(&self, instance_id: &str) -> bool {
+        let id = DeviceId(format!("pk:{instance_id}"));
+        self.refused_peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&id)
+    }
+
     /// Test fixture: a live controlled-peer link to an already-listed
     /// device, without any network. Keep the registration alive for as
     /// long as the link should be.
@@ -961,7 +983,22 @@ impl DaemonService {
         })
         .await;
         self.redial_paused.store(false, Ordering::Relaxed);
+        self.refused_peers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(device_id);
         self.set_link_state(DaemonLinkState::Connected);
+    }
+
+    /// A peer's `Hello` was refused (`check_peer`): record the role and OS
+    /// it announced, so the device row explains the conflict with current facts.
+    pub async fn note_refused_peer(&self, device_id: &DeviceId, peer: &PeerInfo) {
+        self.update_device(device_id, |device| {
+            device.os = peer.os;
+            device.role = Some(peer.role);
+            device.last_seen = Utc::now();
+        })
+        .await;
     }
 
     /// A link ended. `error` is why, when it ended abnormally.
@@ -977,6 +1014,24 @@ impl DaemonService {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(device_id);
+        let refused = matches!(error, Some("role_conflict" | "protocol_mismatch"));
+        // Only a peer with this device's own role stays refused until a role
+        // changes; a controlled device that already has another controller
+        // may accept this one once that controller leaves, so keep dialling.
+        let peer_role = self
+            .state
+            .read()
+            .await
+            .devices
+            .get(device_id)
+            .and_then(|d| d.role);
+        let same_role = peer_role == Some(self.local_role());
+        if (refused && same_role) || error == Some("protocol_mismatch") {
+            self.refused_peers
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(device_id.clone());
+        }
         self.update_device(device_id, |device| {
             device.state = if error.is_some() {
                 DeviceState::Error
@@ -995,10 +1050,15 @@ impl DaemonService {
             .any(|link| link.peer_role.is_some());
         if !any_live {
             // Discovery keeps announcing and will redial on its own, so
-            // `Reconnecting` while auto-reconnect is on.
+            // `Reconnecting` while auto-reconnect is on. A refusal (two
+            // controllers, an incompatible version) is not a lost link:
+            // redialling cannot fix it until someone changes something, so
+            // it is `Error`, explained by the device's `link_error`.
             let auto_reconnect = self.settings_tx.borrow().auto_reconnect
                 && !self.redial_paused.load(Ordering::Relaxed);
-            self.set_link_state(if auto_reconnect {
+            self.set_link_state(if refused {
+                DaemonLinkState::Error
+            } else if auto_reconnect {
                 DaemonLinkState::Reconnecting
             } else {
                 DaemonLinkState::Disconnected

@@ -48,7 +48,7 @@ export function linkErrorCopy(
         title: 'Both computers are set up the same way',
         detail:
           localRole === 'controller'
-            ? `${device.name} also shares its keyboard and mouse. Set one of them to "Controlled by another computer".`
+            ? `${device.name} also shares its keyboard and mouse. On one of them, choose "Control this computer from another one" in General.`
             : `${device.name} is also set to be controlled. One of you needs to share the keyboard and mouse.`,
         action: 'role',
       };
