@@ -142,8 +142,23 @@ mod tests {
         let refused = |s: &DaemonService| s.refused_peers.lock().unwrap().contains(&id);
         assert!(refused(&service), "not redialled");
 
+        // A later redial that drops before its Hello must not hide the conflict.
+        service.link_down(&id, Some("connection_lost")).await;
+        assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Error);
+        let error = |s: &DaemonService| {
+            s.watch_devices()
+                .borrow()
+                .iter()
+                .find(|d| d.id == id)
+                .and_then(|d| d.link_error.clone())
+        };
+        assert_eq!(error(&service).as_deref(), Some("role_conflict"));
+
         service.set_role(Role::Controlled).await.expect("role");
         assert!(!refused(&service), "a role change dials again");
+        // Once the roles differ, a lost link is reported as such again.
+        service.link_down(&id, Some("connection_lost")).await;
+        assert_eq!(error(&service).as_deref(), Some("connection_lost"));
     }
 
     #[tokio::test]
