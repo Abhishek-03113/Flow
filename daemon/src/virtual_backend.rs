@@ -53,6 +53,13 @@ impl VirtualBackend {
         Some(disposition)
     }
 
+    /// Attaches `service`'s router as this machine's capture, as the
+    /// engine does for a controller.
+    pub fn start_capture_for_router(&self, service: &crate::service::DaemonService) {
+        let sink = Arc::clone(service.router()) as Arc<dyn CaptureSink>;
+        *lock(&self.shared.sink) = Some(sink);
+    }
+
     /// Moves the virtual pointer, for backends driving edge detection.
     pub fn set_cursor(&self, position: Option<(i32, i32)>) {
         *lock(&self.shared.cursor) = position;

@@ -498,3 +498,393 @@ pub fn event_kind(event: &InputEvent) -> &'static str {
         InputEvent::Mouse(MouseEvent::Scroll { .. }) => "mouse_scroll",
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use flow_core::switch_key::presets;
+
+    fn key(name: &str, down: bool) -> InputEvent {
+        InputEvent::Keyboard(if down {
+            KeyboardEvent::KeyDown {
+                key: name.to_string(),
+                modifiers: vec![],
+                timestamp_ms: 0,
+            }
+        } else {
+            KeyboardEvent::KeyUp {
+                key: name.to_string(),
+                modifiers: vec![],
+                timestamp_ms: 0,
+            }
+        })
+    }
+
+    fn button(down: bool) -> InputEvent {
+        InputEvent::Mouse(if down {
+            MouseEvent::ButtonDown {
+                button: MouseButton::Left,
+                timestamp_ms: 0,
+            }
+        } else {
+            MouseEvent::ButtonUp {
+                button: MouseButton::Left,
+                timestamp_ms: 0,
+            }
+        })
+    }
+
+    fn motion(dx: i32, dy: i32) -> InputEvent {
+        InputEvent::Mouse(MouseEvent::Move {
+            dx,
+            dy,
+            timestamp_ms: 0,
+        })
+    }
+
+    fn router() -> InputRouter {
+        let router = InputRouter::new(&FlowSettings::defaults(), Vec::new());
+        router.set_debounce_window(Duration::ZERO);
+        router
+    }
+
+    fn id(name: &str) -> DeviceId {
+        DeviceId(name.to_string())
+    }
+
+    fn connect(router: &InputRouter, name: &str) -> mpsc::UnboundedReceiver<LinkOut> {
+        connect_os(router, name, HostOs::Macos)
+    }
+
+    fn connect_os(
+        router: &InputRouter,
+        name: &str,
+        os: HostOs,
+    ) -> mpsc::UnboundedReceiver<LinkOut> {
+        let (outbox, inbox) = mpsc::unbounded_channel();
+        router.peer_connected(PeerSlot {
+            id: id(name),
+            os,
+            screen: ScreenSize {
+                width: 1000,
+                height: 600,
+            },
+            outbox,
+        });
+        inbox
+    }
+
+    fn drain(inbox: &mut mpsc::UnboundedReceiver<LinkOut>) -> Vec<LinkOut> {
+        std::iter::from_fn(|| inbox.try_recv().ok()).collect()
+    }
+
+    fn inputs(sent: &[LinkOut]) -> Vec<&InputEvent> {
+        sent.iter()
+            .filter_map(|m| match m {
+                LinkOut::Input(e) => Some(e),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_switch_key_cycles_local_to_each_peer_and_back() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        let mut d2 = connect(&r, "d2");
+
+        assert_eq!(r.on_event(&key("SCROLLLOCK", true)), Disposition::Swallow);
+        assert_eq!(r.active(), ActiveScreen::Remote(id("d1")));
+        assert!(r.suppressing());
+        assert!(matches!(drain(&mut d1)[..], [LinkOut::Enter { .. }]));
+        r.on_event(&key("SCROLLLOCK", false));
+
+        r.on_event(&key("SCROLLLOCK", true));
+        assert_eq!(r.active(), ActiveScreen::Remote(id("d2")));
+        assert!(r.suppressing(), "stays suppressed peer to peer");
+        assert_eq!(drain(&mut d1), vec![LinkOut::Leave]);
+        assert!(matches!(drain(&mut d2)[..], [LinkOut::Enter { .. }]));
+        r.on_event(&key("SCROLLLOCK", false));
+
+        r.on_event(&key("SCROLLLOCK", true));
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert!(!r.suppressing());
+        assert_eq!(drain(&mut d2), vec![LinkOut::Leave]);
+    }
+
+    #[test]
+    fn enter_is_queued_before_any_forwarded_input() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Swallow);
+        let sent = drain(&mut d1);
+        assert!(matches!(sent[0], LinkOut::Enter { x: 500, y: 300, .. }));
+        assert_eq!(inputs(&sent), vec![&key("A", true)]);
+    }
+
+    #[test]
+    fn local_input_passes_and_is_never_forwarded() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Pass);
+        assert_eq!(r.on_event(&motion(3, 3)), Disposition::Pass);
+        assert!(drain(&mut d1).is_empty());
+    }
+
+    #[test]
+    fn returning_home_always_works_while_input_is_suppressed() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        // The same capture still sees the hotkey although local apps don't.
+        assert_eq!(r.on_event(&key("SCROLLLOCK", true)), Disposition::Swallow);
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert!(!r.suppressing());
+        assert_eq!(drain(&mut d1).last(), Some(&LinkOut::Leave));
+    }
+
+    #[test]
+    fn the_return_home_key_jumps_straight_to_local_from_any_peer() {
+        let mut settings = FlowSettings::defaults();
+        settings.return_home_key = Some(presets()[2].clone()); // F13
+        let r = InputRouter::new(&settings, Vec::new());
+        r.set_debounce_window(Duration::ZERO);
+        let _d1 = connect(&r, "d1");
+        let mut d2 = connect(&r, "d2");
+        r.switch_to(ActiveScreen::Remote(id("d2"))).unwrap();
+
+        assert_eq!(r.on_event(&key("F13", true)), Disposition::Swallow);
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert_eq!(drain(&mut d2).last(), Some(&LinkOut::Leave));
+    }
+
+    #[test]
+    fn the_hotkey_chord_is_consumed_down_and_up_and_never_forwarded() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        assert_eq!(r.on_event(&key("SCROLLLOCK", true)), Disposition::Swallow);
+        assert_eq!(r.on_event(&key("SCROLLLOCK", false)), Disposition::Swallow);
+        assert!(inputs(&drain(&mut d1)).is_empty());
+
+        // And on the way back, while remote.
+        assert_eq!(r.on_event(&key("SCROLLLOCK", true)), Disposition::Swallow);
+        assert_eq!(r.on_event(&key("SCROLLLOCK", false)), Disposition::Swallow);
+        assert!(inputs(&drain(&mut d1)).is_empty());
+    }
+
+    #[test]
+    fn a_key_held_locally_across_a_switch_is_released_locally_not_forwarded() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Pass);
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+
+        assert_eq!(r.on_event(&key("A", false)), Disposition::Pass);
+        assert!(inputs(&drain(&mut d1)).is_empty());
+    }
+
+    #[test]
+    fn a_key_held_remotely_across_a_switch_home_is_swallowed_and_the_remote_left() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Swallow);
+        r.switch_to(ActiveScreen::Local).unwrap();
+
+        // Local apps never saw the press, so they must not see the release,
+        // and the remote already released everything on Leave.
+        assert_eq!(r.on_event(&key("A", false)), Disposition::Swallow);
+        let sent = drain(&mut d1);
+        assert_eq!(inputs(&sent), vec![&key("A", true)]);
+        assert_eq!(sent.last(), Some(&LinkOut::Leave));
+    }
+
+    #[test]
+    fn mouse_buttons_follow_the_same_up_follows_down_rule() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        // Pressed locally, released while remote.
+        assert_eq!(r.on_event(&button(true)), Disposition::Pass);
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        assert_eq!(r.on_event(&button(false)), Disposition::Pass);
+        // Pressed remotely, released after returning home.
+        assert_eq!(r.on_event(&button(true)), Disposition::Swallow);
+        r.switch_to(ActiveScreen::Local).unwrap();
+        assert_eq!(r.on_event(&button(false)), Disposition::Swallow);
+
+        assert_eq!(inputs(&drain(&mut d1)), vec![&button(true)]);
+    }
+
+    #[test]
+    fn a_release_with_no_known_press_belongs_to_this_machine() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        assert_eq!(r.on_event(&key("Z", false)), Disposition::Pass);
+        assert!(inputs(&drain(&mut d1)).is_empty());
+    }
+
+    #[test]
+    fn losing_the_active_link_returns_home_and_unsuppresses() {
+        let r = router();
+        let _d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Swallow);
+
+        r.peer_disconnected(&id("d1"));
+
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert!(!r.suppressing());
+        assert!(r.peer_ids().is_empty());
+        assert_eq!(r.on_event(&motion(1, 1)), Disposition::Pass);
+        // The orphaned release is still swallowed, never delivered locally.
+        assert_eq!(r.on_event(&key("A", false)), Disposition::Swallow);
+    }
+
+    #[test]
+    fn losing_an_inactive_link_changes_nothing_else() {
+        let r = router();
+        let _d1 = connect(&r, "d1");
+        let _d2 = connect(&r, "d2");
+        r.switch_to(ActiveScreen::Remote(id("d2"))).unwrap();
+        r.peer_disconnected(&id("d1"));
+        assert_eq!(r.active(), ActiveScreen::Remote(id("d2")));
+        assert!(r.suppressing());
+    }
+
+    #[test]
+    fn a_release_request_from_the_active_peer_goes_home() {
+        let r = router();
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        r.release_requested(&id("d1"));
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert_eq!(drain(&mut d1).last(), Some(&LinkOut::Leave));
+
+        // From a peer that isn't active it is ignored.
+        r.release_requested(&id("d1"));
+        assert_eq!(r.active(), ActiveScreen::Local);
+    }
+
+    #[test]
+    fn switching_to_a_peer_without_a_link_is_an_error_and_changes_nothing() {
+        let r = router();
+        assert_eq!(
+            r.switch_to(ActiveScreen::Remote(id("ghost"))),
+            Err(SwitchError::NotConnected(id("ghost")))
+        );
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert!(!r.suppressing());
+    }
+
+    #[test]
+    fn the_hotkey_with_no_peers_does_nothing_but_is_still_consumed() {
+        let r = router();
+        assert_eq!(r.on_event(&key("SCROLLLOCK", true)), Disposition::Swallow);
+        assert_eq!(r.active(), ActiveScreen::Local);
+    }
+
+    #[test]
+    fn repeated_matches_inside_the_debounce_window_switch_once() {
+        let r = InputRouter::new(&FlowSettings::defaults(), Vec::new());
+        let _d1 = connect(&r, "d1");
+        r.on_event(&key("SCROLLLOCK", true));
+        r.on_event(&key("SCROLLLOCK", false));
+        r.on_event(&key("SCROLLLOCK", true));
+        assert_eq!(r.active(), ActiveScreen::Remote(id("d1")));
+    }
+
+    #[test]
+    fn keyboard_stays_local_when_keyboard_sharing_is_off() {
+        let mut settings = FlowSettings::defaults();
+        settings.share_keyboard = false;
+        let r = InputRouter::new(&settings, Vec::new());
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Pass);
+        assert_eq!(r.on_event(&motion(1, 1)), Disposition::Swallow);
+        assert_eq!(inputs(&drain(&mut d1)), vec![&motion(1, 1)]);
+    }
+
+    #[test]
+    fn the_mouse_stays_local_when_mouse_sharing_is_off() {
+        let mut settings = FlowSettings::defaults();
+        settings.share_mouse = false;
+        let r = InputRouter::new(&settings, Vec::new());
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+
+        assert_eq!(r.on_event(&motion(1, 1)), Disposition::Pass);
+        assert_eq!(r.on_event(&key("A", true)), Disposition::Swallow);
+        assert_eq!(inputs(&drain(&mut d1)), vec![&key("A", true)]);
+    }
+
+    #[test]
+    fn pointer_sensitivity_scales_deltas_without_losing_the_fraction() {
+        let mut settings = FlowSettings::defaults();
+        settings.pointer_sensitivity = PointerSensitivity::Low;
+        let r = InputRouter::new(&settings, Vec::new());
+        let mut d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+
+        for _ in 0..10 {
+            r.on_event(&motion(1, 0));
+        }
+        let total: i32 = inputs(&drain(&mut d1))
+            .into_iter()
+            .map(|e| match e {
+                InputEvent::Mouse(MouseEvent::Move { dx, .. }) => *dx,
+                _ => 0,
+            })
+            .sum();
+        assert_eq!(total, 6, "10 x 0.6 reaches the remote as 6 in total");
+    }
+
+    #[test]
+    fn remaps_apply_for_the_target_os_only() {
+        let rules = vec![RemapRule {
+            from: "CAPS_LOCK".to_string(),
+            to: "ESCAPE".to_string(),
+            when_target_os: Some(HostOs::Macos),
+        }];
+        let r = InputRouter::new(&FlowSettings::defaults(), rules);
+        let mut mac = connect_os(&r, "mac", HostOs::Macos);
+        let mut win = connect_os(&r, "win", HostOs::Windows);
+
+        r.switch_to(ActiveScreen::Remote(id("mac"))).unwrap();
+        r.on_event(&key("CAPS_LOCK", true));
+        assert_eq!(inputs(&drain(&mut mac)), vec![&key("ESCAPE", true)]);
+
+        r.on_event(&key("CAPS_LOCK", false));
+        r.switch_to(ActiveScreen::Remote(id("win"))).unwrap();
+        r.on_event(&key("CAPS_LOCK", true));
+        assert_eq!(inputs(&drain(&mut win)), vec![&key("CAPS_LOCK", true)]);
+    }
+
+    #[test]
+    fn a_rebind_takes_effect_for_the_next_event() {
+        let r = router();
+        let _d1 = connect(&r, "d1");
+        let mut settings = FlowSettings::defaults();
+        settings.switch_key = presets()[2].clone(); // F13
+        r.apply_settings(&settings);
+
+        assert_eq!(r.on_event(&key("SCROLLLOCK", true)), Disposition::Pass);
+        assert_eq!(r.on_event(&key("F13", true)), Disposition::Swallow);
+        assert_eq!(r.active(), ActiveScreen::Remote(id("d1")));
+    }
+
+    #[test]
+    fn switches_and_forwarded_events_are_counted() {
+        let r = router();
+        let _d1 = connect(&r, "d1");
+        r.switch_to(ActiveScreen::Remote(id("d1"))).unwrap();
+        r.on_event(&key("A", true));
+        r.on_event(&motion(2, 2));
+        let stats = r.stats();
+        assert_eq!(stats.events_forwarded, 2);
+        assert_eq!(stats.switch_latencies_ms.len(), 1);
+    }
+}

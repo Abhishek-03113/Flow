@@ -435,3 +435,122 @@ fn now_ms() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::virtual_backend::VirtualBackend;
+    use flow_core::device::{HostOs, ScreenSize};
+
+    fn endpoint() -> (VirtualBackend, ControlledEndpoint) {
+        let backend = VirtualBackend::new(
+            HostOs::Windows,
+            ScreenSize {
+                width: 800,
+                height: 600,
+            },
+        );
+        let endpoint = ControlledEndpoint::new(backend.new_injector().unwrap());
+        (backend, endpoint)
+    }
+
+    fn input(seq: u64, event: InputEvent) -> ChannelMessage {
+        ChannelMessage::Input { seq, event }
+    }
+
+    fn down(key: &str) -> InputEvent {
+        InputEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: key.to_string(),
+            modifiers: vec![],
+            timestamp_ms: 0,
+        })
+    }
+
+    fn enter(seq: u64) -> ChannelMessage {
+        ChannelMessage::Enter {
+            seq,
+            x: 10,
+            y: 20,
+            held_modifiers: vec![],
+        }
+    }
+
+    #[test]
+    fn input_outside_enter_and_leave_is_dropped() {
+        let (backend, mut endpoint) = endpoint();
+        endpoint.handle(&input(1, down("A")));
+        assert!(backend.injected().is_empty());
+
+        assert_eq!(endpoint.handle(&enter(2)), Some(true));
+        endpoint.handle(&input(3, down("B")));
+        assert_eq!(backend.injected(), vec![down("B")]);
+
+        assert_eq!(
+            endpoint.handle(&ChannelMessage::Leave { seq: 4 }),
+            Some(false)
+        );
+        endpoint.handle(&input(5, down("C")));
+        assert!(!backend.injected().contains(&down("C")));
+        assert_eq!(endpoint.dropped, 2);
+    }
+
+    #[test]
+    fn entering_warps_the_cursor_to_the_entry_point() {
+        let (backend, mut endpoint) = endpoint();
+        endpoint.handle(&enter(1));
+        assert_eq!(backend.warps(), vec![(10, 20)]);
+    }
+
+    #[test]
+    fn leave_releases_every_held_key_and_button() {
+        let (backend, mut endpoint) = endpoint();
+        endpoint.handle(&enter(1));
+        endpoint.handle(&input(2, down("A")));
+        endpoint.handle(&input(
+            3,
+            InputEvent::Mouse(MouseEvent::ButtonDown {
+                button: MouseButton::Left,
+                timestamp_ms: 0,
+            }),
+        ));
+        endpoint.handle(&ChannelMessage::Leave { seq: 4 });
+
+        let injected = backend.injected();
+        assert!(injected.iter().any(|e| matches!(
+            e,
+            InputEvent::Keyboard(KeyboardEvent::KeyUp { key, .. }) if key == "A"
+        )));
+        assert!(injected.iter().any(|e| matches!(
+            e,
+            InputEvent::Mouse(MouseEvent::ButtonUp {
+                button: MouseButton::Left,
+                ..
+            })
+        )));
+    }
+
+    #[test]
+    fn a_replayed_or_reordered_sequence_is_dropped() {
+        let (backend, mut endpoint) = endpoint();
+        endpoint.handle(&enter(5));
+        endpoint.handle(&input(6, down("A")));
+        endpoint.handle(&input(6, down("B")));
+        endpoint.handle(&input(4, down("C")));
+        assert_eq!(backend.injected(), vec![down("A")]);
+    }
+
+    #[test]
+    fn release_all_on_disconnect_leaves_nothing_pressed() {
+        let (backend, mut endpoint) = endpoint();
+        endpoint.handle(&enter(1));
+        endpoint.handle(&input(2, down("A")));
+        endpoint.release_all();
+        endpoint.release_all();
+        let releases = backend
+            .injected()
+            .into_iter()
+            .filter(|e| matches!(e, InputEvent::Keyboard(KeyboardEvent::KeyUp { .. })))
+            .count();
+        assert_eq!(releases, 1, "released exactly once");
+    }
+}
