@@ -1,5 +1,10 @@
 # Contract Changelog
 
+## 0.2.4 — the controller's arrangement reaches a controlled device (no shape changes)
+
+- **`screen_layout_changed` on a controlled device is the controller's arrangement**, read-only. The controller sends where the two screens sit (new daemon-to-daemon message `Arrangement`, `PROTOCOL_VERSION = 3`) when the link comes up and whenever its layout changes. The controlled device announces it as a two-screen `ScreenLayout`: `d1` (this computer) and the controller's device id, at the controller's coordinates. It is not persisted, is ignored if invalid, and reverts to just `d1` when the link ends. Before it arrives the layout holds only `d1`, and UIs may fall back to a guess. `set_screen_layout` still answers `not_controller`.
+- The `controlled` mock scenario sends such a layout (the controller above this computer).
+
 ## 0.2.3 — review fixes (no shape changes)
 
 - **`Device.link_error` vocabulary is closed**: `role_conflict`, `protocol_mismatch`, `protocol_error`, `hello_timeout`, `connection_lost`, `injector_unavailable` (`flow_core::link::link_error`). A refusal reason received from a peer is mapped onto it (unknown text becomes `protocol_error`), and clients treat a code they don't know as `protocol_error`. The UI had assumed `version_mismatch`/`unreachable`/`untrusted`, which the engine never sends, and could not render the others.

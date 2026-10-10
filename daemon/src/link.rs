@@ -204,6 +204,9 @@ async fn controller_loop(
                         seq += 1;
                         ChannelMessage::Input { seq, event }
                     }
+                    LinkOut::Arrangement { controller, controlled } => {
+                        ChannelMessage::Arrangement { controller, controlled }
+                    }
                     LinkOut::Close { reason } => {
                         let _ = channel.send(ChannelMessage::Goodbye { reason }).await;
                         return Ok(());
@@ -296,6 +299,10 @@ async fn controlled_loop(
                         break;
                     }
                     Err(_) => break,
+                    Ok(ChannelMessage::Arrangement { controller, controlled }) => {
+                        env.service
+                            .controller_arrangement_changed(device_id, controller, controlled);
+                    }
                     Ok(message) => {
                         let dropped_before = endpoint.dropped;
                         if let Some(entered) = endpoint.handle(&message) {

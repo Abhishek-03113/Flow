@@ -60,9 +60,18 @@ pub enum PairingWireMessage {
     Decision(PairingDecision),
 }
 
+/// One screen's rectangle in the controller's virtual space.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenRect {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// The daemon-to-daemon wire protocol version. A peer announcing another
 /// version (or none: v1 peers speak a different message set) is refused.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// Everything that can travel over a [`Channel`]
 /// (`docs/adr/0001-controller-controlled-input-model.md`).
@@ -98,6 +107,14 @@ pub enum ChannelMessage {
     Input {
         seq: u64,
         event: InputEvent,
+    },
+    /// controller -> controlled: where the two screens sit in the
+    /// controller's arrangement (one shared virtual space). Sent when the
+    /// link comes up and whenever the arrangement changes; read-only for
+    /// the controlled side.
+    Arrangement {
+        controller: ScreenRect,
+        controlled: ScreenRect,
     },
     /// controlled -> controller: the screen resolution changed.
     ScreenInfo {
