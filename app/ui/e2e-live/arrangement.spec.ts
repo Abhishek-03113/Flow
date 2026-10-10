@@ -73,6 +73,19 @@ test('8. dragging the PC below the Mac changes the engine layout, and the bottom
   const pcBox = (await macPage.getByTestId(`tile-${pcId}`).boundingBox())!;
   expect(pcBox.y).toBeGreaterThanOrEqual(macBox.y + macBox.height - 2);
 
+  // The controlled PC draws the Mac's real arrangement, read-only: the Mac above it.
+  const macId = pcPage
+    .getByTestId('arrangement')
+    .locator('[data-testid^="tile-"]:not([data-testid="tile-d1"])');
+  await expect(macId).toHaveCount(1);
+  await expect
+    .poll(async () => {
+      const up = (await macId.boundingBox())!;
+      const me = (await pcPage.getByTestId('tile-d1').boundingBox())!;
+      return up.y + up.height <= me.y + 2 && up.x < me.x + me.width;
+    })
+    .toBe(true);
+
   await composite(browser, '08-arrangement.png', [
     { page: macPage, label: 'Mac: PC dragged below, crossed the bottom edge' },
     { page: pcPage, label: 'PC: being controlled' },
