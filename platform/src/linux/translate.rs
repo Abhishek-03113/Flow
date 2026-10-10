@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use evdev::{EventSummary, KeyCode, RelativeAxisCode};
-use flow_core::protocol::{key_names, InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
+use flow_core::protocol::{
+    key_names, InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent,
+};
 
 /// evdev's `EV_KEY` value for a press. Shared with `inject_translate`,
 /// which needs the same values going the other direction.
