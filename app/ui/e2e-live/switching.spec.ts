@@ -43,6 +43,18 @@ test('2. switching from the UI: controller drives the PC, keys land only there, 
   await expect(pcPage.getByText('Take your computer back')).toBeVisible();
   await expect(pcPage.getByText('Switch computers', { exact: true })).toHaveCount(0);
   await expect(macPage.getByText('Switch computers', { exact: true })).toBeVisible();
+  // The controlled page shows its controller beside it, read-only, not a lone tile.
+  await expect(pcPage.getByTestId(`tile-${pc.idOf('Mac')}`)).toBeVisible();
+  await expect(pcPage.getByTestId('home')).toContainText('Mac sets up where the screens sit');
+  // Switch time is real but sub-millisecond in-process: never a misleading "0.0 ms".
+  await expect
+    .poll(
+      () =>
+        (mac.state.get('diagnostics_changed') as { switch_latency_ms_p50: number | null })
+          ?.switch_latency_ms_p50,
+    )
+    .not.toBeNull();
+  await expect(macPage.getByTestId('home')).not.toContainText('0.0 ms');
 
   // On the blue live card the prominent button stays white, also under the pointer.
   const back = macPage.getByRole('button', { name: 'Return to this computer' });
