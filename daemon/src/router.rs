@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use flow_core::channel::ScreenRect;
 use flow_core::control::layout::{Edge, ScreenLayout};
 use flow_core::control::ActiveScreen;
 use flow_core::device::{DeviceId, HostOs, ScreenSize, LOCAL_DEVICE_ID};
@@ -44,6 +45,11 @@ pub enum LinkOut {
     },
     Leave,
     Input(InputEvent),
+    /// Controller side only: tell a controlled peer where the two screens sit.
+    Arrangement {
+        controller: ScreenRect,
+        controlled: ScreenRect,
+    },
     /// Controlled side only: ask the controller for this machine back.
     ReleaseRequest,
     /// Orderly close of the link, with a reason for `Goodbye`.

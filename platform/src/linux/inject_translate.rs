@@ -67,7 +67,7 @@ fn button_event(button: MouseButton, value: i32) -> evdev::InputEvent {
 
 /// Reverses `translate::key_name`: the host keymap first, then evdev's own
 /// `KEY_<name>` for names the keymap doesn't list (`"LEFTSHIFT"`).
-fn key_code_for(key: &str) -> Option<KeyCode> {
+pub(super) fn key_code_for(key: &str) -> Option<KeyCode> {
     match crate::keymap::host().code_for_name(key) {
         Some(code) => u16::try_from(code).ok().map(KeyCode::new),
         None => KeyCode::from_str(&format!("KEY_{key}")).ok(),

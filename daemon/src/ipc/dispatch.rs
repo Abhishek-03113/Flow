@@ -517,9 +517,11 @@ mod tests {
             }
         );
 
-        let _enter = link.inbox.try_recv().expect("enter queued");
-        let crate::router::LinkOut::Input(got) = link.inbox.try_recv().expect("input queued")
-        else {
+        // Skip the arrangement sent at link-up and the Enter of the switch.
+        let mut queued = std::iter::from_fn(|| link.inbox.try_recv().ok())
+            .filter(|m| !matches!(m, crate::router::LinkOut::Arrangement { .. }));
+        let _enter = queued.next().expect("enter queued");
+        let Some(crate::router::LinkOut::Input(got)) = queued.next() else {
             panic!("expected the injected event to be forwarded");
         };
         assert_eq!(
