@@ -2,7 +2,7 @@ import { ArrowLeftRight, Laptop, Plus, Trash2, TriangleAlert } from 'lucide-reac
 import { useState } from 'react';
 import type { Device } from '../../client/types';
 import { formatRelative, linkErrorCopy, osName, roleLabel } from '../../copy';
-import { Alert, Badge, Button, EmptyState, Row, Section, Tooltip } from '../../design';
+import { Alert, Badge, Button, EmptyState, Row, Section, Tooltip } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { isReachable, localDevice, myRole, remoteDevices } from '../../state/selectors';
 import { useAction } from '../../state/useAction';

@@ -1,6 +1,6 @@
 import { Keyboard, MonitorCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import { Hud } from '../../design';
+import { Hud } from '@flow/design-system';
 import { useClient } from '../../state/FlowProvider';
 import { deviceById, localDevice } from '../../state/selectors';
 

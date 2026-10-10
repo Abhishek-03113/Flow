@@ -12,6 +12,9 @@ for (const theme of ['light', 'dark'] as Theme[]) {
       await snap(page, '03-design-system-main', theme);
       await page.setViewportSize({ width: 1100, height: 1500 });
       await snap(page, '03-design-system-full', theme);
+      await page.setViewportSize({ width: 1100, height: 1000 });
+      await snap(page, '03b-design-system-package', theme);
+      await page.setViewportSize({ width: 1100, height: 1500 });
       await page.setViewportSize(TRAY);
       await snap(page, '03-design-system-tray', theme);
     });

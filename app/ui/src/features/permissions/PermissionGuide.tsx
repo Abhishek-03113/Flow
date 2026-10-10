@@ -1,6 +1,6 @@
 import { Check, Copy, ShieldAlert } from 'lucide-react';
 import type { HostOs, PermissionStatus } from '../../client/types';
-import { Badge, Button, Row, Section, useToast } from '../../design';
+import { Badge, Button, Row, Section, useToast } from '@flow/design-system';
 
 export const SETTINGS_URLS = {
   macAccessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',

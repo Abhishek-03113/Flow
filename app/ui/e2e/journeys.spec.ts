@@ -11,7 +11,7 @@ test('dragging a screen tile snaps it to an edge and persists the layout', async
   const area = (await page.getByTestId('arrangement').boundingBox())!;
   await page.mouse.move(before!.x + before!.width / 2, before!.y + before!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(before!.x + before!.width / 2 - 40, area.y + area.height - 30, { steps: 8 });
+  await page.mouse.move(area.x + area.width * 0.35, area.y + area.height - 10, { steps: 8 });
   await expect(page.locator('.fl-ghost')).toBeVisible();
   await page.mouse.up();
   await expect(async () => {

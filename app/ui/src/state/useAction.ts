@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react';
-import { useToast } from '../design';
+import { useToast } from '@flow/design-system';
 import { friendlyError } from '../copy';
 
 /**

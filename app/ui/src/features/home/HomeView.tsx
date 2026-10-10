@@ -1,7 +1,7 @@
 import { Gauge, MousePointer2, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { friendlyError, formatUptime } from '../../copy';
-import { Badge, KeyCombo, Row, Section, StatusDot, useToast } from '../../design';
+import { Badge, KeyCombo, Row, Section, StatusDot, useToast } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localDevice, localOs, myRole, remoteDevices } from '../../state/selectors';
 import { ArrangementEditor } from './ArrangementEditor';

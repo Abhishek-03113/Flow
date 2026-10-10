@@ -1,5 +1,5 @@
 import { osName } from '../../copy';
-import { Button, Sheet } from '../../design';
+import { Button, Sheet } from '@flow/design-system';
 import { useAction } from '../../state/useAction';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { DeviceGlyph } from '../DeviceGlyph';

@@ -1,4 +1,4 @@
-import { Button, Sheet } from '../../design';
+import { Button, Sheet } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localOs } from '../../state/selectors';
 import { useAction } from '../../state/useAction';

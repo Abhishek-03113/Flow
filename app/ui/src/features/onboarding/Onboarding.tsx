@@ -2,7 +2,7 @@ import { ChevronLeft } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Role } from '../../client/types';
 import { trayName } from '../../copy';
-import { Button, KeyCombo } from '../../design';
+import { Button, KeyCombo } from '@flow/design-system';
 import { useAction } from '../../state/useAction';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localOs } from '../../state/selectors';

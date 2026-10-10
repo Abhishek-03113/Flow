@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PairingSession } from '../../client/types';
 import { friendlyError } from '../../copy';
-import { useToast } from '../../design';
+import { useToast } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 
 /**

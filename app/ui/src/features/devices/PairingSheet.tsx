@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Button, Sheet } from '../../design';
+import { Button, Sheet } from '@flow/design-system';
 import { useFlow } from '../../state/FlowProvider';
 import { myRole } from '../../state/selectors';
 import { useUi } from '../../state/ui';

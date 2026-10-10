@@ -1,9 +1,9 @@
 import { useState } from 'react';
 import type { ClientSelection } from './client/createClient';
 import { scenarioHasCompletedOnboarding } from './client/mockScenarios';
-import { Button, EmptyState, Spinner, ThemeProvider, ToastProvider } from './design';
+import { Button, EmptyState, Spinner, ThemeProvider, ToastProvider } from '@flow/design-system';
 import { DebugView } from './features/DebugView';
-import { DesignGallery } from './features/DesignGallery';
+import { DesignGallery } from '@flow/design-system/gallery';
 import { IncomingRequestSheet } from './features/devices/IncomingRequestSheet';
 import { PairingSheet } from './features/devices/PairingSheet';
 import { Onboarding } from './features/onboarding/Onboarding';

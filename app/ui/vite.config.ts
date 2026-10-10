@@ -8,7 +8,9 @@ export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(pkg.version) },
   base: './',
   clearScreen: false,
-  server: { port: 5173, strictPort: true },
+  // The design system is plain TS source in ../../design-system; it resolves react & lucide from this app.
+  resolve: { dedupe: ['react', 'react-dom', 'lucide-react'] },
+  server: { port: 5173, strictPort: true, fs: { allow: ['../..'] } },
   build: { target: 'es2022', sourcemap: false },
   test: {
     environment: 'jsdom',

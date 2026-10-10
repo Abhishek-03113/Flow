@@ -1,0 +1,22 @@
+{
+  "name": "@flow/design-system",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Apple-HIG design system (macOS desktop density): tokens, plain-CSS components and React components.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./gallery": "./gallery/DesignGallery.tsx",
+    "./tokens.css": "./tokens/tokens.css",
+    "./tokens.json": "./tokens/tokens.json",
+    "./components.css": "./styles/components.css"
+  },
+  "scripts": {
+    "tokens": "node scripts/build-tokens.mjs"
+  },
+  "peerDependencies": {
+    "lucide-react": ">=0.400.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0"
+  }
+}
