@@ -407,9 +407,15 @@ export class MockEngine {
     this.syncLinkWithDevices();
   }
 
+  /** Like the engine: a refused link with no other live link is `error` (not `reconnecting`). */
   private syncLinkWithDevices(): void {
+    const remote = this.s.devices.filter((d) => d.id !== LOCAL_DEVICE_ID);
+    const live = remote.some((d) => !d.linkError && ['inactive', 'active', 'connected'].includes(d.state));
     if (this.s.linkState === 'error' && !this.s.devices.some((d) => d.linkError)) {
       this.s.linkState = 'connected';
+      this.pushLink();
+    } else if (this.s.linkState !== 'error' && !live && remote.some((d) => d.linkError === 'role_conflict')) {
+      this.s.linkState = 'error';
       this.pushLink();
     }
   }
