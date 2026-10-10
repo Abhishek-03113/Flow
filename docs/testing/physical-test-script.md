@@ -7,8 +7,7 @@ screen.
 - **Windows PC** — has the physical keyboard and mouse you'll use.
 - **Mac** — the second machine.
 
-Both need the repo built: `cargo build -p flow-daemon` (and `flutter build`/`flutter run`
-for the UI). Keep this doc open on a phone/tablet, not on either machine under test.
+Both need the repo built: `cargo build -p flow-daemon` for the headless engine, or `npm --prefix app/ui run build` then `cargo build -p flow-app` for the app. Keep this doc open on a phone/tablet, not on either machine under test.
 
 > **Safety — read before Round 2.** Round 2 makes the Mac suppress its own keyboard/mouse.
 > If the event tap misbehaves, the Mac's local input can become unresponsive. Before
@@ -95,10 +94,10 @@ under the Primary-only gate; see Round 1 step 7 below and Round 2's intro.)
 ### UI (each machine, optional but recommended for Round-0)
 
 ```
-# Windows
-cd flutter ; flutter run -d windows --dart-define=FLOW_ENV=development --dart-define=FLOW_DAEMON_MODE=ipc
-# Mac
-cd flutter && flutter run -d macos --dart-define=FLOW_ENV=development --dart-define=FLOW_DAEMON_MODE=ipc
+# Either machine: the app embeds its own engine, so do NOT also run flow-daemon there.
+npm --prefix app/ui ci && npm --prefix app/ui run build
+cargo run -p flow-app
+# (to attach the UI to a separately started flow-daemon instead, open the UI with ?daemon=ws://127.0.0.1:47823&token=<contents of ~/.flow/ipc.token>)
 ```
 
 macOS will prompt for **Accessibility** and **Input Monitoring** permission for the daemon

@@ -1,3 +1,5 @@
+> **Historical.** This is the original product vision (2025). Where it disagrees with the current design — a Flutter control plane, a symmetric "baton" model, a separate daemon process — the current design wins: see [`docs/redesign/PLAN.md`](../redesign/PLAN.md), [ADR 0001](../adr/0001-controller-controlled-input-model.md) and the root `README.md` (Tauri app embedding the engine, controller/controlled roles).
+
 # Cross-Device Keyboard & Mouse
 
 ## Product Vision, Architecture & POC
@@ -959,7 +961,7 @@ Test:
 
 ### Phase 7 — Native Daemon
 
-**Status: `docs/tasks/daemon-todos.json`'s full build-out plan (tracks A-J) is done** — the production Rust daemon this phase describes exists, including several items §20's POC Strategy explicitly deferred (Bluetooth, production-grade pairing, a real security architecture, and service-supervision scaffolding). See `daemon/README.md`'s top status line for the honest, current account of what's verified how on each OS, and what real end-to-end wiring (an incoming-connection accept loop in `main.rs`, splicing the Noise/trust/reconnect building blocks into it) is still deliberately outstanding.
+**Status: `docs/archive/tasks/daemon-todos.json`'s full build-out plan (tracks A-J) is done** — the production Rust daemon this phase describes exists, including several items §20's POC Strategy explicitly deferred (Bluetooth, production-grade pairing, a real security architecture, and service-supervision scaffolding). See `daemon/README.md`'s top status line for the honest, current account of what's verified how on each OS, and what real end-to-end wiring (an incoming-connection accept loop in `main.rs`, splicing the Noise/trust/reconnect building blocks into it) is still deliberately outstanding.
 
 Once the POC validates the interaction:
 
