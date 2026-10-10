@@ -46,7 +46,9 @@ async fn service() -> TestDaemon {
 /// just needs *a* valid one to complete the Noise handshake with.
 async fn a_standalone_identity() -> DeviceIdentity {
     let storage = Storage::open_in_memory().await.expect("open identity db");
-    DeviceIdentity::load_or_generate(storage).await
+    DeviceIdentity::load_or_generate(storage)
+        .await
+        .expect("identity")
 }
 
 #[tokio::test]
@@ -197,6 +199,7 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
     let b_record = DeviceRepo::new(storage_a)
         .find_by_id(b_in_a.id.clone())
         .await
+        .expect("repo")
         .expect("device B's record persisted on A's side");
     assert_eq!(
         b_record.public_key.as_ref().map(Vec::len),
@@ -207,6 +210,7 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
     let a_record = DeviceRepo::new(storage_b)
         .find_by_id(a_in_b.id.clone())
         .await
+        .expect("repo")
         .expect("device A's record persisted on B's side");
     assert_eq!(
         a_record.public_key.as_ref().map(Vec::len),
@@ -230,7 +234,8 @@ async fn insecure_profile_pairs_two_headless_daemons_with_no_ui() {
             storage.clone(),
             Security::from_mode(SecurityMode::Insecure),
         )
-        .await;
+        .await
+        .expect("service");
         (service, storage)
     }
 
@@ -316,6 +321,7 @@ async fn insecure_profile_pairs_two_headless_daemons_with_no_ui() {
     let a_record = DeviceRepo::new(storage_b)
         .find_by_id(a_in_b.id.clone())
         .await
+        .expect("repo")
         .expect("A's record persisted on B's side");
     assert_eq!(
         a_record.public_key.as_ref().map(Vec::len),
@@ -486,7 +492,7 @@ async fn a_rejected_incoming_request_fails_the_initiator() {
 
     // B never turned the rejected initiator into a trusted device: no
     // public-key-keyed record in the repo, nothing new in the list.
-    let b_records = DeviceRepo::new(storage_b).list().await;
+    let b_records = DeviceRepo::new(storage_b).list().await.expect("repo");
     assert!(
         !b_records.iter().any(|r| r.device.id.0.starts_with("pk:")),
         "B must not persist a rejected initiator: {b_records:?}"
