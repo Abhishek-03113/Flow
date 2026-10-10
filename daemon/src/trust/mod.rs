@@ -41,7 +41,14 @@ impl TrustGate {
     /// stored it, which is what `G7`'s pairing handshake does on a
     /// successful `PairingDecision::Accept`.
     pub async fn is_trusted(&self, public_key: &[u8]) -> bool {
-        self.device_repo.is_trusted(public_key.to_vec()).await
+        // Fail closed: if the trust record cannot be read, nobody is trusted.
+        self.device_repo
+            .is_trusted(public_key.to_vec())
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(%err, "trust lookup failed; treating the peer as untrusted");
+                false
+            })
     }
 
     /// Whether this daemon has paired with any peer at all. `false` means
@@ -50,7 +57,13 @@ impl TrustGate {
     /// handshake outright instead of running it only to fail the trust
     /// check afterward.
     pub async fn has_any_trusted(&self) -> bool {
-        self.device_repo.has_any_trusted().await
+        self.device_repo
+            .has_any_trusted()
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(%err, "paired-device lookup failed; assuming none");
+                false
+            })
     }
 }
 
@@ -82,7 +95,8 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         DeviceRepo::new(storage.clone())
             .upsert(a_paired_device_record(vec![1, 2, 3]))
-            .await;
+            .await
+            .expect("repo");
 
         let gate = TrustGate::new(storage);
         assert!(gate.is_trusted(&[1, 2, 3]).await);
@@ -93,7 +107,8 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         DeviceRepo::new(storage.clone())
             .upsert(a_paired_device_record(vec![1, 2, 3]))
-            .await;
+            .await
+            .expect("repo");
 
         let gate = TrustGate::new(storage);
         assert!(!gate.is_trusted(&[9, 9, 9]).await);

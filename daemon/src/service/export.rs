@@ -98,7 +98,8 @@ mod tests {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("service");
         let path = service.reveal_config_dir().expect("reveal");
         assert!(path.is_dir());
     }
