@@ -20,8 +20,8 @@ pub struct IpcRequest {
 }
 
 /// A machine-readable/human-readable error pair, matching
-/// `DaemonCommandException(code, message)` on the Dart side
-/// (`flutter/lib/domain/daemon_command_exception.dart`).
+/// `FlowCommandError(code, message)` in the TypeScript UI
+/// (`app/ui/src/client/errors.ts`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorPayload {
     pub code: String,

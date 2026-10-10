@@ -1,5 +1,21 @@
 # Contract Changelog
 
+## 0.2.1 — embedded engine and honest permissions (additive, one rename)
+
+The desktop app now runs the engine in-process; the same command/event contract is served by the Tauri bridge (`flow_command` + `flow://event`) and, for the headless daemon and debugging (`FLOW_DEV_WS=1`), by the WebSocket.
+
+- **Ack envelope**: an ack that carries an answer uses **`result`** (`{ id, ok: true, result }`), the engine's name since 0.2.0. Clients that read `data` must read `result`; the Tauri bridge resolves `flow_command` with the same value (`null` for a plain ack).
+- **New command `resync {}`**: the engine re-sends all ten state events (the Tauri equivalent of connecting).
+- **`Device.is_local`** (bool): explicit; clients no longer guess from the id.
+- **`PairingSession.code`**: the verification code while `requesting`, identical to the other computer's `IncomingPairingRequest.fingerprint` (derived from both public keys).
+- **`PermissionStatus.items`**: `[{ name, granted, how_to_fix: { summary, steps: [{ text, command? }] } | null }]`. macOS reports Accessibility and Input Monitoring separately, Linux reading input devices and creating the virtual one, Windows none. `granted` is true when all are. The engine re-probes every 2 s; `request_permission` shows the real OS prompt where one exists.
+- **New commands**: `recheck_permissions` ("Check Again"), `open_permission_settings {name}` (answers `{ url }`; the app opens it), `reveal_config_dir` (answers `{ path }`; the app opens the folder), `export_diagnostics` (writes a JSON bundle, answers `{ path }`), `cancel_reconnect` (stops redialling after a lost link until `retry_connection`; only while `reconnecting`).
+- **New error codes**: `permission_not_found`, `not_reconnecting`.
+- **Behaviour**: `last_seen` / `last_seen_ms` now mean "last heard from" (heartbeat), not "last switched to". `launch_at_login` defaults to `false` and is honoured by the app, as are `show_tray_icon` and `auto_connect_paired_devices` (off: Flow does not dial paired computers, it only accepts their connections).
+- **`ControlState`** clarified: on a controlled device `active_screen` is always `"local"`; `entered` says whether the controller is driving it. The UI was reading it the other way round and was fixed.
+- **Link state with no paired computer**: the engine reports `disconnected`; UIs show the neutral "No computers yet", not an error.
+- `Diagnostics.switch_latency_ms_*` is `null` until the first switch; UIs show "—".
+
 ## 0.2.0 — controller/controlled model (breaking for switching, additive elsewhere)
 
 Implements [ADR 0001](../adr/0001-controller-controlled-input-model.md). The symmetric "ownership baton" is gone; control has a static **role** per device and the active screen lives only on the controller.
@@ -38,7 +54,7 @@ Adds a tenth command, `retry_connection`, closing a gap `daemon-ipc.md`'s own li
 
 ## No version bump — rust-daemon phase complete
 
-Not a contract revision — recorded here anyway because a reader of this changelog would otherwise have no way to know the daemon phase referenced by 0.1.1 below actually finished. Every task in `docs/tasks/daemon-todos.json` (tracks A-J) is now done: discovery, pairing, encryption, trust, replay protection, reconnect, structured logging, and packaging scaffolding for the daemon-to-daemon side of the system — deliberately outside this contract's own scope (`docs/contracts/README.md` ground rule 3: this directory governs the *local* Flutter<->daemon boundary only, never daemon<->daemon). **Nothing in `data-model.md` or `daemon-ipc.md` changed.** The one internal (non-contract) wire type this phase touched, `core::pairing::PairingRequest`, gained a `device_os` field; confirmed before making that change that the type appears nowhere in this directory's own documents, so it carries no contract implication. See `daemon/README.md`'s top status line and `docs/architecture/channels.md` (the daemon<->daemon design doc this contract deliberately doesn't cover) for what actually shipped.
+Not a contract revision — recorded here anyway because a reader of this changelog would otherwise have no way to know the daemon phase referenced by 0.1.1 below actually finished. Every task in `docs/archive/tasks/daemon-todos.json` (tracks A-J) is now done: discovery, pairing, encryption, trust, replay protection, reconnect, structured logging, and packaging scaffolding for the daemon-to-daemon side of the system — deliberately outside this contract's own scope (`docs/contracts/README.md` ground rule 3: this directory governs the *local* Flutter<->daemon boundary only, never daemon<->daemon). **Nothing in `data-model.md` or `daemon-ipc.md` changed.** The one internal (non-contract) wire type this phase touched, `core::pairing::PairingRequest`, gained a `device_os` field; confirmed before making that change that the type appears nowhere in this directory's own documents, so it carries no contract implication. See `daemon/README.md`'s top status line and `docs/architecture/channels.md` (the daemon<->daemon design doc this contract deliberately doesn't cover) for what actually shipped.
 
 ## 0.1.1 — transport decided (non-breaking)
 

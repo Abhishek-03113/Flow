@@ -1,10 +1,10 @@
 import { FlowCommandError } from './errors';
-import { LOCAL_DEVICE_ID } from './events';
 import { fromWire, toWire } from './mapper';
 import {
   candidatePool,
   defaultSettings,
   layoutFor,
+  LOCAL_DEVICE_ID,
   sampleIncomingRequest,
   seedScenario,
   type EngineDevice,
@@ -113,7 +113,12 @@ export class MockEngine {
     this.push('remap_rules_changed', this.s.remapRules);
   }
 
-  private pushDevices = () => this.push('devices_changed', this.s.devices);
+  /** Like the engine, tells each device whether it is this computer. */
+  private pushDevices = () =>
+    this.push(
+      'devices_changed',
+      this.s.devices.map((d) => ({ ...d, isLocal: d.id === LOCAL_DEVICE_ID })),
+    );
   private pushControl = () => this.push('control_state_changed', this.s.controlState);
   private pushSettings = () => this.push('settings_changed', this.s.settings);
   private pushLink = () => this.push('link_state_changed', this.s.linkState);
@@ -164,6 +169,12 @@ export class MockEngine {
         return this.requestPermission();
       case 'retry_connection':
         return this.retryConnection();
+      case 'recheck_permissions':
+        return undefined; // the mock has no OS to re-probe
+      case 'cancel_reconnect':
+        return this.cancelReconnect();
+      case 'open_permission_settings':
+        return this.openPermissionSettings(String(p.name));
       case 'set_screen_layout':
         return this.setScreenLayout(p.layout as ScreenLayout);
       case 'set_role':
@@ -230,7 +241,7 @@ export class MockEngine {
       throw err('not_controlled', 'Nothing is controlling this computer right now.');
     }
     // The controller decides; it returns to its own screen.
-    this.s.controlState = { ...c, activeScreen: c.controllerDeviceId };
+    this.s.controlState = { ...c, entered: false };
     this.pushControl();
   }
 
@@ -377,8 +388,9 @@ export class MockEngine {
       role === 'controlled' ? this.s.devices.find((d) => d.role === 'controller' && !d.linkError) : null;
     this.s.controlState = {
       role,
-      activeScreen: controller ? controller.id : 'local',
+      activeScreen: 'local',
       controllerDeviceId: controller?.id ?? null,
+      entered: false,
     };
     if (role === 'controller') {
       this.s.devices = this.s.devices.map((d) =>
@@ -406,6 +418,23 @@ export class MockEngine {
     if (this.s.permission.granted) throw err('permission_already_granted', 'Already allowed.');
     // The OS prompt is out of our hands; simulate the user flipping the switch.
     this.later(2500, () => this.simulate.grantPermission());
+  }
+
+  private cancelReconnect(): void {
+    if (this.s.linkState !== 'reconnecting') {
+      throw err('not_reconnecting', `Link is ${this.s.linkState}; nothing to cancel.`);
+    }
+    // The engine stops redialling until the user retries.
+    this.setLink('disconnected');
+  }
+
+  private openPermissionSettings(name: string): { url: string | null } {
+    const item = this.s.permission.items.find((i) => i.name === name);
+    if (!item) throw err('permission_not_found', `no permission named ${name}`);
+    const pane = name === 'Accessibility' ? 'Privacy_Accessibility' : 'Privacy_ListenEvent';
+    return {
+      url: this.os === 'macos' ? `x-apple.systempreferences:com.apple.preference.security?${pane}` : null,
+    };
   }
 
   private retryConnection(): void {
@@ -468,7 +497,11 @@ export class MockEngine {
     linkState: (state: LinkState) => this.setLink(state),
     grantPermission: () => {
       if (this.s.permission.granted) return;
-      this.s.permission = { ...this.s.permission, granted: true };
+      this.s.permission = {
+        ...this.s.permission,
+        granted: true,
+        items: this.s.permission.items.map((i) => ({ ...i, granted: true, howToFix: null })),
+      };
       this.push('permission_changed', this.s.permission);
       if (this.s.linkState === 'permission_required') this.setLink('connected');
     },
@@ -476,7 +509,7 @@ export class MockEngine {
     controllerEnters: (enter: boolean) => {
       const c = this.s.controlState;
       if (c.role !== 'controlled' || !c.controllerDeviceId) return;
-      this.s.controlState = { ...c, activeScreen: enter ? 'local' : c.controllerDeviceId };
+      this.s.controlState = { ...c, entered: enter };
       this.pushControl();
     },
     deviceState: (id: string, state: EngineDevice['state']) => {

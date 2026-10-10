@@ -47,7 +47,7 @@ impl FlowSettings {
     /// Scroll Lock.
     pub fn defaults() -> Self {
         Self {
-            launch_at_login: true,
+            launch_at_login: false,
             show_tray_icon: true,
             auto_reconnect: true,
             auto_connect_paired_devices: true,
@@ -125,7 +125,7 @@ impl FlowSettings {
 }
 
 /// A partial `FlowSettings` update — every field optional, matching the
-/// Dart `SettingsPatch`'s all-nullable partial. Only the keys being
+/// The all-optional partial. Only the keys being
 /// changed need to be `Some`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn defaults_match_the_contract_example() {
         let d = FlowSettings::defaults();
-        assert!(d.launch_at_login);
+        assert!(!d.launch_at_login, "launching at login needs consent");
         assert!(d.show_tray_icon);
         assert!(d.auto_reconnect);
         assert!(d.auto_connect_paired_devices);
@@ -219,7 +219,7 @@ mod tests {
 
         assert!(!settings.share_mouse);
         assert!(settings.share_keyboard);
-        assert!(settings.launch_at_login);
+        assert!(!settings.launch_at_login);
         assert_eq!(settings.pointer_sensitivity, PointerSensitivity::Normal);
     }
 }

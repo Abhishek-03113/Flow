@@ -25,7 +25,7 @@ app/             Tauri 2 desktop app
   ui/            React 18 + TypeScript + Vite frontend (HIG design system), Vitest + Playwright
 config/keymaps/  windows.toml macos.toml linux.toml  (default keymaps, embedded at compile time)
 docs/            adr/, redesign/, contracts/, progress/ (milestone screenshots + logs)
-flutter/         DELETED at the end of the Tauri track
+(flutter/ was deleted by Track E)
 ```
 
 ## Control API (one contract, two transports)

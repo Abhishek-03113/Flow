@@ -2,7 +2,7 @@ import { ChevronLeft } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Role } from '../../client/types';
 import { trayName } from '../../copy';
-import { Button, KeyCombo } from '@flow/design-system';
+import { Button, KeyCombo, Row, Section, Toggle } from '@flow/design-system';
 import { useAction } from '../../state/useAction';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localOs } from '../../state/selectors';
@@ -82,6 +82,8 @@ export function Onboarding({ onFinish }: { onFinish(): void }) {
                 permission={s.permission}
                 requesting={busy}
                 onRequest={() => void run(() => client.requestPermission())}
+                onOpenSettings={(n) => void run(() => client.openPermissionSettings(n))}
+                onRecheck={() => void run(() => client.recheckPermissions())}
               />
             </div>
           </>
@@ -109,6 +111,21 @@ export function Onboarding({ onFinish }: { onFinish(): void }) {
             <p className="t-callout t-secondary" style={{ maxWidth: 400 }}>
               Flow lives in your {trayName(os)}. Click it any time to switch computers or add another.
             </p>
+            <div style={{ width: 'min(420px, 100%)' }}>
+              <Section>
+                <Row
+                  title="Open Flow at login"
+                  subtitle="Starts quietly in the background. You can change this in General."
+                  trailing={
+                    <Toggle
+                      label="Open Flow at login"
+                      checked={s.settings?.launchAtLogin ?? false}
+                      onChange={(v) => void run(() => client.updateSettings({ launchAtLogin: v }))}
+                    />
+                  }
+                />
+              </Section>
+            </div>
           </>
         );
     }

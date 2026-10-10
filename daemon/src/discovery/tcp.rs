@@ -1,4 +1,4 @@
-//! TCP/Wi-Fi peer discovery (`docs/tasks/daemon-todos.json` G3): a lightweight UDP
+//! TCP/Wi-Fi peer discovery (`docs/archive/tasks/daemon-todos.json` G3): a lightweight UDP
 //! broadcast announce/listen loop so `start_pairing`'s candidate list
 //! can eventually be populated by real TCP-reachable peers, not just the
 //! mock-parity 2 hardcoded ones.
@@ -20,7 +20,7 @@ use super::DiscoveredPeer;
 
 /// The well-known UDP port every Flow daemon's discovery listener binds
 /// to in real deployment. Distinct from `flow_core::ipc::IPC_PORT`
-/// (local Flutter<->daemon) and from wherever a peer's own `TcpChannel`
+/// (local UI<->engine) and from wherever a peer's own `TcpChannel`
 /// listener ends up bound (advertised inside the announce packet
 /// itself, since it can vary per daemon).
 pub const DISCOVERY_PORT: u16 = 47824;

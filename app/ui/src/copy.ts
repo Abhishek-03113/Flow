@@ -88,3 +88,9 @@ export function formatUptime(s: number): string {
 }
 
 export const trayName = (os: HostOs): string => (os === 'macos' ? 'menu bar' : 'system tray');
+
+/** A latency in milliseconds, or a dash while nothing has been measured. */
+export function formatMs(ms: number | null | undefined): string {
+  if (ms === null || ms === undefined || !Number.isFinite(ms)) return '—';
+  return `${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
+}

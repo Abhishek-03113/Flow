@@ -5,13 +5,13 @@
 //! record, never fake remote devices or candidates — after the first
 //! run, whatever was actually persisted comes back instead.
 //! `ServiceState::seeded_for_test` is the mock-parity fixture
-//! (`docs/tasks/daemon-todos.json` `sharedContractConstants.mockParitySeedData`)
+//! (`docs/archive/tasks/daemon-todos.json` `sharedContractConstants.mockParitySeedData`)
 //! tests opt into explicitly instead.
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
@@ -39,7 +39,9 @@ use crate::channel::noise::NoiseChannel;
 use crate::channel::{handshake, negotiate};
 use crate::discovery::DiscoveredPeer;
 use crate::identity::DeviceIdentity;
-use crate::pairing_fingerprint::key_fingerprint;
+use crate::logging::LoggingHandle;
+use crate::pairing_fingerprint::pairing_code;
+use crate::platform_backend::PlatformBackend;
 use crate::router::{InputRouter, LinkOut, PeerSlot};
 use crate::security::Security;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
@@ -83,6 +85,10 @@ const PAIRING_TERMINAL_TO_IDLE: Duration = Duration::from_millis(1600);
 /// Accept/Reject before the daemon rejects it on their behalf.
 const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
 
+mod export;
+mod health;
+mod permissions;
+
 /// How long [`DaemonService::dial_if_trusted`] will spend connecting to
 /// and handshaking with a discovered peer before giving up. Generous
 /// enough for a slow LAN and a Noise `XX` round trip, short enough that
@@ -102,6 +108,9 @@ pub struct ServiceOptions {
     pub screen: ScreenSize,
     /// Where the user's keymap and remap files live; `None` = defaults only.
     pub keymap_dir: Option<PathBuf>,
+    /// The platform whose permissions are probed. `None` (tests) means no
+    /// OS is attached: permission state is a plain fixture.
+    pub backend: Option<Arc<dyn PlatformBackend>>,
 }
 
 impl Default for ServiceOptions {
@@ -115,6 +124,7 @@ impl Default for ServiceOptions {
                 height: 1080,
             },
             keymap_dir: None,
+            backend: None,
         }
     }
 }
@@ -204,7 +214,7 @@ impl ServiceState {
             link_state: DaemonLinkState::Disconnected,
             pairing_session: PairingSession::idle(),
             settings,
-            permission: default_permission(options.host_os),
+            permission: permissions::initial_permission(options),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
             incoming_request: None,
@@ -259,6 +269,7 @@ impl ServiceState {
             permission: PermissionStatus {
                 name: "Accessibility access".to_string(),
                 granted: false,
+                items: Vec::new(),
             },
             candidates_pool: mock_parity_candidates(),
             discovered_candidates: HashMap::new(),
@@ -278,7 +289,7 @@ impl ServiceState {
 /// `LOCAL_DEVICE_ID` `Disconnected` too — with no device in any
 /// switchable state, `switch_active_device` rejected every target with
 /// `device_not_switchable`, the switch key became a permanent no-op, and
-/// the Flutter UI's "Controlling" card had nothing to show, since it
+/// the old UI's "Controlling" card had nothing to show, since it
 /// reads straight off `watch_devices`/`watch_link_state` with no
 /// fallback of its own.
 ///
@@ -307,7 +318,7 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
 /// subscribing receiver, which is exactly the "connecting... is the
 /// initial fetch" semantics `docs/contracts/daemon-ipc.md` requires —
 /// the same semantics `MockDaemonRepository`'s `_StateChannel` needed a
-/// `Stream.multi` rewrite on the Dart side to get right (an `async*`
+/// `Stream.multi` rewrite in the old UI to get right (an `async*`
 /// generator can silently drop an emission racing its first microtask).
 #[derive(Clone)]
 pub struct DaemonService {
@@ -333,7 +344,7 @@ pub struct DaemonService {
     /// aborts whatever is here; each timer clears its own slot once it
     /// fires so a later cancel never aborts an already-finished task.
     pairing_timer: Arc<Mutex<Option<JoinHandle<()>>>>,
-    /// Number of IPC clients (Flutter UIs) currently connected. Zero
+    /// Number of UI clients (the app, or WebSocket clients) currently connected. Zero
     /// means an incoming pairing request has no one to prompt and is
     /// rejected outright — see `accept_pairing_over`.
     connected_clients: Arc<AtomicUsize>,
@@ -357,6 +368,18 @@ pub struct DaemonService {
     local_screen: ScreenSize,
     /// Where user keymap/remap files live, if anywhere.
     keymap_dir: Option<PathBuf>,
+    /// The platform whose permissions are probed, if one is attached.
+    backend: Option<Arc<dyn PlatformBackend>>,
+    /// Set by `cancel_reconnect`: stop redialling paired computers until
+    /// the user retries (or a computer connects to us).
+    redial_paused: Arc<AtomicBool>,
+    /// When each peer's `last_seen` was last published, so the heartbeat
+    /// does not flood `devices_changed`.
+    heard_published: Arc<std::sync::Mutex<HashMap<DeviceId, std::time::Instant>>>,
+    /// Where diagnostics bundles are written.
+    export_dir: Option<PathBuf>,
+    /// The recent log tail, for diagnostics bundles.
+    log_tail: Option<LoggingHandle>,
 }
 
 /// What this daemon knows about one live link.
@@ -471,6 +494,11 @@ impl DaemonService {
             links: Arc::new(std::sync::Mutex::new(HashMap::new())),
             local_screen: options.screen,
             keymap_dir: options.keymap_dir,
+            backend: options.backend,
+            redial_paused: Arc::new(AtomicBool::new(false)),
+            heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            export_dir: None,
+            log_tail: None,
         };
         service.spawn_active_screen_follower();
         service.spawn_diagnostics_ticker();
@@ -481,6 +509,17 @@ impl DaemonService {
     /// Consuming builder used when test hooks are on; off otherwise.
     pub fn with_test_hooks(mut self, enabled: bool) -> Self {
         self.test_hooks = enabled;
+        self
+    }
+
+    /// Where `export_diagnostics` writes, and the log tail it includes.
+    pub fn with_diagnostics_export(
+        mut self,
+        dir: Option<PathBuf>,
+        log_tail: Option<LoggingHandle>,
+    ) -> Self {
+        self.export_dir = dir;
+        self.log_tail = log_tail;
         self
     }
 
@@ -877,6 +916,7 @@ impl DaemonService {
             device.last_seen = Utc::now();
         })
         .await;
+        self.redial_paused.store(false, Ordering::Relaxed);
         self.set_link_state(DaemonLinkState::Connected);
     }
 
@@ -912,7 +952,8 @@ impl DaemonService {
         if !any_live {
             // Discovery keeps announcing and will redial on its own, so
             // `Reconnecting` while auto-reconnect is on.
-            let auto_reconnect = self.settings_tx.borrow().auto_reconnect;
+            let auto_reconnect = self.settings_tx.borrow().auto_reconnect
+                && !self.redial_paused.load(Ordering::Relaxed);
             self.set_link_state(if auto_reconnect {
                 DaemonLinkState::Reconnecting
             } else {
@@ -969,7 +1010,6 @@ impl DaemonService {
                     for (id, device) in state.devices.iter_mut() {
                         if *id == target {
                             device.state = DeviceState::Active;
-                            device.last_seen = Utc::now();
                         } else if device.state == DeviceState::Active {
                             device.state = DeviceState::Inactive;
                             from = Some(device.name.clone());
@@ -1141,6 +1181,7 @@ impl DaemonService {
                 candidates,
                 target_name: None,
                 error: None,
+                code: None,
             };
         }
         self.take_pairing_timer().await;
@@ -1315,6 +1356,18 @@ impl DaemonService {
         let (mut session, peer_key) = self.security.initiate(channel, &self.identity).await?;
         let peer_public_key = peer_key.to_vec();
 
+        // Show the verification code now, while the other person decides.
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage == PairingStage::Requesting {
+                state.pairing_session.code = Some(pairing_code(
+                    &self.identity.public_key_bytes(),
+                    &peer_public_key,
+                ));
+            }
+        }
+        self.emit_pairing_session().await;
+
         let (local_name, local_os) = self.local_device_identity().await;
         let request = PairingRequest {
             device_name: local_name,
@@ -1426,7 +1479,7 @@ impl DaemonService {
                 request_id: format!("ipr-{:032x}", rand::random::<u128>()),
                 device_name: request.device_name.clone(),
                 device_os: request.device_os,
-                fingerprint: key_fingerprint(&peer_public_key),
+                fingerprint: pairing_code(&self.identity.public_key_bytes(), &peer_public_key),
                 address: peer_addr.map(|a| a.ip().to_string()).unwrap_or_default(),
             };
 
@@ -1623,6 +1676,9 @@ impl DaemonService {
         &self,
         address: ChannelAddress,
     ) -> Option<(Box<dyn Channel>, DeviceId, ConnectionPrecedence)> {
+        if !self.may_dial() {
+            return None;
+        }
         // A daemon that has never paired with anything has nothing to
         // reconnect to — skip the whole dial (a TCP connect plus a full
         // Noise handshake, repeated for every discovered peer on every
@@ -1853,23 +1909,6 @@ impl DaemonService {
         self.settings_tx.send_replace(settings);
     }
 
-    /// Grants the OS input-capture permission. Matches the mock's
-    /// always-succeeds behavior — a real OS-level denial is explicit
-    /// future work once track E's platform adapters can report one.
-    #[tracing::instrument(skip(self))]
-    pub async fn request_permission(&self) -> Result<(), FlowError> {
-        let permission = {
-            let mut state = self.state.write().await;
-            if state.permission.granted {
-                return Err(FlowError::PermissionAlreadyGranted);
-            }
-            state.permission.granted = true;
-            state.permission.clone()
-        };
-        self.permission_tx.send_replace(permission);
-        Ok(())
-    }
-
     /// Reissues a connection attempt after the link has been given up on
     /// — `docs/contracts/daemon-ipc.md`'s `disconnected --(user
     /// retries)--> connecting` and `error --(user retries)--> connecting`
@@ -1889,6 +1928,7 @@ impl DaemonService {
         ) {
             return Err(FlowError::LinkNotRecoverable(current));
         }
+        self.redial_paused.store(false, Ordering::Relaxed);
         self.link_state_tx.send_replace(DaemonLinkState::Connecting);
         Ok(())
     }
@@ -1940,7 +1980,7 @@ impl Drop for LinkRegistration {
 
 /// A real paired device's stable identity: derived from its proven `H1`
 /// public key, not its self-reported name — multiple machines can
-/// legitimately advertise the same display name (`docs/tasks/daemon-todos.json`'s
+/// legitimately advertise the same display name (`docs/archive/tasks/daemon-todos.json`'s
 /// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.
@@ -1956,29 +1996,26 @@ fn current_host_os() -> HostOs {
     crate::platform_backend::native_host_os()
 }
 
-/// The OS input-capture permission this daemon starts with, per platform.
-///
-/// Only macOS gates low-level input capture behind a user-granted
-/// permission (Accessibility), and only there can the daemon meaningfully
-/// ask for it — so macOS starts `granted: false` and the UI's "Allow"
-/// flow is real. Windows (`WH_KEYBOARD_LL`/`SendInput`) and Linux
-/// (evdev/uinput, gated by install-time group membership the running
-/// process can't change) need nothing the UI could grant at runtime, so
-/// they start `granted: true` with an accurate name rather than showing
-/// the user a permission prompt that does nothing.
+/// The permission state of a service with no platform attached (tests):
+/// macOS starts ungranted so the permission flow can be exercised, the
+/// others start granted. A real engine probes the OS instead
+/// (`permissions::initial_permission`).
 fn default_permission(host_os: HostOs) -> PermissionStatus {
     match host_os {
         HostOs::Macos => PermissionStatus {
             name: "Accessibility access".to_string(),
             granted: false,
+            items: Vec::new(),
         },
         HostOs::Windows => PermissionStatus {
             name: "Input monitoring".to_string(),
             granted: true,
+            items: Vec::new(),
         },
         HostOs::Linux => PermissionStatus {
             name: "Input device access".to_string(),
             granted: true,
+            items: Vec::new(),
         },
     }
 }
@@ -2456,7 +2493,7 @@ mod tests {
 
         // No emit has happened yet — a fresh subscriber must still see the
         // seeded value, proving late-subscribe replay (the exact bug class
-        // the Dart mock's async*-based _StateChannel hit before its
+        // the old mock's async*-based _StateChannel hit before its
         // Stream.multi rewrite).
         let devices = service.watch_devices().borrow().clone();
         assert_eq!(devices.len(), 3);
@@ -3085,7 +3122,7 @@ mod tests {
         let settings = service.watch_settings().borrow().clone();
         assert!(!settings.share_mouse);
         assert!(settings.share_keyboard);
-        assert!(settings.launch_at_login);
+        assert!(!settings.launch_at_login);
     }
 
     #[tokio::test]

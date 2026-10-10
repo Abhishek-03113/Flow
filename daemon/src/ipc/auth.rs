@@ -16,7 +16,7 @@
 //! regardless of which header carries it.
 //!
 //! A file (not a database row) so a completely independent process
-//! (Flutter, a `websocat`/manual test client) can read it without
+//! (a UI, a `websocat`/manual test client) can read it without
 //! depending on `flow-core`'s SQLite schema.
 
 use std::fs;
@@ -31,15 +31,14 @@ use std::os::unix::fs::PermissionsExt;
 /// Where the token lives: `~/.flow/ipc.token`. Deliberately *not*
 /// `directories::ProjectDirs`'s per-OS nested app-data path — a plain
 /// `<home>/.flow/...` path is trivial for an independent process in a
-/// different language (Flutter's `ipc_daemon_repository.dart`) to
+/// different language (the UI's `WebSocketTransport`) to
 /// compute identically, without reimplementing `ProjectDirs`' per-OS
 /// layout rules just to find one file.
 ///
 /// `FLOW_IPC_TOKEN_PATH` overrides the location outright — needed to run
 /// a second `flow-daemon` instance on one machine (paired with
 /// `FLOW_IPC_PORT` and `FLOW_DATA_DIR`) so the two instances don't share
-/// a single token file. The matching Flutter client reads the same env
-/// var (`--dart-define=FLOW_IPC_TOKEN_PATH`).
+/// a single token file. A client is given the same path.
 pub fn token_path() -> PathBuf {
     if let Some(path) = std::env::var_os("FLOW_IPC_TOKEN_PATH") {
         return PathBuf::from(path);
@@ -50,8 +49,8 @@ pub fn token_path() -> PathBuf {
         .join("ipc.token")
 }
 
-/// The current user's home directory, resolved the same way the Flutter
-/// client's `ipc_auth.dart` resolves it — straight from `USERPROFILE`
+/// The current user's home directory, resolved the same way a client
+/// resolves it — straight from `USERPROFILE`
 /// (Windows) / `HOME` (elsewhere) — so both sides independently compute
 /// the identical `~/.flow/ipc.token` path. Falls back to the platform
 /// API (`directories`) only if that variable is somehow unset, which is

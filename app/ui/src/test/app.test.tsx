@@ -31,6 +31,23 @@ describe('Home', () => {
     expect(await screen.findByTestId('pairing-found')).toBeInTheDocument();
   });
 
+  it('with no paired computer the link is neutral: no error banner, no "null ms"', async () => {
+    renderApp('no-devices');
+    await screen.findByText('Add your first computer');
+    expect(screen.queryByText('Not connected')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try Again' })).not.toBeInTheDocument();
+    expect(screen.getAllByText('No computers yet').length).toBeGreaterThan(0);
+    expect(screen.getByText('Switch time').previousElementSibling).toHaveTextContent('—');
+    expect(document.body).not.toHaveTextContent('null');
+  });
+
+  it('a paired computer that is unreachable still gets the Not connected banner', async () => {
+    renderApp('disconnected');
+    await screen.findByRole('button', { name: 'Try Again' });
+    expect(screen.getAllByText('Not connected').length).toBeGreaterThan(1);
+    expect(screen.getByRole('button', { name: 'Try Again' })).toBeInTheDocument();
+  });
+
   it('controlled computers can release control', async () => {
     const user = userEvent.setup();
     const { client } = renderApp('controlled');
@@ -38,7 +55,7 @@ describe('Home', () => {
       'Desk PC is controlling this computer',
     );
     await user.click(screen.getByRole('button', { name: 'Release control' }));
-    await waitFor(() => expect(client.getSnapshot().controlState?.activeScreen).toBe('d2'));
+    await waitFor(() => expect(client.getSnapshot().controlState?.entered).toBe(false));
     expect(screen.getByTestId('status-title')).toHaveTextContent('This computer is ready');
   });
 
@@ -145,11 +162,43 @@ describe('Link state banners', () => {
     expect(await screen.findByTestId('permission-guide-macos')).toBeInTheDocument();
   });
 
+  it('macOS lists Accessibility and Input Monitoring separately, each with its own Settings link', async () => {
+    const user = userEvent.setup();
+    const { client } = renderApp('permission-missing');
+    const opened: string[] = [];
+    const original = client.openPermissionSettings;
+    client.openPermissionSettings = async (name: string) => {
+      opened.push(name);
+      await original(name);
+    };
+    await user.click(await screen.findByRole('button', { name: 'Allow…' }));
+    const guide = await screen.findByTestId('permission-guide-macos');
+    expect(guide).toHaveTextContent('Accessibility');
+    expect(guide).toHaveTextContent('Input Monitoring');
+    const buttons = within(guide).getAllByRole('button', { name: 'Open System Settings' });
+    expect(buttons).toHaveLength(2);
+    await user.click(buttons[1]!);
+    expect(opened).toEqual(['Input Monitoring']);
+  });
+
+  it('Stop Trying cancels reconnecting for now without turning automatic reconnecting off', async () => {
+    const user = userEvent.setup();
+    const { client } = renderApp('reconnecting');
+    await user.click(await screen.findByRole('button', { name: 'Stop Trying' }));
+    await waitFor(() => expect(client.getSnapshot().linkState).toBe('disconnected'));
+    expect(client.getSnapshot().settings?.autoReconnect).toBe(true);
+    expect(await screen.findByRole('button', { name: 'Try Again' })).toBeInTheDocument();
+  });
+
   it('Windows and Linux get their own guidance', async () => {
     const user = userEvent.setup();
     renderApp('permission-missing', '/home', 'linux');
     await user.click(await screen.findByRole('button', { name: 'Allow…' }));
-    expect(await screen.findByTestId('permission-guide-linux')).toHaveTextContent('usermod -aG input');
+    const guide = await screen.findByTestId('permission-guide-linux');
+    expect(within(guide).getByText('sudo usermod -aG input $USER')).toBeInTheDocument();
+    expect(within(guide).getAllByRole('button', { name: /^Copy command/ })).toHaveLength(2);
+    expect(within(guide).getByRole('button', { name: 'Check Again' })).toBeInTheDocument();
+    expect(within(guide).getByText(/Wayland/)).toHaveClass('t-footnote');
   });
 });
 

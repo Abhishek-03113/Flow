@@ -13,6 +13,7 @@ import { useState } from "react";
 import {
   Alert,
   Badge,
+  CodeBlock,
   Banner,
   Button,
   EmptyState,
@@ -225,6 +226,7 @@ export function DesignGallery() {
             <Badge tone="orange">Needs attention</Badge>
             <Badge tone="red">Offline</Badge>
           </div>
+          <CodeBlock>sudo usermod -aG input $USER</CodeBlock>
           <div style={line}>
             <Spinner label="Loading" />
             <Spinner size={24} />

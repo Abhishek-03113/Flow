@@ -244,6 +244,10 @@ Props: `label`, child element (gets `aria-describedby`). For icon-only buttons.
 
 Props: `tone`, `icon?`, `title`, children (one short sentence), `actions?`, `role` (`status`|`alert`). Wrap several in `.fl-banner-region`.
 
+### CodeBlock — `.fl-codeblock`
+
+Props: `children: string` (the command), `onCopy?()`. Monospace command on a tertiary surface with a Copy button that confirms "Copied". Use it for any shell command a person must run; never inline commands in secondary text.
+
 ### Layout helpers
 
 `.fl-card` (white rounded panel), `.fl-grid` (gap grid), `.fl-notice` / `.fl-notice--red` (inline warning under a row), `.fl-code` (large mono verification code), `.fl-center` (centred stack), `.fl-glyph-circle` (+ `--green --red --accent`), `.fl-pre` (copyable command), `.fl-field` / `.fl-field__label` (label above a control).

@@ -3,4 +3,5 @@
 
 pub mod auth;
 pub mod dispatch;
+pub mod events;
 pub mod server;

@@ -1,64 +1,44 @@
 # Daemon IPC Contract
 
-Contract version: **0.2.0** (see `CHANGELOG.md`: the controller/controlled model, new commands and events). Original 0.1.0 baseline (transport decided in **0.1.1**, `retry_connection` added in **0.1.2**, incoming pairing prompt added in **0.1.3**, see `CHANGELOG.md` — all three non-breaking addenda, not shape changes). This is the shape of the local control channel between the Flutter UI and the daemon (`docs/product/vision.md` §9) — commands the UI sends, state the daemon pushes back.
+Contract version: **0.2.1** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands.
 
-**Transport: WebSocket over loopback TCP, `127.0.0.1:47823`** (`flow_core::ipc::IPC_PORT`), not a Unix domain socket or named pipe. One implementation covers macOS/Windows/Linux for v0.1 instead of `#[cfg(target_os)]` branching in the IPC layer itself.
+**Three transports, one contract** (see `README.md`): the desktop app calls the engine in-process (Tauri `flow_command(command, payload)` → result or `{code, message}` error; state arrives as `flow://event` events `{event, payload}`), `flow-daemon` serves the same over a loopback WebSocket, and the UI's mock implements both shapes in memory. The rest of this document uses the WebSocket envelope; the Tauri bridge carries the identical command names, payloads, results, errors and events.
 
-**Authentication: a shared token, not just the loopback address.** `127.0.0.1` is reachable by *any* local process — not only the intended Flutter UI, but also, for instance, a browser tab's own `WebSocket` (which can't set arbitrary HTTP headers, but can set the subprotocol list). The daemon (`daemon/src/ipc/auth.rs`) generates a random token on first run, persisted at `~/.flow/ipc.token`, and every connection must present it as the WebSocket subprotocol (`Sec-WebSocket-Protocol`) during the handshake or the connection is rejected outright (`daemon/src/ipc/server.rs`) — the handshake never completes, so a rejected client never sees a single event or gets to send a single command. Flutter's `IpcDaemonRepository` reads the same file (`flutter/lib/data/ipc_auth.dart`) and presents it automatically. Socket-based hardening (moving off a TCP port entirely, e.g. to a Unix domain socket with filesystem permissions) is still explicitly deferred to a later reliability track rather than forgotten — this token is what makes the loopback port itself safe to keep using in the meantime, not a replacement for that longer-term hardening.
+**WebSocket: loopback TCP, `127.0.0.1:47823`** (`flow_core::ipc::IPC_PORT`, `FLOW_IPC_PORT` overrides). Served by `flow-daemon` always, and by the desktop app only with `FLOW_DEV_WS=1` (production has no local socket).
 
-**Status: implemented by `flow-daemon`, not just the mock.** `daemon/src/ipc/{dispatch,server}.rs` realizes this envelope for real — `daemon/tests/ipc_protocol.rs` is the end-to-end proof, the Rust-side equivalent of what `flutter/test/data/mock_daemon_repository_test.dart` proves for the mock. `flutter/lib/data/mock_daemon_repository.dart` remains the *other* implementation this contract governs — both must agree with the JSON shapes below, not just one of them.
+**Authentication (WebSocket only): a shared token.** `127.0.0.1` is reachable by *any* local process, including a browser tab's own `WebSocket` (which can set the subprotocol list but cannot read files). The engine generates a random token on first run (`~/.flow/ipc.token`, `FLOW_IPC_TOKEN_PATH` overrides) and every connection must present it as the WebSocket subprotocol (`Sec-WebSocket-Protocol`) or the handshake is rejected (`daemon/src/ipc/server.rs`). The UI's `WebSocketTransport` takes it from `?token=`. The in-process Tauri bridge needs no token because there is no socket.
 
-## The interface
+**Status: implemented.** `daemon/src/ipc/{dispatch,events,server}.rs`; `daemon/tests/ipc_protocol.rs` is the end-to-end proof; `app/ui/src/client/mockEngine.ts` is the other implementation.
 
-Everything the UI does with the daemon goes through one Dart interface:
+## The client interface
 
-```dart
-abstract class DaemonRepository {
-  // State streams — the daemon pushes, the UI only ever reads.
-  Stream<List<Device>> watchDevices();
-  Stream<DaemonLinkState> watchLinkState();
-  Stream<PairingSession> watchPairingSession();
-  Stream<FlowSettings> watchSettings();
-  Stream<PermissionStatus> watchPermission();
-  Stream<IncomingPairingRequest?> watchIncomingPairingRequest();
+Everything the UI does with the engine goes through `FlowClient` (`app/ui/src/client/flowClient.ts`):
 
-  // Commands — the UI asks, the daemon acts and the result shows up
-  // through the streams above, not through the returned Future's value.
-  // The Future only resolves/rejects to say the command was accepted or
-  // rejected; it never carries new state.
-  Future<void> switchActiveDevice(String deviceId);
-  Future<void> removeDevice(String deviceId);
-  Future<void> startPairing();
-  Future<void> cancelPairing();
-  Future<void> pairWithCandidate(String candidateId);
-  Future<void> setSwitchKey(SwitchKeyBinding binding);
-  Future<void> updateSettings(SettingsPatch patch);
-  Future<void> resetSettings();
-  Future<void> requestPermission();
-  Future<void> retryConnection();
-  Future<void> respondToPairingRequest(String requestId, PairingDecision decision);
-}
-```
+- **State** is pushed, never fetched. The client folds each event into one immutable `FlowState` (`getSnapshot`/`subscribe`, read with `useSyncExternalStore`).
+- **Commands** are methods (`switchTo`, `removeDevice`, `startPairing`, `updateSettings`, `requestPermission`, `cancelReconnect`, …) returning a promise that resolves when the engine accepted the command (with the answer, for the few commands that have one) and rejects with `FlowCommandError(code, message)` when it refused. The effect shows up on the state, not in the promise.
+- **Transports** (`Transport`: `connect`, `send(command, payload) → result`, `close`) are Tauri, WebSocket and Mock. Payload keys are `snake_case` on the wire; `mapper.ts` is the only place keys are converted.
 
-Why streams-out / commands-in rather than request/response for everything: device state, link health, and settings can all change because of what's happening on the *other* computer (vision.md §13, "active state should be synchronized between connected devices"), not just because of a local command. A stream is the only shape that's still correct when the daemon on the other machine is the one that caused the change. Commands stay `Future<void>` (fire-and-confirm) because their effect is always observable on a stream — a second return channel for the same data would be a second source of truth.
+Why events-out / commands-in: device state, link health and settings change because of what happens on the *other* computer, not only because of local commands. A pushed stream is the only shape that stays correct then.
 
 ## Wire envelope
 
 ```json
-// UI -> daemon
-{ "id": "req-17", "command": "switch_active_device", "payload": { "device_id": "d2" } }
+// UI -> engine
+{ "id": "req-17", "command": "switch_to", "payload": { "target": "d2" } }
 
-// daemon -> UI, acknowledging req-17
+// engine -> UI, acknowledging req-17
 { "id": "req-17", "ok": true }
+// ... or with an answer (get_keymap, reveal_config_dir, export_diagnostics, open_permission_settings)
+{ "id": "req-18", "ok": true, "result": { "path": "/home/me/.config/flow-daemon/keymaps" } }
 { "id": "req-19", "ok": false, "error": { "code": "device_not_found", "message": "no device d2" } }
 
-// daemon -> UI, unsolicited state push (no id)
+// engine -> UI, unsolicited state push (no id)
 { "event": "devices_changed", "payload": [ /* Device[] */ ] }
 ```
 
-- `id` on a command is generated by the UI and echoed back in exactly one ack; it's how the UI resolves the right `Future`, not a general request/response pairing (there is no `get_devices` command — see below).
-- Every `watch*` stream corresponds to one `event` name pushed whenever that slice of state changes: `devices_changed`, `link_state_changed`, `pairing_session_changed`, `settings_changed`, `permission_changed`, `incoming_pairing_request_changed`, and since 0.2.0 `control_state_changed`, `remap_rules_changed`, `screen_layout_changed`, `diagnostics_changed`. The daemon sends all ten on connect, in that order, so the UI never needs an explicit "give me the current state" command — connecting to the channel and subscribing *is* the initial fetch. `incoming_pairing_request_changed` is initially `null`; a request only ever appears on it later, when an untrusted device actually connects.
-- Error `code` is a stable machine-readable string; `message` is human-readable and not matched on. On the Dart side this is `DaemonCommandException(code, message)` (`flutter/lib/domain/daemon_command_exception.dart`), thrown by any command's `Future` when the daemon rejects it. Codes currently thrown by the mock, one per precondition in the table below: `device_not_found`, `device_not_switchable`, `device_not_removable`, `pairing_in_progress`, `pairing_not_active`, `pairing_not_ready`, `candidate_not_found`, `invalid_switch_key`, `permission_already_granted`, `link_not_recoverable`, `pairing_request_not_found`; since 0.2.0 also `not_controller`, `not_controlled`, `no_controller`, `invalid_remap_rule`, `invalid_layout`, `internal_error`. A real daemon can add codes (e.g. an OS-level `permission_denied` when the user declines the system prompt, which the mock doesn't simulate since `request_permission` always succeeds) without this being a breaking change — the UI only branches on `code` where it has to, and treats unrecognized codes by falling back to showing `message`.
+- `id` is generated by the UI and echoed in exactly one ack. The answer of a command is **`result`** everywhere (engine, WebSocket, Tauri, mock).
+- Ten state events: `devices_changed`, `link_state_changed`, `pairing_session_changed`, `settings_changed`, `permission_changed`, `incoming_pairing_request_changed`, `control_state_changed`, `remap_rules_changed`, `screen_layout_changed`, `diagnostics_changed`. They are sent on connect in that order (`incoming_pairing_request_changed` is `null` until a request exists) and then on every change, so connecting *is* the initial fetch. Over Tauri there is no connect, so the UI sends **`resync`** after subscribing and the engine re-sends all ten; `resync` also works on the WebSocket.
+- Error `code` is stable and machine-readable; `message` is a developer string and is not matched on. Codes: `device_not_found`, `device_not_switchable`, `device_not_removable`, `pairing_in_progress`, `pairing_not_active`, `pairing_not_ready`, `candidate_not_found`, `invalid_switch_key`, `permission_already_granted`, `permission_not_found`, `link_not_recoverable`, `not_reconnecting`, `pairing_request_not_found`, `not_controller`, `not_controlled`, `no_controller`, `invalid_remap_rule`, `invalid_layout`, `invalid_payload`, `unknown_command`, `internal_error`. The UI maps codes to friendly copy (`app/ui/src/copy.ts`) and falls back to a generic message for unknown ones.
 
 ## Commands
 
@@ -78,7 +58,13 @@ Why streams-out / commands-in rather than request/response for everything: devic
 | `set_switch_key` | `SwitchKeyBinding` | Binding non-empty. | Settings updated. Emits `settings_changed`. |
 | `update_settings` | `SettingsPatch` (any subset of `FlowSettings` fields) | — | Merged into current settings. Emits `settings_changed`. |
 | `reset_settings` | — | — | Settings restored to defaults. Emits `settings_changed`. |
-| `request_permission` | — | `PermissionStatus.granted == false` | Triggers the OS permission prompt; result reflected via `permission_changed`. |
+| `request_permission` | — | `PermissionStatus.granted == false` | Shows the real OS prompt where the OS has one (macOS Accessibility and Input Monitoring); the engine re-probes and `permission_changed` follows. |
+| `resync` | — | — | Re-sends all ten state events (the Tauri equivalent of connecting). |
+| `recheck_permissions` | — | — | Re-runs the OS permission probe now ("Check Again"); result arrives as `permission_changed`. |
+| `open_permission_settings` | `{ name }` | `name` is a `PermissionStatus.items[].name` (`permission_not_found`). | Answers `{ url }` for the OS settings page (`null` if none); the desktop app opens it. |
+| `reveal_config_dir` | — | — | Answers `{ path }` of the keymap/config folder (created if missing); the desktop app opens it in the file manager. |
+| `export_diagnostics` | — | — | Writes a JSON bundle (settings, devices without keys, link/permission state, diagnostics, recent log tail) to `<data dir>/diagnostics/` and answers `{ path }`. |
+| `cancel_reconnect` | — | Link state is `reconnecting` (`not_reconnecting`). | Stops redialling after a lost link until `retry_connection`; link becomes `disconnected`. |
 | `retry_connection` | — | `DaemonLinkState` is `disconnected` or `error` | Moves link state to `connecting`; actual recovery to `connected` follows the normal link-health path (automatic on a real daemon, e.g. discovery redialing a trusted peer) and shows up via `link_state_changed` like any other transition — this command never jumps straight to `connected` itself. |
 | `respond_to_pairing_request` | `{ request_id, decision: "accept" \| "reject" }` | A request with `request_id` is currently pending. | Unblocks the daemon's pairing handshake with that decision and clears the pending request (emits `incoming_pairing_request_changed: null`). On `accept`, the peer is added and appears via `devices_changed`. Error `pairing_request_not_found` if no such request is pending (already answered / timed out / withdrawn). |
 

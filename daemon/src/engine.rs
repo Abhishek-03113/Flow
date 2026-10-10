@@ -135,11 +135,19 @@ impl Engine {
                     host_os: config.backend.host_os(),
                     screen: config.backend.screen_size(),
                     keymap_dir: config.keymap_dir.clone(),
+                    backend: Some(Arc::clone(&config.backend)),
                 },
             )
             .await
         };
-        let service = Arc::new(service.with_test_hooks(config.test_hooks));
+        let service = Arc::new(
+            service
+                .with_test_hooks(config.test_hooks)
+                .with_diagnostics_export(
+                    Some(config.data_dir.join("diagnostics")),
+                    config.logging.clone(),
+                ),
+        );
         if config.test_hooks {
             tracing::warn!("test hooks are enabled — the debug_inject_input command is available");
         }
@@ -163,6 +171,7 @@ impl Engine {
                 &service, logging,
             ));
         }
+        tasks.spawn(watch_permissions(Arc::clone(&service)));
         tasks.spawn(manage_capture(
             Arc::clone(&service),
             Arc::clone(&config.backend),
@@ -272,12 +281,23 @@ struct Runtime {
     tasks: Tasks,
 }
 
+/// Re-checks the OS input permissions every couple of seconds, so a grant
+/// made in System Settings (or `usermod`) shows up without a restart.
+async fn watch_permissions(service: Arc<DaemonService>) {
+    let mut poll = tokio::time::interval(Duration::from_secs(2));
+    loop {
+        poll.tick().await;
+        service.refresh_permissions().await;
+    }
+}
+
 /// Captures physical input while, and only while, this device is a
 /// controller: a controlled device never captures for forwarding. The
 /// router is the capture sink, so one capture serves hotkeys,
 /// suppression and routing.
 async fn manage_capture(service: Arc<DaemonService>, backend: Arc<dyn PlatformBackend>) {
     let mut settings = service.watch_settings();
+    let mut permission = service.watch_permission();
     let mut capture: Option<CaptureGuard> = None;
     loop {
         let controller = settings.borrow_and_update().role == Role::Controller;
@@ -293,8 +313,11 @@ async fn manage_capture(service: Arc<DaemonService>, backend: Arc<dyn PlatformBa
         } else if !controller {
             capture = None;
         }
-        if settings.changed().await.is_err() {
-            return;
+        // Wake on a role change, or when a missing permission is granted
+        // (a failed capture is retried then).
+        tokio::select! {
+            changed = settings.changed() => if changed.is_err() { return },
+            changed = permission.changed() => if changed.is_err() { return },
         }
     }
 }

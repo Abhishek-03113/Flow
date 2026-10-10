@@ -9,6 +9,7 @@ import { PairingSheet } from './features/devices/PairingSheet';
 import { Onboarding } from './features/onboarding/Onboarding';
 import { AppShell } from './features/shell/AppShell';
 import { PermissionSheet } from './features/shell/PermissionSheet';
+import { ShellNavigation } from './features/shell/ShellNavigation';
 import { SwitchHud } from './features/shell/SwitchHud';
 import { TrayView } from './features/tray/TrayView';
 import { FlowProvider, useFlow } from './state/FlowProvider';
@@ -76,6 +77,7 @@ function Routes({
       {!onboarding && <IncomingRequestSheet />}
       {!onboarding && <PairingSheet />}
       <PermissionSheet />
+      {!isTray && <ShellNavigation />}
       {!isTray && !onboarding && <SwitchHud />}
     </UiProvider>
   );

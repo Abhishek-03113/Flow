@@ -4,7 +4,7 @@
 //! the wrap-third-party-deps rule `flow_core::channel::Channel` exists
 //! to enforce. Distinct from track C's local IPC WebSocket server
 //! (`crate::ipc::server`): different port, a peer daemon rather than the
-//! Flutter UI, and `ChannelMessage` traffic rather than
+//! UI, and `ChannelMessage` traffic rather than
 //! `IpcRequest`/`IpcResponse`.
 
 use std::net::SocketAddr;

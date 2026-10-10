@@ -68,7 +68,7 @@ impl Serialize for Device {
     /// so the two can never disagree.
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut out = serializer.serialize_struct("Device", 9)?;
+        let mut out = serializer.serialize_struct("Device", 10)?;
         out.serialize_field("id", &self.id)?;
         out.serialize_field("name", &self.name)?;
         out.serialize_field("os", &self.os)?;
@@ -78,6 +78,7 @@ impl Serialize for Device {
         out.serialize_field("role", &self.role)?;
         out.serialize_field("screen", &self.screen)?;
         out.serialize_field("link_error", &self.link_error)?;
+        out.serialize_field("is_local", &(self.id.0 == LOCAL_DEVICE_ID))?;
         out.end()
     }
 }

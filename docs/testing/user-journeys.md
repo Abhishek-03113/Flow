@@ -34,7 +34,7 @@ Every `[~]` in this document shares one root reason: the codebase is
 "implemented + unit-tested" but **has never been run across two real machines**
 (`daemon/README.md` is explicit about this). Physical validation is the single largest
 outstanding item and only the maintainer can perform it — see
-[`manual-testing-strategy.md`](manual-testing-strategy.md) Tier 5/6.
+[`docs/archive/manual-testing-strategy.md`](../archive/manual-testing-strategy.md) Tier 5/6.
 
 ---
 
@@ -52,23 +52,23 @@ starts hotkey runner (switch key works with no UI)
 local device is available; daemon serves the IPC contract until Ctrl-C
 ```
 
-Verified: builds and runs on this Windows host; `docs/tasks/todos-get-app-working.json` track A/C.
+Verified: builds and runs on this Windows host; `docs/archive/tasks/todos-get-app-working.json` track A/C.
 Startup misconfig (port in use, unwritable data dir) exits non-zero with a one-line reason,
 not a panic.
 
 ## Journey 2 — Start the UI `[x]`
 
 ```
-flutter run (FLOW_DAEMON_MODE=ipc)
+start the Flow app (embedded engine) or open the UI with ?daemon=ws://…
   ↓
-connects to the daemon over local IPC (token-authenticated)
+reaches the engine (in-process Tauri bridge, or WebSocket with token)
   ↓
 first launch → onboarding (welcome → permission → pair → done)
   ↓
 dashboard shows the real local device and real link state
 ```
 
-Verified live on Windows against a real daemon (`docs/tasks/todos-get-app-working.json` tracks B, D).
+Verified live on Windows against a real daemon (`docs/archive/tasks/todos-get-app-working.json` tracks B, D).
 No mock/placeholder data in the shipped UI.
 
 ## Journey 3 — Daemon works without the UI `[x]`
@@ -95,7 +95,7 @@ Device A daemon        Device B daemon
         each parses the other's announce → pairing candidate
 ```
 
-Verified with two daemon instances on one Windows box (`docs/tasks/todos-get-app-working.json` track A).
+Verified with two daemon instances on one Windows box (`docs/archive/tasks/todos-get-app-working.json` track A).
 A real Mac running `flow-daemon` was also observed as a live LAN candidate during that
 work. Multi-homed-host and firewall caveats are documented in `daemon/README.md` ("Channels").
 
@@ -113,7 +113,7 @@ both daemons persist the other in the trust store; link state → Connected
 
 `[x]` between two Windows instances (mutual persistence + both link states Connected,
 verified). `[~]` **Windows ↔ Mac specifically** has not been completed end-to-end — it needs
-the maintainer to press "Pair" on the Mac too (`docs/tasks/todos-get-app-working.json` D7).
+the maintainer to press "Pair" on the Mac too (`docs/archive/tasks/todos-get-app-working.json` D7).
 
 ## Journey 6 — Use the keyboard on the remote device `[~]`
 
@@ -230,7 +230,7 @@ peer returns → redial → Noise handshake → streaming resumes → switching 
 
 `[~]` Release-on-disconnect, held-input synthesis, discovery-driven redial, and link-state
 transitions are implemented and unit-tested. Not validated on two machines. A separate
-unresolved concern ("#5", a WebSocket 1006 abnormal close possibly misread by the Flutter
+unresolved concern ("#5", a WebSocket 1006 abnormal close possibly misread by the old Flutter
 IPC layer as a fatal daemon disconnect) is evidence-blocked pending a real run.
 
 ## Journey 12 — UI reflects real daemon state `[~]`
@@ -243,7 +243,7 @@ paired device list, pairing prompts
 ```
 
 `[x]` for device list, Active device, pairing, settings — audited live on Windows
-(`docs/tasks/todos-get-app-working.json` track B/D). `[~]` for the `Reconnecting` / `Disconnected`
+(`docs/archive/tasks/todos-get-app-working.json` track B/D). `[~]` for the `Reconnecting` / `Disconnected`
 link-state transitions driven by a *real* peer drop — only ever seen via mock/unit paths.
 
 ## Journey 13 — Restart `[x]`
@@ -257,7 +257,7 @@ discovery re-announces → previously-paired reachable peer is redialed automati
 ```
 
 `[x]` SQLite-backed persistence verified across restarts on Windows
-(`docs/tasks/todos-get-app-working.json` track A, `manual-testing-strategy.md` Tier 0). `DeviceState`
+(`docs/archive/tasks/todos-get-app-working.json` track A, `docs/archive/manual-testing-strategy.md` Tier 0). `DeviceState`
 is deliberately not persisted (no stale `Active` on boot).
 
 ---
@@ -274,5 +274,5 @@ is deliberately not persisted (no stale `Active` on boot).
 | 5 | Windows ↔ Mac pairing | `[~]` | P1 | One manual step (Pair on the Mac); path already proven Win↔Win |
 | 12 | Link-state transitions in UI | `[~]` | P2 | Cosmetic-adjacent; validated once 11 is exercised |
 
-Journeys 1–4, 13 are `[x]` and are regression-checked by `cargo test` + the Flutter e2e
-suite, not re-derived here.
+Journeys 1–4, 13 are `[x]` and are regression-checked by `cargo test` + the UI's Vitest and Playwright
+suites, not re-derived here.

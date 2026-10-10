@@ -7,6 +7,7 @@ use std::sync::{mpsc, Arc};
 
 use flow_core::device::{HostOs, ScreenSize};
 use flow_core::input::{CaptureSink, InputCapture, InputInjector};
+use flow_core::permission::PermissionItem;
 use flow_core::protocol::InputEvent;
 use flow_platform::{new_default_input_injector, DefaultInputCapture};
 
@@ -47,6 +48,19 @@ pub trait PlatformBackend: Send + Sync {
     /// event, whether local applications still see it.
     fn start_capture(&self, sink: Arc<dyn CaptureSink>) -> Result<CaptureGuard, BackendError>;
     fn new_injector(&self) -> Result<Box<dyn Injector>, BackendError>;
+
+    /// What the OS currently allows. Empty (the default) means nothing
+    /// needs granting, as on a virtual backend.
+    fn permissions(&self) -> Vec<PermissionItem> {
+        Vec::new()
+    }
+    /// Shows the OS permission prompt where one exists. `None` asks for
+    /// everything still missing.
+    fn request_permission(&self, _name: Option<&str>) {}
+    /// Where the user grants `name` in the OS settings, if anywhere.
+    fn permission_settings_url(&self, _name: &str) -> Option<String> {
+        None
+    }
 }
 
 /// The OS this binary was compiled for.
@@ -75,6 +89,18 @@ impl PlatformBackend for NativeBackend {
 
     fn cursor_position(&self) -> Option<(i32, i32)> {
         flow_platform::cursor_position()
+    }
+
+    fn permissions(&self) -> Vec<PermissionItem> {
+        flow_platform::permissions::check()
+    }
+
+    fn request_permission(&self, name: Option<&str>) {
+        flow_platform::permissions::request(name);
+    }
+
+    fn permission_settings_url(&self, name: &str) -> Option<String> {
+        flow_platform::permissions::settings_url(name).map(str::to_string)
     }
 
     fn start_capture(&self, sink: Arc<dyn CaptureSink>) -> Result<CaptureGuard, BackendError> {

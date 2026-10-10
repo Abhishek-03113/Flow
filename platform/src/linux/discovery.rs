@@ -6,7 +6,7 @@
 //! mouse axes, the two event classes `super::translate::EventTranslator`
 //! understands. This is a heuristic, not a precise "is this a keyboard"
 //! check (a device exposing a handful of media keys still qualifies) — see
-//! `docs/tasks/daemon-todos.json` E1's `buildNote`.
+//! `docs/archive/tasks/daemon-todos.json` E1's `buildNote`.
 
 use evdev::Device;
 

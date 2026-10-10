@@ -8,6 +8,7 @@
 //! place that needs to know which operating system it's running on.
 
 pub mod keymap;
+pub mod permissions;
 
 #[cfg(target_os = "linux")]
 mod linux;

@@ -1,16 +1,16 @@
-//! Mirrors `flutter/test/data/mock_daemon_repository_test.dart`'s case
-//! list against `DaemonService`, so the Rust service is tested against
-//! the same behavioral spec the Dart mock already passed
-//! (`docs/contracts/README.md` ground rule 2: "MockDaemonRepository must
-//! implement the interface exactly, including timing behavior").
+//! Behavioural spec for `DaemonService`, kept from the original mock-based
+//! UI's test list (`docs/contracts/README.md`: the service and the UI's mock
+//! engine implement the same interface, including timing behaviour). The
+//! first column is the spec case name as written for the mock.
 //!
-//! Case-for-case cross-reference (15 cases in both files) — if a case is
-//! added/renamed on one side, update the other:
+//! Case-for-case cross-reference (15 cases) — if a case is
+//! added/renamed here, update the mock engine's tests
+//! (`app/ui/src/client/mockEngine.test.ts`) too:
 //!
-//! | Dart test name                                                              | Rust test name |
+//! | Spec case name                                                              | Rust test name |
 //! |---|---|
 //! | watchDevices replays the seeded devices to a new listener                  | `watch_devices_replays_the_seeded_devices_to_a_new_subscriber` |
-//! | watchLinkState defaults to connected and reflects debugSetLinkState        | `watch_link_state_defaults_to_connected` (no Rust equivalent to `debugSetLinkState` — it's a Flutter-only dev-harness helper, not part of `DaemonRepository`/`DaemonService`) |
+//! | watchLinkState defaults to connected and reflects debugSetLinkState        | `watch_link_state_defaults_to_connected` (no Rust equivalent to `debugSetLinkState` — it's a mock-only dev helper, not part of `DaemonService`) |
 //! | switchActiveDevice moves target to active and demotes the previous active  | `switch_active_device_moves_target_active_and_demotes_the_previous_active` |
 //! | switchActiveDevice rejects a disconnected target                           | `switch_active_device_rejects_a_disconnected_target` |
 //! | switchActiveDevice rejects an unknown device                               | `switch_active_device_rejects_an_unknown_device` |
@@ -36,7 +36,7 @@ use flow_daemon::storage::Storage;
 async fn service() -> DaemonService {
     let storage = Storage::open_in_memory().await.expect("open in-memory db");
     // The mock-parity fixture: this whole file mirrors
-    // mock_daemon_repository_test.dart's case list, so it needs the same
+    // the spec case list, so it needs the same
     // seeded devices/candidates/Connected link state that mock ships.
     DaemonService::new_seeded_for_test(storage).await
 }
