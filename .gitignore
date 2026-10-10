@@ -20,6 +20,8 @@ node_modules
 dist
 test-results
 test-results-live
+test-results-qa
+test-results-qa-live
 playwright-report
 playwright-report-live
 app/src-tauri/target
