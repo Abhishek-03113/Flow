@@ -68,7 +68,8 @@ pub fn spawn(service: &DaemonService, storage: Storage) -> JoinHandle<()> {
                     }
                     let new_link = *link_rx.borrow_and_update();
                     if new_link != last_link {
-                        repo.append(
+                        append_or_warn(
+                            &repo,
                             NON_DEVICE_EVENT_ID,
                             "link_state_changed",
                             Some(&format!("{new_link:?}")),
@@ -82,6 +83,19 @@ pub fn spawn(service: &DaemonService, storage: Storage) -> JoinHandle<()> {
     })
 }
 
+/// History is best-effort: a full disk or locked database must not take
+/// the logger task down, so a failed append is logged and skipped.
+async fn append_or_warn(
+    repo: &ConnectionHistoryRepo,
+    device_id: &str,
+    event_type: &str,
+    detail: Option<&str>,
+) {
+    if let Err(err) = repo.append(device_id, event_type, detail).await {
+        tracing::warn!(%err, device_id, event_type, "could not record connection history");
+    }
+}
+
 async fn log_device_transitions(repo: &ConnectionHistoryRepo, last: &[Device], current: &[Device]) {
     // A device newly active (switch_active_device) — exactly one row per
     // switch, since only the device that *became* active is logged, not
@@ -93,7 +107,7 @@ async fn log_device_transitions(repo: &ConnectionHistoryRepo, last: &[Device], c
             .map(|d| d.state)
             .is_some_and(|state| state == flow_core::device::DeviceState::Active);
         if device.state == flow_core::device::DeviceState::Active && !was_active_before {
-            repo.append(&device.id.0, "device_activated", None).await;
+            append_or_warn(repo, &device.id.0, "device_activated", None).await;
         }
     }
 
@@ -103,7 +117,7 @@ async fn log_device_transitions(repo: &ConnectionHistoryRepo, last: &[Device], c
     // pairing produces one row, not two.
     for device in last {
         if !current.iter().any(|d| d.id == device.id) {
-            repo.append(&device.id.0, "device_removed", None).await;
+            append_or_warn(repo, &device.id.0, "device_removed", None).await;
         }
     }
 }
@@ -121,11 +135,10 @@ async fn log_pairing_transition(
             .and_then(|name| devices_snapshot.iter().find(|d| d.name == name))
             .map(|d| d.id.0.clone())
             .unwrap_or_default();
-        repo.append(&device_id, "paired", None).await;
+        append_or_warn(repo, &device_id, "paired", None).await;
     } else if current.stage == PairingStage::Failed && last.stage != PairingStage::Failed {
         let device_id = current.target_name.clone().unwrap_or_default();
-        repo.append(&device_id, "pairing_failed", current.error.as_deref())
-            .await;
+        append_or_warn(repo, &device_id, "pairing_failed", current.error.as_deref()).await;
     }
 }
 
@@ -151,7 +164,7 @@ mod tests {
         expected: usize,
     ) -> Vec<crate::storage::connection_history_repo::ConnectionHistoryEntry> {
         for _ in 0..1_000 {
-            let rows = repo.recent(device_id, 10).await;
+            let rows = repo.recent(device_id, 10).await.expect("recent history");
             if rows.len() >= expected {
                 return rows;
             }
