@@ -265,7 +265,13 @@ mod tests {
 
     #[test]
     fn every_shared_key_name_has_a_macos_target() {
-        for name in flow_core::protocol::key_names::all() {
+        use flow_core::protocol::key_names::{PAUSE, SCROLLLOCK};
+        // Macs have no Scroll Lock or Pause key (the same known gaps as the
+        // embedded macOS keymap); injecting them is dropped.
+        for name in flow_core::protocol::key_names::all()
+            .into_iter()
+            .filter(|name| name != SCROLLLOCK && name != PAUSE)
+        {
             assert!(
                 code_for_name(&name).is_some(),
                 "no macOS CGKeyCode for shared key name {name:?}"
