@@ -124,7 +124,12 @@ export function HomeView() {
               </span>
             }
           />
-          <Stat label="Switch time" value={formatMs(diag?.switchLatencyMsP50)} />
+          {controller ? (
+            <Stat label="Switch time" value={formatMs(diag?.switchLatencyMsP50)} />
+          ) : (
+            // Switching happens on the controller; here, say who that is.
+            <Stat label="Used from" value={controllerDevice?.name ?? '—'} />
+          )}
           <Stat label="Up for" value={diag ? formatUptime(diag.uptimeS) : '—'} />
         </div>
       </section>
