@@ -122,7 +122,6 @@ jobs:
           path: |
             app/ui/playwright-report/
             app/ui/test-results/
-            app/ui/screenshots/
           if-no-files-found: ignore
           retention-days: 14
 
@@ -189,6 +188,5 @@ jobs:
           path: |
             app/ui/playwright-report-live/
             app/ui/test-results-live/
-            docs/progress/track-g/
           if-no-files-found: ignore
           retention-days: 14

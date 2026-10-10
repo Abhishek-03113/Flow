@@ -96,7 +96,9 @@ New crates must add `[lints]\nworkspace = true` to their `Cargo.toml` to inherit
 
 Every milestone that changes UI or behaviour commits a screenshot to `docs/progress/<track>/NN-<milestone>.png`:
 UI work as Playwright captures in light and dark; backend work as a rendering of the test or harness output.
-Keep each PNG small (viewport-sized, no secrets, no real device names or keys).
+Keep each PNG small (viewport-sized, no secrets, no real device names or keys). The Playwright suites write
+their screenshots to git-ignored `app/ui/test-results*/screenshots/`; run them with `FLOW_UPDATE_PROGRESS_SHOTS=1`
+to refresh the committed ones in `docs/progress/`.
 
 ## Security
 

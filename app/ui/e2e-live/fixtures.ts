@@ -6,11 +6,13 @@
  */
 import { test as base, expect, type Browser, type BrowserContext, type Page } from '@playwright/test';
 import path from 'node:path';
+import { shotDir } from '../e2e/helpers';
 import { DaemonClient, Harness, type WorldSpec } from './harness';
 
 export { expect };
 
-export const SHOT_DIR = path.resolve(import.meta.dirname, '../../../docs/progress/track-g');
+/** `docs/progress/track-g/` with `FLOW_UPDATE_PROGRESS_SHOTS=1`, else `test-results-live/screenshots/track-g/`. */
+export const SHOT_DIR = shotDir('track-g', 'test-results-live');
 
 export interface OpenOptions {
   /** Start on the first-run flow instead of Home (default false). */
@@ -91,7 +93,7 @@ export const test = base.extend<{ world: WorldSpec; live: Live }>({
   },
 });
 
-/** Two pages side by side in one PNG (≤1400 px wide), for docs/progress/track-g. */
+/** Two pages side by side in one PNG (≤1400 px wide), saved under `SHOT_DIR`. */
 export async function composite(
   browser: Browser,
   file: string,
