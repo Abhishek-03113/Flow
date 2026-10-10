@@ -6,7 +6,7 @@
 //! live connection re-establishes it, never resurrected as `Active` from
 //! a stale row.
 
-use chrono::SecondsFormat;
+use chrono::{DateTime, SecondsFormat, Utc};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use rusqlite::{OptionalExtension, Row};
 
@@ -89,6 +89,21 @@ impl DeviceRepo {
                     ],
                 )
                 .expect("upsert device row");
+            })
+            .await
+    }
+
+    /// Persists only a device's `last_seen`. Unlike [`Self::upsert`] this
+    /// leaves the trust key and every other column alone, and a missing
+    /// row (device removed meanwhile) is a no-op.
+    pub async fn set_last_seen(&self, id: DeviceId, last_seen: DateTime<Utc>) {
+        self.storage
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
+                    rusqlite::params![last_seen.to_rfc3339_opts(SecondsFormat::Secs, true), id.0],
+                )
+                .expect("update device last_seen");
             })
             .await
     }
@@ -180,8 +195,6 @@ fn host_os_from_str(s: &str) -> HostOs {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{DateTime, Utc};
-
     use super::*;
     use crate::storage::Storage;
 
@@ -253,5 +266,27 @@ mod tests {
         let remaining = repo.list().await;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].device.id, DeviceId("d3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_last_seen_persists_time_and_keeps_trust_key() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let repo = DeviceRepo::new(storage);
+        repo.upsert(sample("d2", Some(vec![4, 5, 6]))).await;
+
+        let heard = DateTime::parse_from_rfc3339("2026-09-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        repo.set_last_seen(DeviceId("d2".to_string()), heard).await;
+        // A device that no longer exists is a harmless no-op.
+        repo.set_last_seen(DeviceId("gone".to_string()), heard)
+            .await;
+
+        let reloaded = repo
+            .find_by_id(DeviceId("d2".to_string()))
+            .await
+            .expect("present");
+        assert_eq!(reloaded.device.last_seen, heard);
+        assert_eq!(reloaded.public_key, Some(vec![4, 5, 6]));
     }
 }
