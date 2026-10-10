@@ -8,7 +8,7 @@ use flow_core::settings::{FlowSettings, PointerSensitivity};
 use flow_core::switch_key::SwitchKeyBinding;
 use rusqlite::{OptionalExtension, Row};
 
-use super::Storage;
+use super::{Storage, StorageError};
 
 #[derive(Clone)]
 pub struct SettingsRepo {
@@ -22,7 +22,7 @@ impl SettingsRepo {
 
     /// Loads the persisted settings, seeding [`FlowSettings::defaults`]
     /// into the table on first run (empty `settings` table).
-    pub async fn load(&self) -> FlowSettings {
+    pub async fn load(&self) -> Result<FlowSettings, StorageError> {
         self.storage
             .with_connection(|conn| {
                 let existing = conn
@@ -36,15 +36,14 @@ impl SettingsRepo {
                         [],
                         row_to_settings,
                     )
-                    .optional()
-                    .expect("query settings row");
+                    .optional()?;
 
                 match existing {
-                    Some(settings) => settings,
+                    Some(settings) => Ok(settings),
                     None => {
                         let defaults = FlowSettings::defaults();
-                        insert(conn, &defaults);
-                        defaults
+                        insert(conn, &defaults)?;
+                        Ok(defaults)
                     }
                 }
             })
@@ -52,14 +51,14 @@ impl SettingsRepo {
     }
 
     /// Persists `settings`, replacing whatever was previously saved.
-    pub async fn save(&self, settings: FlowSettings) {
+    pub async fn save(&self, settings: FlowSettings) -> Result<(), StorageError> {
         self.storage
             .with_connection(move |conn| insert(conn, &settings))
             .await
     }
 }
 
-fn insert(conn: &rusqlite::Connection, settings: &FlowSettings) {
+fn insert(conn: &rusqlite::Connection, settings: &FlowSettings) -> Result<(), StorageError> {
     conn.execute(
         "INSERT INTO settings (
              id, launch_at_login, show_tray_icon, auto_reconnect,
@@ -94,18 +93,19 @@ fn insert(conn: &rusqlite::Connection, settings: &FlowSettings) {
             settings.debug_logging,
             pointer_sensitivity_to_str(settings.pointer_sensitivity),
             settings.switch_key.label,
-            serde_json::to_string(&settings.switch_key.keys).expect("serialize switch key tokens"),
+            serde_json::to_string(&settings.switch_key.keys)?,
             role_to_str(settings.role),
             settings.return_home_key.as_ref().map(|k| &k.label),
             settings
                 .return_home_key
                 .as_ref()
-                .map(|k| serde_json::to_string(&k.keys).expect("serialize return home tokens")),
+                .map(|k| serde_json::to_string(&k.keys))
+                .transpose()?,
             settings.edge_switching,
             settings.edge_switch_delay_ms,
         ],
-    )
-    .expect("upsert settings row");
+    )?;
+    Ok(())
 }
 
 fn row_to_settings(row: &Row) -> rusqlite::Result<FlowSettings> {
@@ -122,7 +122,7 @@ fn row_to_settings(row: &Row) -> rusqlite::Result<FlowSettings> {
         pointer_sensitivity: pointer_sensitivity_from_str(&pointer_sensitivity),
         switch_key: SwitchKeyBinding {
             label: row.get(8)?,
-            keys: serde_json::from_str(&switch_key_tokens).expect("deserialize switch key tokens"),
+            keys: serde_json::from_str(&switch_key_tokens).map_err(conversion_error)?,
         },
         role: role_from_str(&row.get::<_, String>(10)?),
         return_home_key: match (
@@ -131,7 +131,7 @@ fn row_to_settings(row: &Row) -> rusqlite::Result<FlowSettings> {
         ) {
             (Some(label), Some(tokens)) => Some(SwitchKeyBinding {
                 label,
-                keys: serde_json::from_str(&tokens).expect("deserialize return home tokens"),
+                keys: serde_json::from_str(&tokens).map_err(conversion_error)?,
             }),
             _ => None,
         },
@@ -140,6 +140,10 @@ fn row_to_settings(row: &Row) -> rusqlite::Result<FlowSettings> {
         // Supplied by the engine, never stored.
         keymap_overrides_path: String::new(),
     })
+}
+
+fn conversion_error(err: serde_json::Error) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(err))
 }
 
 fn role_to_str(role: Role) -> &'static str {
@@ -182,11 +186,11 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let repo = SettingsRepo::new(storage);
 
-        let loaded = repo.load().await;
+        let loaded = repo.load().await.expect("load");
         assert_eq!(loaded, FlowSettings::defaults());
 
         // A second load reads the now-persisted row, not re-seeding.
-        let loaded_again = repo.load().await;
+        let loaded_again = repo.load().await.expect("load");
         assert_eq!(loaded_again, FlowSettings::defaults());
     }
 
@@ -195,16 +199,16 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let repo = SettingsRepo::new(storage);
 
-        let mut settings = repo.load().await;
+        let mut settings = repo.load().await.expect("load");
         settings.share_mouse = false;
         settings.pointer_sensitivity = PointerSensitivity::High;
         settings.role = Role::Controlled;
         settings.return_home_key = Some(flow_core::switch_key::presets()[1].clone());
         settings.edge_switching = false;
         settings.edge_switch_delay_ms = 250;
-        repo.save(settings.clone()).await;
+        repo.save(settings.clone()).await.expect("save");
 
-        let reloaded = repo.load().await;
+        let reloaded = repo.load().await.expect("load");
         assert_eq!(reloaded, settings);
         assert!(!reloaded.share_mouse);
         assert_eq!(reloaded.pointer_sensitivity, PointerSensitivity::High);
