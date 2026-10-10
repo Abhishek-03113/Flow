@@ -347,6 +347,7 @@ did (`injected`, `delivered_locally`, `suppressed`, state events).
 | `three-devices.spec.ts` | Cycle Mac → PC → Linux → home from the UI and with the hotkey; each computer gets only its own keys. |
 | `diagnostics.spec.ts` | Real switch time and counters after a switch (matching `diagnostics_changed`); Export Diagnostics writes a JSON bundle whose path the page shows. |
 
-Screenshots (side-by-side controller/controlled) go to `docs/progress/track-g/`. CI runs the
+Screenshots (side-by-side controller/controlled) go to `app/ui/test-results-live/screenshots/track-g/`
+(git-ignored); `FLOW_UPDATE_PROGRESS_SHOTS=1` writes them to `docs/progress/track-g/` instead. CI runs the
 suite in the `ui-e2e-live` job after `harness`, and uploads the Playwright report, traces and
 screenshots when it fails.

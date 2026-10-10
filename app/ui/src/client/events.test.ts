@@ -77,4 +77,16 @@ describe('decodeEvent', () => {
   it('ignores unknown events (forward compatible)', () => {
     expect(decodeEvent({ event: 'from_the_future', payload: {} })).toBeNull();
   });
+
+  it('keeps the engine link_error codes and maps unknown ones to protocol_error', () => {
+    const e = decodeEvent({
+      event: 'devices_changed',
+      payload: [
+        { id: 'd2', name: 'A', os: 'linux', state: 'error', link_error: 'protocol_mismatch' },
+        { id: 'd3', name: 'B', os: 'linux', state: 'error', link_error: 'some_future_code' },
+      ],
+    });
+    if (e?.type !== 'devices_changed') throw new Error('unreachable');
+    expect(e.devices.map((d) => d.linkError)).toEqual(['protocol_mismatch', 'protocol_error']);
+  });
 });

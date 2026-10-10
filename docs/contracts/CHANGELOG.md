@@ -1,5 +1,9 @@
 # Contract Changelog
 
+## 0.2.3 — review fixes (no shape changes)
+
+- **`Device.link_error` vocabulary is closed**: `role_conflict`, `protocol_mismatch`, `protocol_error`, `hello_timeout`, `connection_lost`, `injector_unavailable` (`flow_core::link::link_error`). A refusal reason received from a peer is mapped onto it (unknown text becomes `protocol_error`), and clients treat a code they don't know as `protocol_error`. The UI had assumed `version_mismatch`/`unreachable`/`untrusted`, which the engine never sends, and could not render the others.
+
 ## 0.2.2 — behaviour found by the live UI suite (no shape changes)
 
 - **Refused links are `error`, not `reconnecting`**: a link refused for `role_conflict` or `protocol_mismatch` sets the link state to `error` (the device's `link_error` says why) and the engine stops dialling that peer until this device's role changes; the peer, when its role changes, dials back and the link comes up with no `retry_connection`. A controlled device refusing a second controller is the exception: that controller keeps dialling, since the controlled device may accept it once its current controller leaves.

@@ -14,6 +14,7 @@ use std::time::Duration;
 use flow_core::channel::{Channel, ChannelError, ChannelMessage, PROTOCOL_VERSION};
 use flow_core::control::Role;
 use flow_core::device::DeviceId;
+use flow_core::link::link_error;
 use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
 use tokio::time::{interval_at, timeout, Instant};
 
@@ -97,7 +98,7 @@ async fn session(
 /// device, an orderly leave is not.
 fn peer_goodbye(reason: String) -> Result<(), String> {
     match reason.as_str() {
-        "role_conflict" | "protocol_mismatch" => Err(reason),
+        r if r == link_error::ROLE_CONFLICT || r == link_error::PROTOCOL_MISMATCH => Err(reason),
         _ => Ok(()),
     }
 }
@@ -117,7 +118,7 @@ async fn exchange_hello(
             device_name,
         })
         .await
-        .map_err(|_| "connection_lost".to_string())?;
+        .map_err(|_| link_error::CONNECTION_LOST.to_string())?;
 
     let received = timeout(env.timing.hello_timeout, async {
         loop {
@@ -128,7 +129,7 @@ async fn exchange_hello(
         }
     })
     .await
-    .map_err(|_| "hello_timeout".to_string())?;
+    .map_err(|_| link_error::HELLO_TIMEOUT.to_string())?;
 
     match received {
         Ok(ChannelMessage::Hello {
@@ -139,7 +140,7 @@ async fn exchange_hello(
             ..
         }) => {
             if protocol_version != PROTOCOL_VERSION {
-                return Err(refuse(channel, "protocol_mismatch").await);
+                return Err(refuse(channel, link_error::PROTOCOL_MISMATCH).await);
             }
             let peer = PeerInfo { role, os, screen };
             match env.service.check_peer(device_id, &peer) {
@@ -152,12 +153,15 @@ async fn exchange_hello(
                 }
             }
         }
-        // The peer refused us; surface its reason on our side too.
-        Ok(ChannelMessage::Goodbye { reason }) => Err(reason),
+        // The peer refused us; surface its reason on our side too (mapped
+        // onto the codes the UI knows: the text is the peer's).
+        Ok(ChannelMessage::Goodbye { reason }) => Err(link_error::from_peer(&reason).to_string()),
         // A v1 peer opens with a message this version can't even parse.
-        Err(ChannelError::Serialization(_)) => Err(refuse(channel, "protocol_mismatch").await),
-        Ok(_) => Err(refuse(channel, "protocol_error").await),
-        Err(_) => Err("connection_lost".to_string()),
+        Err(ChannelError::Serialization(_)) => {
+            Err(refuse(channel, link_error::PROTOCOL_MISMATCH).await)
+        }
+        Ok(_) => Err(refuse(channel, link_error::PROTOCOL_ERROR).await),
+        Err(_) => Err(link_error::CONNECTION_LOST.to_string()),
     }
 }
 
@@ -254,7 +258,7 @@ async fn controlled_loop(
         Ok(injector) => injector,
         Err(err) => {
             crate::logging::product::error("input injector would not start", &err);
-            return Err("injector_unavailable".to_string());
+            return Err(link_error::INJECTOR_UNAVAILABLE.to_string());
         }
     };
     let mut endpoint = ControlledEndpoint::new(injector);

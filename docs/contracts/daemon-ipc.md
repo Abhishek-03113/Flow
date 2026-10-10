@@ -1,6 +1,6 @@
 # Daemon IPC Contract
 
-Contract version: **0.2.2** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands; 0.2.2 refused links and withdrawn pairing requests.
+Contract version: **0.2.3** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands; 0.2.2 refused links and withdrawn pairing requests; 0.2.3 a closed `link_error` vocabulary.
 
 **Three transports, one contract** (see `README.md`): the desktop app calls the engine in-process (Tauri `flow_command(command, payload)` → result or `{code, message}` error; state arrives as `flow://event` events `{event, payload}`), `flow-daemon` serves the same over a loopback WebSocket, and the UI's mock implements both shapes in memory. The rest of this document uses the WebSocket envelope; the Tauri bridge carries the identical command names, payloads, results, errors and events.
 

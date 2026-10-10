@@ -21,7 +21,7 @@ A computer the daemon knows about — paired or in the process of pairing.
 }
 ```
 
-Since 0.2.0: `role` and `screen` describe the peer and are `null` until it said hello on a live link; `link_error` is why the last link attempt failed (`role_conflict`, `protocol_mismatch`, ...) and `null` otherwise; `last_seen_ms` is `last_seen` in epoch milliseconds. Exactly one device is `active`: the one whose screen the controller's input currently drives. `is_local` is true for this computer (always `d1`). Since 0.2.1 `last_seen` means *last heard from* (heartbeat), not last switched to.
+Since 0.2.0: `role` and `screen` describe the peer and are `null` until it said hello on a live link; `link_error` is why the last link attempt failed and `null` otherwise — one of `role_conflict` (same role, or a controlled computer that already has a controller), `protocol_mismatch` (other protocol version), `protocol_error` (unexpected message, or a refusal reason this version doesn't know), `hello_timeout`, `connection_lost` (closed before the link came up), `injector_unavailable` (the controlled computer could not start injecting input); `flow_core::link::link_error` is the list and clients treat an unknown code as `protocol_error`; `last_seen_ms` is `last_seen` in epoch milliseconds. Exactly one device is `active`: the one whose screen the controller's input currently drives. `is_local` is true for this computer (always `d1`). Since 0.2.1 `last_seen` means *last heard from* (heartbeat), not last switched to.
 
 ### `DeviceState`
 
