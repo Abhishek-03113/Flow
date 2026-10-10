@@ -5,6 +5,7 @@ mod capture;
 mod discovery;
 mod inject_translate;
 mod injector;
+mod passthrough;
 mod translate;
 
 pub use capture::LinuxInputCapture;
