@@ -15,6 +15,7 @@ const LINK_TEXT = {
   no_computers: ['No computers yet', 'gray'],
   error: ['Needs attention', 'red'],
   permission_required: ['Needs permission', 'red'],
+  not_responding: ['Not responding', 'red'],
 } as const;
 
 function Stat({ value, label }: { value: ReactNode; label: string }) {

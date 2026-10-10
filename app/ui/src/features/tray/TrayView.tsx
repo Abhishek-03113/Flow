@@ -15,6 +15,7 @@ const LINK: Record<string, [string, DotTone]> = {
   no_computers: ['No computers yet', 'gray'],
   error: ['Needs attention', 'red'],
   permission_required: ['Needs permission', 'red'],
+  not_responding: ['Not responding', 'red'],
 };
 
 const BANNER: Record<string, { tone: 'orange' | 'red' | 'gray'; title: string; detail: string }> = {
@@ -25,6 +26,11 @@ const BANNER: Record<string, { tone: 'orange' | 'red' | 'gray'; title: string; d
     tone: 'red',
     title: 'Flow needs permission',
     detail: 'Allow access to share your keyboard.',
+  },
+  not_responding: {
+    tone: 'red',
+    title: 'Flow isn’t responding',
+    detail: 'Restart Flow if this keeps happening.',
   },
 };
 
@@ -59,7 +65,9 @@ export function TrayView() {
         ? `${sit.controller?.name ?? 'Another computer'} is controlling this computer`
         : sit.kind === 'controller-home'
           ? `Using ${me?.name ?? 'this computer'}`
-          : 'Ready to be controlled';
+          : sit.kind === 'unknown'
+            ? 'Flow isn’t responding'
+            : 'Ready to be controlled';
 
   return (
     <div className="fl-tray" data-testid="tray">

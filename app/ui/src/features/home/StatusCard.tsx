@@ -1,8 +1,8 @@
-import { ArrowLeftRight, Keyboard, Laptop, MonitorCheck, Undo2 } from 'lucide-react';
+import { ArrowLeftRight, Keyboard, Laptop, MonitorCheck, Undo2, Unplug } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { cx, Button, EmptyState, KeyCombo } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
-import { localDevice, localOs, situation, switchTargets } from '../../state/selectors';
+import { localDevice, localOs, remoteDevices, situation, switchTargets } from '../../state/selectors';
 import { useAction } from '../../state/useAction';
 import { useUi } from '../../state/ui';
 
@@ -43,6 +43,15 @@ export function StatusCard() {
   switch (sit.kind) {
     case 'controller-home':
       title = `Your keyboard and mouse are on ${me?.name ?? 'this computer'}`;
+      if (targets.length === 0 && remoteDevices(s).length > 0) {
+        // Paired, but nothing reachable right now (offline, reconnecting, conflict).
+        const others = remoteDevices(s);
+        sub =
+          others.length === 1
+            ? `${others[0]!.name} isn’t connected right now. You can switch to it as soon as it’s back.`
+            : 'Your other computers aren’t connected right now. You can switch as soon as one is back.';
+        break;
+      }
       if (targets.length === 0) {
         return (
           <div className="fl-card" data-testid="status-card">
@@ -111,6 +120,11 @@ export function StatusCard() {
     case 'controlled-waiting':
       title = 'This computer is ready';
       sub = `${sit.controller?.name ?? 'The controller'} will take over when you move to this screen. Until then your own keyboard and mouse work normally.`;
+      break;
+    case 'unknown':
+      icon = <Unplug {...ICON} />;
+      title = 'Can’t tell who’s in control right now';
+      sub = 'Flow on this computer isn’t responding. This updates as soon as it’s back.';
       break;
     case 'controlled-unlinked':
       title = 'Waiting for a computer to control this one';
