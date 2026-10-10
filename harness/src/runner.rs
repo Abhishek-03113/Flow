@@ -94,18 +94,21 @@ pub async fn run_case(scenario: &Scenario, combo: &Combo) -> CaseResult {
     };
 
     let mut failed = false;
-    let mut index = 0;
-    flatten_indexed(&scenario.steps, &mut index, &mut |i, step| {
-        case.steps.push(StepResult {
-            index: i,
+    // One entry per top-level step (a `repeat` body runs inside its parent).
+    case.steps = scenario
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(index, step)| StepResult {
+            index,
             description: describe(step),
             status: Status::Skipped,
             duration_ms: 0,
             expected: None,
             actual: None,
             message: None,
-        });
-    });
+        })
+        .collect();
     for (i, step) in scenario.steps.iter().enumerate() {
         let result = &mut case.steps[i];
         if failed {
@@ -134,14 +137,6 @@ pub async fn run_case(scenario: &Scenario, combo: &Combo) -> CaseResult {
     case.passed = !failed;
     case.duration_ms = started.elapsed().as_millis() as u64;
     case
-}
-
-/// Top-level steps only (nested `repeat` bodies run inside their parent).
-fn flatten_indexed(steps: &[Step], index: &mut usize, visit: &mut impl FnMut(usize, &Step)) {
-    for step in steps {
-        visit(*index, step);
-        *index += 1;
-    }
 }
 
 fn resolve_os(text: &str, combo: &Combo) -> Result<HostOs, String> {
@@ -787,14 +782,21 @@ pub fn describe(step: &Step) -> String {
 fn describe_check(check: &Check) -> String {
     match check {
         Check::Active { on, is } => format!("{on}'s active screen is {is}"),
-        Check::Injected { on, .. } => format!("exact events injected into {on}"),
-        Check::InjectedIncludes { on, .. } => {
-            format!("events injected into {on} include a sequence")
+        Check::Injected {
+            on, events, repeat, ..
+        } => format!("{on} was injected exactly {}", event_list(events, *repeat)),
+        Check::InjectedIncludes { on, events, .. } => {
+            format!("{on} was injected, among others, {}", event_list(events, 1))
         }
         Check::PointerMoved { on, dx, dy, .. } => {
             format!("{on}'s injected pointer moved ({dx}, {dy})")
         }
-        Check::Delivered { on, .. } => format!("exact events reached {on}'s own apps"),
+        Check::Delivered {
+            on, events, repeat, ..
+        } => format!(
+            "{on}'s own apps got exactly {}",
+            event_list(events, *repeat)
+        ),
         Check::NoLocalLeak { on, .. } => format!("nothing leaked to {on}'s own apps"),
         Check::NoForwarding { on } => format!("nothing from {on} is forwarded"),
         Check::KeyNeverSeen { key } => format!("{key} never reaches any application"),
@@ -805,5 +807,27 @@ fn describe_check(check: &Check) -> String {
         Check::Linked { on, peer, is } => format!("{on} linked to {peer} = {is}"),
         Check::LinkError { on, peer, is } => format!("{on}'s link error for {peer} is {is}"),
         Check::Warped { on, x, y } => format!("{on}'s pointer warped to ({x}, {y})"),
+    }
+}
+
+/// `[down A, up A] x3` for a step description, shortened when long.
+fn event_list(events: &[String], repeat: u32) -> String {
+    const SHOWN: usize = 6;
+    if events.is_empty() {
+        return "nothing".to_string();
+    }
+    let mut text = events
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if events.len() > SHOWN {
+        text.push_str(&format!(", ... ({} events)", events.len()));
+    }
+    if repeat > 1 {
+        format!("[{text}] x{repeat}")
+    } else {
+        format!("[{text}]")
     }
 }
