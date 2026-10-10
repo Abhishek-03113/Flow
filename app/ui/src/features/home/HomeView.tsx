@@ -46,6 +46,10 @@ export function HomeView() {
   const hasLayout = s.screenLayout.screens.length > 1;
   const diag = s.diagnostics;
   const settings = s.settings;
+  const controllerName =
+    (s.controlState?.controllerDeviceId &&
+      s.devices.find((d) => d.id === s.controlState?.controllerDeviceId)?.name) ||
+    'the other computer';
 
   return (
     <div className="fl-grid" data-testid="home">
@@ -100,32 +104,49 @@ export function HomeView() {
         </div>
       </section>
 
-      <Section title="Quick tips">
-        <Row
-          icon={<Gauge size={16} strokeWidth={1.6} />}
-          title="Switch computers"
-          subtitle="Works from anywhere, even while another computer is in use."
-          trailing={settings && <KeyCombo keys={settings.switchKey.keys} os={os} />}
-        />
-        <Row
-          icon={<MousePointer2 size={16} strokeWidth={1.6} />}
-          title="Cross the screen edge"
-          subtitle="Move the pointer past the side of one screen to reach the next."
-          trailing={
-            <Badge tone={settings?.edgeSwitching ? 'green' : 'neutral'}>
-              {settings?.edgeSwitching ? 'On' : 'Off'}
-            </Badge>
-          }
-        />
-        <Row
-          icon={<Undo2 size={16} strokeWidth={1.6} />}
-          title="Come back"
-          subtitle="Jump straight back to this computer."
-          trailing={
-            <KeyCombo keys={settings?.returnHomeKey?.keys ?? settings?.switchKey.keys ?? []} os={os} />
-          }
-        />
-      </Section>
+      {controller ? (
+        <Section title="Quick tips">
+          <Row
+            icon={<Gauge size={16} strokeWidth={1.6} />}
+            title="Switch computers"
+            subtitle="Works from anywhere, even while another computer is in use."
+            trailing={settings && <KeyCombo keys={settings.switchKey.keys} os={os} />}
+          />
+          <Row
+            icon={<MousePointer2 size={16} strokeWidth={1.6} />}
+            title="Cross the screen edge"
+            subtitle="Move the pointer past the side of one screen to reach the next."
+            trailing={
+              <Badge tone={settings?.edgeSwitching ? 'green' : 'neutral'}>
+                {settings?.edgeSwitching ? 'On' : 'Off'}
+              </Badge>
+            }
+          />
+          <Row
+            icon={<Undo2 size={16} strokeWidth={1.6} />}
+            title="Come back"
+            subtitle="Jump straight back to this computer."
+            trailing={
+              <KeyCombo keys={settings?.returnHomeKey?.keys ?? settings?.switchKey.keys ?? []} os={os} />
+            }
+          />
+        </Section>
+      ) : (
+        // A controlled computer has no shortcuts of its own: the controller's
+        // keyboard decides when it is used, and Release control hands it back.
+        <Section title="Quick tips">
+          <Row
+            icon={<MousePointer2 size={16} strokeWidth={1.6} />}
+            title={`Use it from ${controllerName}`}
+            subtitle={`Move ${controllerName}’s pointer off its screen edge, or press its switch shortcut, to work here.`}
+          />
+          <Row
+            icon={<Undo2 size={16} strokeWidth={1.6} />}
+            title="Take your computer back"
+            subtitle={`While ${controllerName} is working here, select Release control at the top of this page.`}
+          />
+        </Section>
+      )}
     </div>
   );
 }
