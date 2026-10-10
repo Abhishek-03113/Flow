@@ -1,5 +1,5 @@
 //! End-to-end driver for two locally-running `flow-daemon` instances
-//! (`docs/testing/ui-test-branch-plan.md`). Connects to both over their
+//! (`docs/archive/ui-test-branch-plan.md`). Connects to both over their
 //! local IPC WebSocket, makes B controlled, pairs A↔B, switches A to B and
 //! injects a hardcoded key sequence and mouse path via the
 //! `debug_inject_input` test hook, exercises a graceful control switch,

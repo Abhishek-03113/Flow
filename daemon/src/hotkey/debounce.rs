@@ -1,7 +1,7 @@
-//! Debounces repeated switch-key matches (`docs/tasks/daemon-todos.json` F3).
+//! Debounces repeated switch-key matches (`docs/archive/tasks/daemon-todos.json` F3).
 //!
 //! The daemon now reads raw, possibly-repeating key events directly —
-//! unlike the Dart mock, whose UI-visible debounce is a client concern
+//! unlike the UI mock, whose UI-visible debounce is a client concern
 //! per `docs/contracts/daemon-ipc.md`'s "Switching" section ("a
 //! debounced/disabled row while the command's Future is in flight is a
 //! UI concern, not a wire state"). Holding the switch key (autorepeat)

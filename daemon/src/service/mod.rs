@@ -5,7 +5,7 @@
 //! record, never fake remote devices or candidates — after the first
 //! run, whatever was actually persisted comes back instead.
 //! `ServiceState::seeded_for_test` is the mock-parity fixture
-//! (`docs/tasks/daemon-todos.json` `sharedContractConstants.mockParitySeedData`)
+//! (`docs/archive/tasks/daemon-todos.json` `sharedContractConstants.mockParitySeedData`)
 //! tests opt into explicitly instead.
 
 use std::collections::{HashMap, HashSet};
@@ -289,7 +289,7 @@ impl ServiceState {
 /// `LOCAL_DEVICE_ID` `Disconnected` too — with no device in any
 /// switchable state, `switch_active_device` rejected every target with
 /// `device_not_switchable`, the switch key became a permanent no-op, and
-/// the Flutter UI's "Controlling" card had nothing to show, since it
+/// the old UI's "Controlling" card had nothing to show, since it
 /// reads straight off `watch_devices`/`watch_link_state` with no
 /// fallback of its own.
 ///
@@ -318,7 +318,7 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
 /// subscribing receiver, which is exactly the "connecting... is the
 /// initial fetch" semantics `docs/contracts/daemon-ipc.md` requires —
 /// the same semantics `MockDaemonRepository`'s `_StateChannel` needed a
-/// `Stream.multi` rewrite on the Dart side to get right (an `async*`
+/// `Stream.multi` rewrite in the old UI to get right (an `async*`
 /// generator can silently drop an emission racing its first microtask).
 #[derive(Clone)]
 pub struct DaemonService {
@@ -344,7 +344,7 @@ pub struct DaemonService {
     /// aborts whatever is here; each timer clears its own slot once it
     /// fires so a later cancel never aborts an already-finished task.
     pairing_timer: Arc<Mutex<Option<JoinHandle<()>>>>,
-    /// Number of IPC clients (Flutter UIs) currently connected. Zero
+    /// Number of UI clients (the app, or WebSocket clients) currently connected. Zero
     /// means an incoming pairing request has no one to prompt and is
     /// rejected outright — see `accept_pairing_over`.
     connected_clients: Arc<AtomicUsize>,
@@ -1970,7 +1970,7 @@ impl Drop for LinkRegistration {
 
 /// A real paired device's stable identity: derived from its proven `H1`
 /// public key, not its self-reported name — multiple machines can
-/// legitimately advertise the same display name (`docs/tasks/daemon-todos.json`'s
+/// legitimately advertise the same display name (`docs/archive/tasks/daemon-todos.json`'s
 /// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.
@@ -2469,7 +2469,7 @@ mod tests {
 
         // No emit has happened yet — a fresh subscriber must still see the
         // seeded value, proving late-subscribe replay (the exact bug class
-        // the Dart mock's async*-based _StateChannel hit before its
+        // the old mock's async*-based _StateChannel hit before its
         // Stream.multi rewrite).
         let devices = service.watch_devices().borrow().clone();
         assert_eq!(devices.len(), 3);

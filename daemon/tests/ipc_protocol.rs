@@ -1,10 +1,10 @@
-//! End-to-end proof of the IPC contract (`docs/tasks/daemon-todos.json` task C6):
+//! End-to-end proof of the IPC contract (`docs/archive/tasks/daemon-todos.json` task C6):
 //! the real `flow-daemon` service and WebSocket listener, spawned
 //! in-process (not a subprocess), driven by a raw `tokio-tungstenite`
 //! client asserting the exact JSON shape of a full session — connect,
 //! the 10 initial events, one of each of the 11 commands, and at least 2
 //! error-code paths. The Rust-side equivalent of what track D proves
-//! from the Dart side against a real daemon.
+//! from the UI side against a real daemon.
 
 use std::net::SocketAddr;
 use std::sync::Arc;

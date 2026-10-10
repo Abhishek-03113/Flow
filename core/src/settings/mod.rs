@@ -125,7 +125,7 @@ impl FlowSettings {
 }
 
 /// A partial `FlowSettings` update — every field optional, matching the
-/// Dart `SettingsPatch`'s all-nullable partial. Only the keys being
+/// The all-optional partial. Only the keys being
 /// changed need to be `Some`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

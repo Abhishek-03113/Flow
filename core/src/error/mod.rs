@@ -3,7 +3,7 @@
 //!
 //! Command handlers in `flow-daemon` return `Result<_, FlowError>` and
 //! never construct an ad-hoc error string — the same discipline
-//! `docs/contracts/README.md` ground rule 1 asks of the Dart side
+//! `docs/contracts/README.md` ground rule 1 asks of the UI side
 //! (`DaemonCommandException`).
 
 use thiserror::Error;

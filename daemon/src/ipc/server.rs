@@ -1,4 +1,4 @@
-//! Per-connection WebSocket IPC handler (`docs/tasks/daemon-todos.json` task C3).
+//! Per-connection WebSocket IPC handler (`docs/archive/tasks/daemon-todos.json` task C3).
 //! `tokio-tungstenite` is confined to this module — application code
 //! elsewhere in the daemon only ever sees `IpcRequest`/`IpcResponse`
 //! (`flow-core`), never the WebSocket crate directly.
@@ -47,7 +47,7 @@ const TOKEN_HEADER: &str = "sec-websocket-protocol";
 ///
 /// `expected_token` gates the handshake itself (`auth::load_or_generate_token`,
 /// loaded once at daemon startup): `127.0.0.1` is reachable by *any*
-/// local process, not just the intended Flutter UI, and this connection
+/// local process, not just the intended UI, and this connection
 /// previously had no way to tell the two apart. The token travels as the
 /// WebSocket subprotocol (`Sec-WebSocket-Protocol`) specifically because
 /// a browser page's own `WebSocket` can set that (unlike an arbitrary
@@ -309,7 +309,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    /// `docs/tasks/daemon-todos.json` I3's regression test: `tokio::spawn` already
+    /// `docs/archive/tasks/daemon-todos.json` I3's regression test: `tokio::spawn` already
     /// isolates a panic to its own task (the runtime catches it and
     /// reports it only through that task's own `JoinHandle`) — this
     /// confirms that holds for the exact spawn shape `main.rs`'s
@@ -355,7 +355,7 @@ mod tests {
     }
 
     /// The whole point of the token check: `127.0.0.1` is reachable by
-    /// any local process, not just the intended Flutter UI, and a
+    /// any local process, not just the intended UI, and a
     /// connection presenting no proof of that at all must never reach
     /// the point of receiving state or being able to send a command.
     #[tokio::test]
