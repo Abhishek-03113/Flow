@@ -13,8 +13,6 @@ import type {
 } from './types';
 import type { WireEvent } from './transport';
 
-export const LOCAL_DEVICE_ID = 'd1';
-
 /** Typed engine pushes (contract 0.1.3 + 0.2.0). */
 export type FlowEvent =
   | { type: 'devices_changed'; devices: Device[] }
@@ -46,7 +44,24 @@ function toDevice(raw: RawDevice): Device {
     screen: raw.screen ?? null,
     lastSeenMs: Number.isFinite(lastSeenMs) ? lastSeenMs : 0,
     linkError: raw.linkError ?? null,
-    isLocal: raw.isLocal ?? raw.id === LOCAL_DEVICE_ID,
+    isLocal: raw.isLocal === true,
+  };
+}
+
+function normalizePermission(p: Partial<PermissionStatus>): PermissionStatus {
+  return {
+    name: p.name ?? 'Input access',
+    granted: p.granted ?? false,
+    items: (p.items ?? []).map((i) => ({
+      name: i.name,
+      granted: i.granted,
+      howToFix: i.howToFix
+        ? {
+            summary: i.howToFix.summary,
+            steps: i.howToFix.steps.map((s) => ({ text: s.text, command: s.command ?? null })),
+          }
+        : null,
+    })),
   };
 }
 
@@ -74,7 +89,7 @@ export function decodeEvent(wire: WireEvent): FlowEvent | null {
     case 'settings_changed':
       return { type: wire.event, settings: p as FlowSettings };
     case 'permission_changed':
-      return { type: wire.event, permission: p as PermissionStatus };
+      return { type: wire.event, permission: normalizePermission(p as Partial<PermissionStatus>) };
     case 'incoming_pairing_request_changed':
       return { type: wire.event, request: (p as IncomingPairingRequest | null) ?? null };
     case 'control_state_changed':

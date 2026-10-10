@@ -2,6 +2,7 @@ import { CircleAlert, ShieldAlert, Unplug, WifiOff } from 'lucide-react';
 import { Banner, Button, useToast } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { useAction } from '../../state/useAction';
+import { effectiveLink } from '../../state/selectors';
 import { useUi } from '../../state/ui';
 
 const I = { size: 18, strokeWidth: 1.7 } as const;
@@ -53,8 +54,8 @@ export function LinkBanner() {
               size="small"
               onClick={() =>
                 void run(async () => {
-                  await client.updateSettings({ autoReconnect: false });
-                  toast.show('Stopped trying. You can turn automatic reconnecting back on in General.');
+                  await client.cancelReconnect();
+                  toast.show('Stopped trying. Select Try Again whenever you want to reconnect.');
                 })
               }
             >
@@ -66,6 +67,7 @@ export function LinkBanner() {
         </Banner>
       );
     case 'disconnected':
+      if (effectiveLink(s) === 'no_computers') return null;
       return (
         <Banner tone="gray" icon={<WifiOff {...I} />} title="Not connected" actions={retry}>
           Flow can’t reach {peer} right now.

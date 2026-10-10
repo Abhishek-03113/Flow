@@ -85,6 +85,17 @@ impl DevMode {
         }
     }
 
+    /// Logs the startup warnings and the insecure-mode banner. Call once
+    /// the tracing subscriber is installed.
+    pub fn announce(&self) {
+        for warning in &self.warnings {
+            tracing::warn!("{warning}");
+        }
+        if let Some(banner) = self.insecure_banner() {
+            tracing::warn!("\n{banner}");
+        }
+    }
+
     /// A loud multi-line banner for `main` to log whenever the daemon is
     /// *not* on the secure path, so an insecure daemon is never a quiet
     /// surprise in a log. `None` on the secure path.

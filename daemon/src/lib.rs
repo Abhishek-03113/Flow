@@ -9,6 +9,7 @@ pub mod channel;
 pub mod devmode;
 pub mod discovery;
 pub mod engine;
+pub mod env_config;
 pub mod hotkey;
 pub mod identity;
 pub mod ipc;

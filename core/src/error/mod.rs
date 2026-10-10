@@ -3,7 +3,7 @@
 //!
 //! Command handlers in `flow-daemon` return `Result<_, FlowError>` and
 //! never construct an ad-hoc error string — the same discipline
-//! `docs/contracts/README.md` ground rule 1 asks of the Dart side
+//! `docs/contracts/README.md` ground rule 1 asks of the UI side
 //! (`DaemonCommandException`).
 
 use thiserror::Error;
@@ -60,6 +60,12 @@ pub enum FlowError {
     #[error("invalid screen layout: {0}")]
     InvalidLayout(String),
 
+    #[error("no permission named {0:?}")]
+    PermissionNotFound(String),
+
+    #[error("link state is {0:?}, not reconnecting — nothing to cancel")]
+    NotReconnecting(crate::link::DaemonLinkState),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -85,6 +91,8 @@ impl FlowError {
             FlowError::NoController => "no_controller",
             FlowError::InvalidRemapRule(_) => "invalid_remap_rule",
             FlowError::InvalidLayout(_) => "invalid_layout",
+            FlowError::PermissionNotFound(_) => "permission_not_found",
+            FlowError::NotReconnecting(_) => "not_reconnecting",
             FlowError::Internal(_) => "internal_error",
         }
     }

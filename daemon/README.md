@@ -1,6 +1,6 @@
 # flow-daemon
 
-The Rust data-plane daemon for Flow — input capture, injection, device switching, networking, and pairing, running independently of the Flutter UI (`docs/product/vision.md` §8). This directory holds the daemon binary itself; the workspace also includes `flow-core` (`../core`) and `flow-platform` (`../platform`).
+The Rust data-plane daemon for Flow — input capture, injection, device switching, networking, and pairing, running independently of any UI (the desktop app embeds it as a library; this binary is the headless host) (`docs/product/vision.md` §8). This directory holds the daemon binary itself; the workspace also includes `flow-core` (`../core`) and `flow-platform` (`../platform`).
 
 **Status.** `flow-daemon` is the Flow engine, available both as this headless binary and as a library (`flow_daemon::engine::Engine`) that the desktop app and the test harness embed. It serves the control contract (`docs/contracts/daemon-ipc.md`) over an authenticated loopback WebSocket, persists settings/devices/layout/identity/history to SQLite, discovers and pairs with peers, and shares one computer's keyboard and mouse with others under the **controller/controlled model** of [ADR 0001](../docs/adr/0001-controller-controlled-input-model.md) (see "Control model" below). `flow-platform` has per-OS capture/injection for Linux (evdev/uinput), macOS (`CGEventTap`/`CGEventPost`) and Windows (`SetWindowsHookEx`/`SendInput`).
 
@@ -12,11 +12,11 @@ The Rust data-plane daemon for Flow — input capture, injection, device switchi
 - **Bluetooth is not wired in.** `channel::bluetooth` / `discovery::bluetooth` are standalone building blocks behind the `bluetooth` feature; only TCP is live.
 - **Pairing consent** is an explicit Accept/Reject prompt on the receiving side (see "Incoming pairing consent").
 
-The historical task record lives in [`docs/tasks/daemon-todos.json`](../docs/tasks/daemon-todos.json).
+The historical task record lives in [`docs/archive/tasks/daemon-todos.json`](../docs/archive/tasks/daemon-todos.json).
 
 ## Why this exists separately from the root README
 
-The root [`README.md`](../README.md) covers the whole product and points here for daemon specifics, the same way it points to [`flutter/README.md`](../flutter/README.md) for UI specifics. Once the daemon is real, this file is where "how do I run it, what does it actually do today, what's still stubbed" lives.
+The root [`README.md`](../README.md) covers the whole product and points here for daemon specifics, the same way it points to [`app/ui/README.md`](../app/ui/README.md) for UI specifics. Once the daemon is real, this file is where "how do I run it, what does it actually do today, what's still stubbed" lives.
 
 ## Workspace layout
 
@@ -49,18 +49,20 @@ FLOW_IPC_TOKEN_PATH=/tmp/flow-b/ipc.token \
 cargo run -p flow-daemon
 ```
 
-- `FLOW_IPC_PORT` — the `127.0.0.1` IPC listener port (default `47823`). The Flutter client must be pointed at the same value with `--dart-define=FLOW_IPC_PORT`.
+- `FLOW_IPC_PORT` — the `127.0.0.1` IPC listener port (default `47823`). Point a client (`?daemon=ws://127.0.0.1:PORT`) at the same value.
 - `FLOW_DATA_DIR` — the directory holding `flow.db` (and with it this instance's own persisted ed25519 identity). Default: the platform data dir.
-- `FLOW_IPC_TOKEN_PATH` — the IPC auth token file (default `~/.flow/ipc.token`). Pass the same path to the Flutter client with `--dart-define=FLOW_IPC_TOKEN_PATH`.
+- `FLOW_IPC_TOKEN_PATH` — the IPC auth token file (default `~/.flow/ipc.token`). Read the token from there and pass it as `?token=`.
 - `FLOW_DEVICE_NAME` — overrides the local device's display name (default: the machine hostname), so two instances on one box aren't both called the same thing in the UI.
 
 By default both instances bind the UDP discovery port (`47824`) with `SO_REUSEADDR` and hear each other's broadcasts. To isolate instances fully, `FLOW_DISCOVERY_PORT` moves the discovery port, `FLOW_DISCOVERY_TARGETS` (comma-separated `host:port`) replaces LAN broadcast with explicit announce targets, and `FLOW_PEER_PORT` pins the peer listener (default: ephemeral). None of these variables have any effect on a normal single-instance deployment when left unset.
 
 The same wiring is available as a library: `flow_daemon::engine::Engine::start(EngineConfig)` (see `daemon/src/engine.rs`), which `main.rs` is a thin wrapper around.
 
+**Embedding.** The desktop app (`app/src-tauri`) hosts the same engine in-process. Both hosts build their `EngineConfig` with `env_config::engine_config(Profile, backend, &dev, logging)`, so data dir, keymap dir, ports and discovery are identical; `Profile::Embedded` serves no WebSocket unless `FLOW_DEV_WS=1`. Commands go through `ipc::dispatch::run_command(service, command, payload)` and state through `ipc::events::StateStream` (snapshot, then changes); the WebSocket server and the Tauri bridge both use them. Extra support commands: `reveal_config_dir`, `export_diagnostics` (writes `<data dir>/diagnostics/flow-diagnostics-*.json`), `open_permission_settings`, `recheck_permissions`, `cancel_reconnect` (see `docs/contracts/CHANGELOG.md` 0.2.1).
+
 ## Testing and linting
 
-The default (no extra features, native target) sweep — this is the bar every commit in this repo is expected to clear, and what `docs/tasks/daemon-todos.json` J1 formalizes:
+The default (no extra features, native target) sweep — this is the bar every commit in this repo is expected to clear, and what `docs/archive/tasks/daemon-todos.json` J1 formalizes:
 
 ```sh
 cargo test --workspace
@@ -77,7 +79,7 @@ cargo clippy -p flow-daemon --features bluetooth --all-targets -- -D warnings
 
 There is currently no `#[allow(...)]` anywhere in `core`/`daemon`/`platform` — every lint the workspace clippy configuration flags is either fixed outright or the code is restructured to avoid it, not suppressed. If a future change genuinely needs one, justify it with a comment at the point of use (a workspace-wide `clippy.toml` blanket-allowance isn't warranted today since nothing needs one yet — adding one speculatively would be lint config for a problem that doesn't exist).
 
-**Cross-compilation checks** (`docs/tasks/daemon-todos.json` J2/J3) — `flow-core` and `flow-platform` (the two crates E1-E7's platform adapters live in) are checked, not built, against the macOS and Windows targets, proving the code at least type-checks/compiles for platforms this container can't run:
+**Cross-compilation checks** (`docs/archive/tasks/daemon-todos.json` J2/J3) — `flow-core` and `flow-platform` (the two crates E1-E7's platform adapters live in) are checked, not built, against the macOS and Windows targets, proving the code at least type-checks/compiles for platforms this container can't run:
 
 ```sh
 rustup target add x86_64-apple-darwin aarch64-apple-darwin x86_64-pc-windows-msvc
@@ -90,47 +92,21 @@ cargo clippy -p flow-core -p flow-platform --target x86_64-pc-windows-msvc --all
 
 **Deliberately scoped to `flow-core`/`flow-platform`, not `--workspace`.** `cargo check --workspace --target <macos-or-windows>` (including `flow-daemon`) genuinely fails in this development environment — verified directly, not assumed: `rusqlite`'s `bundled` feature compiles SQLite's C source as part of its build script, which needs a real per-target C toolchain (a macOS cross-`cc` with the right `-arch`/`-mmacosx-version-min` support, or `lib.exe` from an MSVC toolchain for the Windows target) that this container doesn't have and installing isn't reasonably in scope here. This is a pre-existing gap in the *development environment*, not evidence `flow-daemon` itself can't compile on macOS/Windows — a machine with Xcode or a Windows MSVC toolchain installed wouldn't hit it. `flow-core`/`flow-platform` have no such dependency (no bundled C code), which is exactly why E1-E7 scoped their own cross-compile verification to those two crates in the first place, not the whole workspace — this note makes that scoping decision explicit rather than leaving it implicit.
 
-**Cross-language contract test** (`docs/tasks/daemon-todos.json` task D5): `flutter/test/data/ipc_daemon_repository_manual_test.dart` runs the same 13 scenarios `mock_daemon_repository_test.dart` proves against the Dart mock, against a real `flow-daemon` process instead — confirming the Rust and Dart sides agree, not just that each independently passes its own tests. Manual and not part of either `cargo test` or a plain `flutter test`:
-
-```sh
-# both terminals — a fresh, *shared* HOME so both processes agree on
-# where ~/.flow/ipc.token lives (the daemon writes it there on startup,
-# and IpcDaemonRepository reads it from the identical path to
-# authenticate its connection); FLOW_DAEMON_SEED_MOCK_PARITY makes this
-# one daemon instance seed the mock-parity fixture the test asserts on
-# instead of real (empty) production state — never set this outside a
-# test run like this one
-export HOME=$(mktemp -d)
-
-# terminal 1, from the repo root
-FLOW_DAEMON_SEED_MOCK_PARITY=1 cargo run -p flow-daemon
-
-# terminal 2 (same HOME as terminal 1 — export it there too, or run both
-# commands from one shell that already has it exported)
-cd flutter && flutter test --tags manual --run-skipped test/data/ipc_daemon_repository_manual_test.dart
-```
-
-**Full daemon-to-UI end-to-end test:** `flutter/test/e2e/daemon_ui_flow_e2e_test.dart` goes further than the contract test above — it drives the actual production Flutter screens (tray popover, settings, onboarding) through real taps against a real `flow-daemon`, and unlike the contract test it starts and stops that daemon itself (no manually-started process, no shared-`HOME` two-terminal dance). Tagged `e2e`, automated, single command:
-
-```sh
-cd flutter && flutter test --tags e2e --run-skipped test/e2e/daemon_ui_flow_e2e_test.dart
-```
-
-See `docs/testing/manual-testing-strategy.md`'s Tier 0 for what this automates.
+**UI ↔ engine test:** the TypeScript UI is exercised against a real engine by running it with the headless daemon and loading `?daemon=ws://127.0.0.1:47823&token=…` (see `app/ui/README.md`), and the desktop app embeds the same engine in-process. `daemon/tests/ipc_protocol.rs` is the Rust-side end-to-end proof of the WebSocket contract.
 
 ## The contract this daemon implements
 
-[`docs/contracts/`](../docs/contracts) defines the exact interface — commands, state streams, error codes, state machines — that `flutter/lib/data/mock_daemon_repository.dart` implements on the Flutter side. `flow-daemon` is the second, real implementation of that same contract, reachable over local IPC: `flutter/lib/state/repository_providers.dart`'s `daemonRepositoryProvider` can point at it instead of the mock via `--dart-define=FLOW_DAEMON_MODE=ipc`, with **no UI code changing** (`docs/contracts/README.md` ground rule 2; see `flutter/README.md` "Running against a real daemon"). `docs/tasks/daemon-todos.json` tracks A-D built exactly this, in order.
+[`docs/contracts/`](../docs/contracts) defines the exact interface — commands, state streams, error codes, state machines — that the UI's `FlowClient` speaks (`app/ui/src/client`) and its in-memory mock engine implements. `flow-daemon` is the real implementation of the same contract, reachable over local IPC (the WebSocket) or, in the desktop app, called in-process through the same dispatcher (`ipc::dispatch::run_command`) and event stream (`ipc::events::StateStream`).
 
 ## Platform adapters: what's real vs. stubbed
 
 | Platform | Capture | Injection | Verified how |
 |---|---|---|---|
-| Linux | real (`docs/tasks/daemon-todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
+| Linux | real (`docs/archive/tasks/daemon-todos.json` E1, evdev) | real (E2, uinput) | unit-tested (evdev-event ↔ `InputEvent` translation, both directions, pure functions); this session's container has neither `/dev/input` nor `/dev/uinput`, so device discovery, the read loop, the virtual device, and actual keypress capture/injection are unverified beyond compiling — see "Manual verification notes" below |
 | macOS | real (E4, `CGEventTap`) | real (E5, `CGEventPost`) | cross-compile checked (`cargo check -p flow-platform --target x86_64-apple-darwin` and `--target aarch64-apple-darwin`) plus `clippy`/`fmt` on both; the `CGEvent <-> InputEvent` translation has unit tests in both directions, but they need macOS to execute — this Linux container can only compile-check them, not run them, and there's no Mac hardware here at all — see "Manual verification notes" below |
 | Windows | real (E6, `WH_KEYBOARD_LL`/`WH_MOUSE_LL`) | real (E7, `SendInput`) | cross-compile checked (`cargo check`/`clippy --all-targets` for `flow-platform` on `x86_64-pc-windows-msvc`) plus `fmt`; the `InputEvent <-> INPUT` translation has unit tests in both directions, but no Windows hardware exists here to run them — see "Manual verification notes" below |
 
-Cross-compilation setup instructions (exact `rustup target add`/`cargo check` invocations) are documented in "Testing and linting" above (`docs/tasks/daemon-todos.json` task J3).
+Cross-compilation setup instructions (exact `rustup target add`/`cargo check` invocations) are documented in "Testing and linting" above (`docs/archive/tasks/daemon-todos.json` task J3).
 
 ### Shared cross-platform key-name vocabulary
 
@@ -159,7 +135,7 @@ On the controlled side `link::ControlledEndpoint` injects only between `Enter` a
 
 ## Persistence
 
-Settings, paired devices (which double as the trust store), this daemon's own identity keypair, and a connection history log all live in a single local SQLite database (`rusqlite`, bundled — no system SQLite dependency) under the platform data directory, applied via versioned migrations on startup. Nothing here is derived fresh on every run or held only in memory: a fresh database bootstraps to just this machine's own real local device (see "Removing mock runtime data" below — settings still get their real defaults), and every subsequent run loads what was actually persisted. `docs/tasks/daemon-todos.json` track **P** (`persistence-storage`) builds this, positioned right after the core contract types and ahead of the command service itself, since `DaemonService`'s startup state depends on it.
+Settings, paired devices (which double as the trust store), this daemon's own identity keypair, and a connection history log all live in a single local SQLite database (`rusqlite`, bundled — no system SQLite dependency) under the platform data directory, applied via versioned migrations on startup. Nothing here is derived fresh on every run or held only in memory: a fresh database bootstraps to just this machine's own real local device (see "Removing mock runtime data" below — settings still get their real defaults), and every subsequent run loads what was actually persisted. `docs/archive/tasks/daemon-todos.json` track **P** (`persistence-storage`) builds this, positioned right after the core contract types and ahead of the command service itself, since `DaemonService`'s startup state depends on it.
 
 ### Removing mock runtime data
 
@@ -168,7 +144,7 @@ Settings, paired devices (which double as the trust store), this daemon's own id
 - **`ServiceState::from_storage`** — what a real `flow-daemon` process actually uses (`DaemonService::new`, `main.rs`'s only call site). A fresh (empty) database seeds *only* this machine's own real device record — real hostname (`hostname` crate), real compiled-target OS, `Active`, not removable — never fake remote devices, never fake pairing candidates (`candidates_pool` starts empty; real candidates only ever come from `note_discovered_peer`, track G7's live discovery), and `link_state` starts `Disconnected` rather than a claimed `Connected` — see "Link health" below for the real transitions that earn `Connected`.
 - **`ServiceState::seeded_for_test`** — the exact mock-parity 3-device/2-candidate/`Connected` fixture `MockDaemonRepository` also ships. Every daemon test predating this split was written against it and asserts on its specific device ids/candidates/local device name ("MacBook"), so tests opt into it explicitly via `DaemonService::new_seeded_for_test` instead of it being an implicit fallback for an empty database.
 
-`main.rs` also honors `FLOW_DAEMON_SEED_MOCK_PARITY` (any non-empty value) to run a real `flow-daemon` *process* against the mock-parity fixture instead of real state — the one legitimate reason being `flutter/test/data/ipc_daemon_repository_manual_test.dart`'s cross-language contract test, which needs a real process to assert its mock-parity expectations against ("Cross-language contract test" above). A real deployment never sets this, and nothing in this codebase sets it automatically.
+`main.rs` also honors `FLOW_DAEMON_SEED_MOCK_PARITY` (any non-empty value) to run a real `flow-daemon` *process* against the mock-parity fixture instead of real state — the one legitimate reason being cross-checking the UI's mock engine against a real process. A real deployment never sets this, and nothing in this codebase sets it automatically.
 
 `service::tests::production_init_never_seeds_mock_parity_data` is the regression guard: it calls the real `DaemonService::new` and fails if production ever seeds more than the one real local device, or ever claims `Connected` before a real peer link exists — the test that would catch someone "fixing a bug" by pointing `from_storage` back at `seeded_for_test`.
 
@@ -178,7 +154,7 @@ Settings, paired devices (which double as the trust store), this daemon's own id
 
 ## Process supervision (track I3; unit files not yet installed — J4)
 
-The daemon is meant to run independent of any UI, ideally started at login/boot and restarted automatically if it crashes (`docs/product/vision.md` principle 1: "Invisible by default — the user should forget the software is running," and principle 7). This section documents the intended supervision model per-OS; `docs/tasks/daemon-todos.json` J4 is where the actual unit files get written and installed — deliberately OS-integration/packaging scope, out of this task's own reach.
+The daemon is meant to run independent of any UI, ideally started at login/boot and restarted automatically if it crashes (`docs/product/vision.md` principle 1: "Invisible by default — the user should forget the software is running," and principle 7). This section documents the intended supervision model per-OS; `docs/archive/tasks/daemon-todos.json` J4 is where the actual unit files get written and installed — deliberately OS-integration/packaging scope, out of this task's own reach.
 
 **Within the process, panics are already isolated per-task**, which is what makes OS-level auto-restart a reasonable strategy in the first place (an isolated bug taking down one connection is recoverable without restarting the whole daemon; only a genuinely fatal condition should ever need the OS supervisor to step in). Every long-running unit of work — each IPC connection (`main.rs`'s accept loop spawns one `tokio::spawn` per connection), `history_logger` — runs as its own `tokio::spawn`ed task, and Tokio's runtime catches a panic inside one task and reports it only through that task's own `JoinHandle`, never propagating it to the runtime or any other task. `ipc::server::tests::a_panicking_connection_handler_does_not_affect_a_concurrent_one` is this task's regression test: a task made to panic deliberately reports `Err` on its own `JoinHandle` while a second, real, concurrently-running connection completes normally and unaffected — proving this holds for the exact spawn shape the daemon's own code uses, not just as an abstract Tokio property. The hotkey runner uses the identical `tokio::spawn(async move { ... })` primitive that regression test exercises, so the same guarantee applies to it for the same reason; it isn't separately re-tested here because doing so for real needs a capturable input device this project's own development container doesn't have (see "E1: Linux capture via evdev" below) — the same gap that already makes `hotkey::runner::spawn` return `None` rather than panic in this environment.
 
@@ -190,11 +166,11 @@ Per-task isolation only covers bugs inside a spawned task's own body — it says
 
 None of the three above are installed by this phase — `flow-daemon` today is a plain binary you run manually (`cargo run -p flow-daemon` or the built executable), with no OS registration at all. That gap is what a future, full implementation of J4 closes.
 
-**Scaffolding exists for the first two** (`docs/tasks/daemon-todos.json` J4, stubs only — not installed, activated, or referenced by any build/install step in this repo): [`packaging/launchd/com.flow.daemon.plist`](../packaging/launchd/com.flow.daemon.plist) and [`packaging/systemd/flow-daemon.service`](../packaging/systemd/flow-daemon.service) implement exactly the macOS/Linux notes above, with the placeholder install path/log paths clearly marked as needing to be filled in for a real machine. Both were validated for real: the systemd unit passes `systemd-analyze verify` cleanly once its placeholder `ExecStart` path is pointed at any real executable (the verify tool otherwise, correctly, reports the placeholder path doesn't exist — that's expected for a stub, not a syntax error); the plist parses cleanly under Python's `plistlib` (this container has no `plutil`, a macOS-only tool, to run the canonical check with — `plutil -lint packaging/launchd/com.flow.daemon.plist` is the real validation command once on a Mac). [`packaging/windows/README.md`](../packaging/windows/README.md) is the Windows counterpart: since a real Windows Service runs in Session 0 (no desktop, no access to the interactive-session-scoped `SetWindowsHookEx`/`SendInput` APIs `flow-platform`'s Windows adapters use), there's no literal unit-file equivalent to stub — that document instead lays out the two viable implementation approaches (a wrapper like NSSM/WinSW, or a real Win32 service via the `windows` crate) and the Session 0 isolation problem as an explicit open design question for whoever picks this up next, rather than picking one silently.
+**Scaffolding exists for the first two** (`docs/archive/tasks/daemon-todos.json` J4, stubs only — not installed, activated, or referenced by any build/install step in this repo): [`packaging/launchd/com.flow.daemon.plist`](../packaging/launchd/com.flow.daemon.plist) and [`packaging/systemd/flow-daemon.service`](../packaging/systemd/flow-daemon.service) implement exactly the macOS/Linux notes above, with the placeholder install path/log paths clearly marked as needing to be filled in for a real machine. Both were validated for real: the systemd unit passes `systemd-analyze verify` cleanly once its placeholder `ExecStart` path is pointed at any real executable (the verify tool otherwise, correctly, reports the placeholder path doesn't exist — that's expected for a stub, not a syntax error); the plist parses cleanly under Python's `plistlib` (this container has no `plutil`, a macOS-only tool, to run the canonical check with — `plutil -lint packaging/launchd/com.flow.daemon.plist` is the real validation command once on a Mac). [`packaging/windows/README.md`](../packaging/windows/README.md) is the Windows counterpart: since a real Windows Service runs in Session 0 (no desktop, no access to the interactive-session-scoped `SetWindowsHookEx`/`SendInput` APIs `flow-platform`'s Windows adapters use), there's no literal unit-file equivalent to stub — that document instead lays out the two viable implementation approaches (a wrapper like NSSM/WinSW, or a real Win32 service via the `windows` crate) and the Session 0 isolation problem as an explicit open design question for whoever picks this up next, rather than picking one silently.
 
 ## Channels (daemon-to-daemon connectivity)
 
-Daemon-to-daemon connections — the one that actually carries keyboard/mouse input between two machines — go through a single custom abstraction named **Channels**: a `Channel` trait (`flow_core::channel`, track G1) implemented by `TcpChannel` (`daemon/src/channel/tcp.rs`, track G2 — Wi-Fi/local network, via a wrapped WebSocket) and `BluetoothChannel` (`daemon/src/channel/bluetooth.rs`, track G4 — RFCOMM/Bluetooth Classic, via a wrapped `bluer`), with `connect_best_available` (`daemon/src/channel/negotiate.rs`, track G6) picking which one to actually use for a given peer: TCP whenever reachable, Bluetooth otherwise. Full design, wire shape, and explicit scope boundaries: [`docs/architecture/channels.md`](../docs/architecture/channels.md). This is a separate document from `docs/contracts/` on purpose — Channels is daemon<->daemon, the contracts directory is Flutter<->daemon — kept in the same documentation style so the two are easy to reconcile if Channel state ever needs to surface into the UI later. `docs/tasks/daemon-todos.json` track **G** builds this.
+Daemon-to-daemon connections — the one that actually carries keyboard/mouse input between two machines — go through a single custom abstraction named **Channels**: a `Channel` trait (`flow_core::channel`, track G1) implemented by `TcpChannel` (`daemon/src/channel/tcp.rs`, track G2 — Wi-Fi/local network, via a wrapped WebSocket) and `BluetoothChannel` (`daemon/src/channel/bluetooth.rs`, track G4 — RFCOMM/Bluetooth Classic, via a wrapped `bluer`), with `connect_best_available` (`daemon/src/channel/negotiate.rs`, track G6) picking which one to actually use for a given peer: TCP whenever reachable, Bluetooth otherwise. Full design, wire shape, and explicit scope boundaries: [`docs/architecture/channels.md`](../docs/architecture/channels.md). This is a separate document from `docs/contracts/` on purpose — Channels is daemon<->daemon, the contracts directory is Flutter<->daemon — kept in the same documentation style so the two are easy to reconcile if Channel state ever needs to surface into the UI later. `docs/archive/tasks/daemon-todos.json` track **G** builds this.
 
 `daemon/src/discovery/tcp.rs` (track G3) is how a peer's `TcpChannel` address gets found in the first place: a UDP broadcast announce/listen loop (`DiscoveryService`, port `47824`) advertising `{name, os, channel_port}`, producing `DiscoveredPeer { name, os, address: ChannelAddress::Tcp(..) }` values. This module's own tests exercise the send/receive/parse code path via directed loopback (`127.0.0.1:<peer's bound port>`) rather than relying on genuine broadcast fan-out — this session's own sandboxed network rewrote broadcast packets unpredictably when tested directly (a real send to `255.255.255.255` came back with its source address rewritten to a `192.0.2.x` TEST-NET address), and containerized/sandboxed networks often don't support broadcast fan-out reliably anyway. `daemon/src/discovery/bluetooth.rs` (track G5) is the Bluetooth counterpart — see its own subsection below.
 
@@ -232,17 +208,17 @@ Real hardware is only needed for the Bluetooth-only path's *success* case (an ac
 
 ### Real pairing over Channels (track G7)
 
-`daemon/src/channel/handshake.rs` is the actual `PairingRequest`/`PairingDecision` exchange, carried as `ChannelMessage::Pairing` frames over whichever `Channel` `connect_best_available` negotiated — `request_pairing` (initiator) and `respond_to_pairing` (responder) both take `&mut dyn Channel` and never inspect `ChannelKind`, so this is the same code regardless of medium, proving `flow_core::channel::Channel`'s abstraction actually holds all the way up through pairing. `PairingRequest` gained a `device_os: HostOs` field in this task (previously just `device_name`/`address`) — needed to build a well-formed `Device` record on the responder side; safe to extend since nothing outside `core::pairing`'s and `core::channel`'s own tests constructed one, and it isn't part of the Flutter-facing contract (`docs/contracts/` never mentions `PairingRequest`).
+`daemon/src/channel/handshake.rs` is the actual `PairingRequest`/`PairingDecision` exchange, carried as `ChannelMessage::Pairing` frames over whichever `Channel` `connect_best_available` negotiated — `request_pairing` (initiator) and `respond_to_pairing` (responder) both take `&mut dyn Channel` and never inspect `ChannelKind`, so this is the same code regardless of medium, proving `flow_core::channel::Channel`'s abstraction actually holds all the way up through pairing. `PairingRequest` gained a `device_os: HostOs` field in this task (previously just `device_name`/`address`) — needed to build a well-formed `Device` record on the responder side; safe to extend since nothing outside `core::pairing`'s and `core::channel`'s own tests constructed one, and it isn't part of the UI-facing contract (`docs/contracts/` never mentions `PairingRequest`).
 
 `DaemonService` wires this into the existing mock-parity pairing state machine (track B4) rather than replacing it:
 
 - **`note_discovered_peer(peer: DiscoveredPeer)`** registers a live-discovered peer (from `discovery::tcp`/`::bluetooth`, or — in this task's own integration test — injected directly) as a pairing candidate alongside where to reach it. Nothing in this codebase calls it except that test, so `B7`'s mock-parity suite, which never does, keeps exercising the pure `candidates_pool` mock flow completely unchanged — this *is* the "keep the hardcoded fallback behind a switch" acceptance criterion, just expressed as "whether any real peer was ever registered" rather than a separate config flag, since that was simpler and needed no new plumbing.
 - **`pair_with_candidate`** checks whether the chosen candidate came from a live discovery. If so, it negotiates a real `Channel` (G6) and runs `channel::handshake::request_pairing` over it instead of the old fixed-delay timer; a mock `candidates_pool` candidate is unaffected. `PairingStage::Failed` (defined since track A3 but never actually reached by the mock flow) is now reachable for real: a rejected request or a `ChannelError` both land there with a message, auto-resetting to `Idle` after the same `PAIRING_TERMINAL_TO_IDLE` delay `Paired` uses (`on_paired_elapsed` was generalized into `on_terminal_elapsed(expected_stage)` to serve both, rather than duplicating the timer).
-- **`accept_pairing_request(channel: Box<dyn Channel>)`** is the responder side: runs `channel::handshake::respond_to_pairing`, and on acceptance upserts the initiator into its own device list/`DeviceRepo`, so `docs/product/vision.md` §16's "once accepted, the devices become trusted" holds symmetrically on both ends of one handshake. **It always accepts** — the Flutter-facing contract has no incoming-pairing-request command or UI yet (`docs/contracts/daemon-ipc.md`'s `PairingSession` only models the initiating side's view), so a real accept/reject prompt on the receiving end would need a new contract command that doesn't exist; this is an honest scope boundary, not an oversight.
+- **`accept_pairing_request(channel: Box<dyn Channel>)`** is the responder side: runs `channel::handshake::respond_to_pairing`, and on acceptance upserts the initiator into its own device list/`DeviceRepo`, so `docs/product/vision.md` §16's "once accepted, the devices become trusted" holds symmetrically on both ends of one handshake. **It always accepts** — the UI-facing contract has no incoming-pairing-request command or UI yet (`docs/contracts/daemon-ipc.md`'s `PairingSession` only models the initiating side's view), so a real accept/reject prompt on the receiving end would need a new contract command that doesn't exist; this is an honest scope boundary, not an oversight.
 
 `daemon/tests/pairing_over_channel.rs` is the acceptance-criteria integration test: two independent `DaemonService` instances (each its own in-memory `Storage`) complete a real handshake over an actual loopback `TcpChannel` — one test for acceptance (both sides' devices list ends up containing the other), one for rejection (lands in `Failed`, not `Paired`, no device added). Neither uses the in-memory `ChannelPair` test double from `core::channel`'s own tests — genuine sockets throughout. This task's own scope was the handshake and state-machine integration, not the production listen loop — that landed later, in the integration pass "Daemon-to-daemon wiring in `main.rs`" documents below: `main.rs` now runs a real incoming-connection accept loop and feeds real TCP discovery into `note_discovered_peer` automatically. Bluetooth discovery (`discovery::bluetooth::scan`) is the one piece of this still not wired into anything, for the reason its own section above already gives (no `AF_BLUETOOTH` support in this container to build the wiring against).
 
-Every third-party dependency that does real I/O (SQLite, WebSockets, Bluetooth, Noise encryption, OS input APIs) is wrapped behind a project-owned trait or type before anything else in the daemon depends on it — see `docs/tasks/daemon-todos.json`'s `architecturalPrinciples.wrapThirdPartyDependencies` for the explicit rule and the module-by-module list of what wraps what.
+Every third-party dependency that does real I/O (SQLite, WebSockets, Bluetooth, Noise encryption, OS input APIs) is wrapped behind a project-owned trait or type before anything else in the daemon depends on it — see `docs/archive/tasks/daemon-todos.json`'s `architecturalPrinciples.wrapThirdPartyDependencies` for the explicit rule and the module-by-module list of what wraps what.
 
 ## Link protocol v2 (`link.rs`)
 
@@ -282,7 +258,7 @@ This matters because the peer listener binds `0.0.0.0` and broadcasts its port e
 
 ## Security posture during this phase
 
-The local IPC channel (Flutter <-> this daemon) is bound to `127.0.0.1` only, and every connection to it must present a random token (`src/ipc/auth.rs`, persisted at `~/.flow/ipc.token`) as its WebSocket subprotocol before the handshake completes — `127.0.0.1` being reachable by any local process, not just the intended UI, is exactly the gap this closes; the daemon started up before this fix, but so could a connection from anything else on the machine. The daemon-to-daemon Channel (tracks G and H, both done) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.
+The local IPC channel (UI <-> this engine) is bound to `127.0.0.1` only, and every connection to it must present a random token (`src/ipc/auth.rs`, persisted at `~/.flow/ipc.token`) as its WebSocket subprotocol before the handshake completes — `127.0.0.1` being reachable by any local process, not just the intended UI, is exactly the gap this closes; the daemon started up before this fix, but so could a connection from anything else on the machine. The daemon-to-daemon Channel (tracks G and H, both done) is the one that actually carries sensitive keyboard/mouse data, and is where real device identity, trust, and Noise encryption (`docs/product/vision.md` §17) apply — uniformly across both TCP and Bluetooth, since encryption wraps the `Channel` trait rather than either medium specifically.
 
 ### Pairing trust gate (track H2)
 
@@ -327,7 +303,7 @@ A sweep of `daemon`/`platform`/`core` confirms zero `println!`/`eprintln!` remai
 
 ## Manual verification notes
 
-Several tasks in `docs/tasks/daemon-todos.json` (E1-E7 below; G4/G5/G8 and I1 have their own equivalent notes inline in their own sections earlier in this file, not repeated here) can only be fully verified with real input devices, a second machine, or platform hardware this development environment doesn't have. Each such task's acceptance criteria says explicitly what was verified automatically (unit tests on pure translation logic, `cargo check` for cross-compiled platforms, integration tests against synthetic events) versus what still needs a human with the actual hardware to confirm — that discipline held for every task through the end of the plan (tracks A-J), not just this section's own E1-E7.
+Several tasks in `docs/archive/tasks/daemon-todos.json` (E1-E7 below; G4/G5/G8 and I1 have their own equivalent notes inline in their own sections earlier in this file, not repeated here) can only be fully verified with real input devices, a second machine, or platform hardware this development environment doesn't have. Each such task's acceptance criteria says explicitly what was verified automatically (unit tests on pure translation logic, `cargo check` for cross-compiled platforms, integration tests against synthetic events) versus what still needs a human with the actual hardware to confirm — that discipline held for every task through the end of the plan (tracks A-J), not just this section's own E1-E7.
 
 ### E1: Linux capture via evdev
 

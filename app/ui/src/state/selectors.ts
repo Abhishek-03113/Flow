@@ -11,6 +11,15 @@ export function localOs(s: FlowState): HostOs {
   return /Mac/i.test(ua) ? 'macos' : /Win/i.test(ua) ? 'windows' : 'linux';
 }
 
+/**
+ * What the link status should say. The engine reports `disconnected` when
+ * there is nothing to be connected to; with no paired computer that is not
+ * an error, so it becomes the neutral `no_computers`.
+ */
+export type EffectiveLink = FlowState['linkState'] | 'no_computers';
+export const effectiveLink = (s: FlowState): EffectiveLink =>
+  s.linkState === 'disconnected' && remoteDevices(s).length === 0 ? 'no_computers' : s.linkState;
+
 export const myRole = (s: FlowState): Role => s.controlState?.role ?? s.settings?.role ?? 'controller';
 
 export const isReachable = (d: Device): boolean =>
@@ -38,7 +47,5 @@ export function situation(s: FlowState): Situation {
   }
   const controller = c.controllerDeviceId ? deviceById(s, c.controllerDeviceId) : undefined;
   if (!c.controllerDeviceId) return { kind: 'controlled-unlinked' };
-  return c.activeScreen === 'local'
-    ? { kind: 'controlled-driven', controller }
-    : { kind: 'controlled-waiting', controller };
+  return c.entered ? { kind: 'controlled-driven', controller } : { kind: 'controlled-waiting', controller };
 }

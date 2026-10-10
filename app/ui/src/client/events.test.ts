@@ -2,17 +2,27 @@ import { describe, expect, it } from 'vitest';
 import { decodeEvent } from './events';
 
 describe('decodeEvent', () => {
-  it('normalises 0.1.x devices (ISO last_seen, no role) and marks d1 as local', () => {
+  it('normalises 0.1.x devices (ISO last_seen, no role) and trusts the engine for is_local', () => {
     const e = decodeEvent({
       event: 'devices_changed',
       payload: [
         { id: 'd1', name: 'MacBook', os: 'macos', state: 'active', last_seen: '2026-08-25T06:58:00Z' },
+        {
+          id: 'd9',
+          name: 'This one',
+          os: 'linux',
+          state: 'active',
+          last_seen: '2026-08-25T06:58:00Z',
+          is_local: true,
+        },
       ],
     });
     expect(e?.type).toBe('devices_changed');
     if (e?.type !== 'devices_changed') throw new Error('unreachable');
+    // No `is_local` on the wire means not local, whatever the id (no guessing).
+    expect(e.devices[1]).toMatchObject({ isLocal: true });
     expect(e.devices[0]).toMatchObject({
-      isLocal: true,
+      isLocal: false,
       role: null,
       linkError: null,
       lastSeenMs: Date.parse('2026-08-25T06:58:00Z'),

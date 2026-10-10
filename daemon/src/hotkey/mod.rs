@@ -44,7 +44,7 @@ impl SwitchKeyMatcher {
     }
 
     /// Swaps in a new binding, e.g. after `set_switch_key`/`update_settings`
-    /// changes `ServiceState.settings.switch_key` mid-run (`docs/tasks/daemon-todos.json`
+    /// changes `ServiceState.settings.switch_key` mid-run (`docs/archive/tasks/daemon-todos.json`
     /// F1's live-reconfiguration criterion; the daemon doesn't need
     /// restarting). Clears tracked key state, since a combination that
     /// spans the swap (a key held before the change, released after)

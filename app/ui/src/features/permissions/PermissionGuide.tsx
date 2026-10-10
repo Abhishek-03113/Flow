@@ -1,145 +1,132 @@
-import { Check, Copy, ShieldAlert } from 'lucide-react';
-import type { HostOs, PermissionStatus } from '../../client/types';
-import { Badge, Button, Row, Section, useToast } from '@flow/design-system';
+import { Check, ShieldAlert } from 'lucide-react';
+import type { HostOs, PermissionItem, PermissionStatus } from '../../client/types';
+import { Badge, Button, CodeBlock, Row, Section, useToast } from '@flow/design-system';
 
-export const SETTINGS_URLS = {
-  macAccessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-  macInputMonitoring: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent',
-} as const;
+/** Guidance only the UI knows how to phrase; the permission items themselves come from the engine. */
+const NOTE: Partial<Record<HostOs, string>> = {
+  macos: 'macOS asks you to approve this in System Settings. Flow can’t do it for you.',
+  windows:
+    'If you use Flow with apps that run as administrator, start Flow as administrator too. Windows blocks input to those apps otherwise.',
+  linux:
+    'On Wayland, capturing input can be limited. If Flow still can’t see your keyboard, try an X11 session.',
+};
 
-/** Best effort: deep-link into the OS privacy pane (the shell opens custom schemes). */
-export function openSettings(url: string): void {
-  window.open(url, '_blank', 'noopener');
-}
-
-const LINUX_GROUP = 'sudo usermod -aG input $USER';
-const LINUX_UDEV = `echo 'KERNEL=="uinput", GROUP="input", MODE="0660"' | sudo tee /etc/udev/rules.d/99-flow.rules`;
-
-function CopyBlock({ text }: { text: string }) {
+function Steps({ item }: { item: PermissionItem }) {
   const toast = useToast();
+  const steps = item.howToFix?.steps ?? [];
+  if (steps.length === 0) return null;
   return (
-    <div style={{ display: 'flex', gap: 'var(--s-2)', alignItems: 'flex-start' }}>
-      <code className="fl-pre" style={{ flex: 1 }}>
-        {text}
-      </code>
-      <Button
-        size="small"
-        aria-label={`Copy command: ${text}`}
-        icon={<Copy size={13} strokeWidth={1.6} />}
-        onClick={() => {
-          void navigator.clipboard?.writeText(text);
-          toast.show('Copied');
-        }}
-      />
-    </div>
+    <ol className="fl-steps" aria-label={`How to allow ${item.name}`}>
+      {steps.map((step, i) => (
+        <li key={i}>
+          <span className="t-callout">{step.text}</span>
+          {step.command && <CodeBlock onCopy={() => toast.show('Copied')}>{step.command}</CodeBlock>}
+        </li>
+      ))}
+    </ol>
   );
 }
 
-/** Per-OS permission guidance, shared by onboarding and the "Fix permission" sheet. */
+/**
+ * Per-OS permission guidance, shared by onboarding and the "Fix permission"
+ * sheet. One row per permission the engine reports, each with its own state,
+ * a one-sentence summary and ordered steps (commands are copyable), a button
+ * to the OS Settings page where there is one, and "Check Again".
+ */
 export function PermissionGuide({
   os,
   permission,
   onRequest,
+  onOpenSettings,
+  onRecheck,
   requesting,
 }: {
   os: HostOs;
   permission: PermissionStatus | null;
   onRequest(): void;
+  onOpenSettings(name: string): void;
+  onRecheck(): void;
   requesting?: boolean;
 }) {
+  const items = permission?.items ?? [];
   const granted = permission?.granted ?? false;
-  const status = granted ? <Badge tone="green">Allowed</Badge> : <Badge tone="orange">Needs your OK</Badge>;
+  const allowed = <Badge tone="green">Allowed</Badge>;
+  const note = NOTE[os];
 
-  if (os === 'macos') {
-    return (
-      <div data-testid="permission-guide-macos">
-        <Section footer="macOS asks you to approve this in System Settings. Flow can't do it for you. After switching it on, you may need to reopen Flow.">
+  return (
+    <div data-testid={`permission-guide-${os}`} style={{ display: 'grid', gap: 'var(--s-3)' }}>
+      <Section>
+        {items.length === 0 ? (
           <Row
-            icon={<ShieldAlert size={16} strokeWidth={1.6} />}
+            icon={<Check size={16} strokeWidth={1.6} />}
             iconTone={granted ? 'green' : 'orange'}
-            title="Accessibility"
-            subtitle="Lets Flow send keystrokes and clicks to other computers."
+            title={granted ? 'No extra permission needed' : 'Permission needed'}
+            subtitle={
+              granted
+                ? 'Your computer lets Flow share your keyboard and mouse without a prompt.'
+                : 'Allow Flow to share your keyboard and mouse.'
+            }
             trailing={
               granted ? (
-                status
+                allowed
               ) : (
-                <Button
-                  size="small"
-                  loading={requesting}
-                  onClick={() => {
-                    onRequest();
-                    openSettings(SETTINGS_URLS.macAccessibility);
-                  }}
-                >
-                  Open System Settings
+                <Button size="small" loading={requesting} onClick={onRequest}>
+                  Allow…
                 </Button>
               )
             }
           />
-          <Row
-            icon={<Check size={16} strokeWidth={1.6} />}
-            iconTone="gray"
-            title="Input Monitoring"
-            subtitle="Lets Flow notice your shortcut while another computer is in use."
-            trailing={
-              <Button size="small" onClick={() => openSettings(SETTINGS_URLS.macInputMonitoring)}>
-                Open System Settings
-              </Button>
-            }
-          />
-        </Section>
-        <ol
-          className="t-callout t-secondary"
-          style={{ margin: 0, paddingLeft: 'var(--s-5)', display: 'grid', gap: 'var(--s-1)' }}
-        >
-          <li>Open Privacy &amp; Security in System Settings.</li>
-          <li>Choose Accessibility, then switch on Flow.</li>
-          <li>Do the same under Input Monitoring.</li>
-        </ol>
-      </div>
-    );
-  }
-
-  if (os === 'windows') {
-    return (
-      <div data-testid="permission-guide-windows">
-        <Section footer="If you use Flow with apps that run as administrator, start Flow as administrator too. Windows blocks input to those apps otherwise.">
-          <Row
-            icon={<Check size={16} strokeWidth={1.6} />}
-            iconTone="green"
-            title="No extra permission needed"
-            subtitle="Windows lets Flow share your keyboard and mouse without a prompt."
-            trailing={status}
-          />
-        </Section>
-      </div>
-    );
-  }
-
-  return (
-    <div data-testid="permission-guide-linux" style={{ display: 'grid', gap: 'var(--s-3)' }}>
-      <Section footer="Flow reads keyboard and mouse devices and creates a virtual one. Both need access that Linux gives to the “input” group.">
-        <Row
-          icon={<ShieldAlert size={16} strokeWidth={1.6} />}
-          iconTone={granted ? 'green' : 'orange'}
-          title="Input device access"
-          subtitle={
-            granted ? 'Flow can read and create input devices.' : 'Flow can’t open your input devices yet.'
-          }
-          trailing={status}
-        />
+        ) : (
+          items.map((item) => (
+            <div key={item.name}>
+              <Row
+                icon={
+                  item.granted ? (
+                    <Check size={16} strokeWidth={1.6} />
+                  ) : (
+                    <ShieldAlert size={16} strokeWidth={1.6} />
+                  )
+                }
+                iconTone={item.granted ? 'green' : 'orange'}
+                title={item.name}
+                subtitle={
+                  item.granted ? 'Flow has access.' : (item.howToFix?.summary ?? 'Flow needs access.')
+                }
+                trailing={
+                  item.granted ? (
+                    allowed
+                  ) : os === 'linux' ? (
+                    <Badge tone="orange">Needs your OK</Badge>
+                  ) : (
+                    <Button
+                      size="small"
+                      loading={requesting}
+                      onClick={() => {
+                        onRequest();
+                        onOpenSettings(item.name);
+                      }}
+                    >
+                      Open System Settings
+                    </Button>
+                  )
+                }
+              />
+              {!item.granted && <Steps item={item} />}
+            </div>
+          ))
+        )}
       </Section>
       {!granted && (
-        <>
-          <p className="t-callout">1. Add yourself to the input group:</p>
-          <CopyBlock text={LINUX_GROUP} />
-          <p className="t-callout">2. Allow the virtual keyboard (uinput):</p>
-          <CopyBlock text={LINUX_UDEV} />
-          <p className="t-callout t-secondary">
-            Then log out and back in. Wayland sessions may limit capturing input; if Flow still can’t see your
-            keyboard, try an X11 session.
-          </p>
-        </>
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <Button size="small" onClick={onRecheck}>
+            Check Again
+          </Button>
+        </div>
+      )}
+      {note && (
+        <p className="t-footnote t-secondary" style={{ textAlign: 'center' }}>
+          {note}
+        </p>
       )}
     </div>
   );

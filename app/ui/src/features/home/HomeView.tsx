@@ -1,9 +1,9 @@
 import { Gauge, MousePointer2, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { friendlyError, formatUptime } from '../../copy';
+import { friendlyError, formatMs, formatUptime } from '../../copy';
 import { Badge, KeyCombo, Row, Section, StatusDot, useToast } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
-import { localDevice, localOs, myRole, remoteDevices } from '../../state/selectors';
+import { effectiveLink, localDevice, localOs, myRole, remoteDevices } from '../../state/selectors';
 import { ArrangementEditor } from './ArrangementEditor';
 import { StatusCard } from './StatusCard';
 
@@ -12,6 +12,7 @@ const LINK_TEXT = {
   connecting: ['Connecting', 'orange'],
   reconnecting: ['Reconnecting', 'orange'],
   disconnected: ['Offline', 'gray'],
+  no_computers: ['No computers yet', 'gray'],
   error: ['Needs attention', 'red'],
   permission_required: ['Needs permission', 'red'],
 } as const;
@@ -33,7 +34,7 @@ export function HomeView() {
   const me = localDevice(s);
   const role = myRole(s);
   const controller = role === 'controller';
-  const [linkText, linkTone] = LINK_TEXT[s.linkState];
+  const [linkText, linkTone] = LINK_TEXT[effectiveLink(s)];
   const activeScreen = s.controlState?.activeScreen ?? 'local';
   const activeId = controller
     ? activeScreen === 'local'
@@ -94,7 +95,7 @@ export function HomeView() {
               </span>
             }
           />
-          <Stat label="Switch time" value={diag ? `${diag.switchLatencyMsP50} ms` : '—'} />
+          <Stat label="Switch time" value={formatMs(diag?.switchLatencyMsP50)} />
           <Stat label="Up for" value={diag ? formatUptime(diag.uptimeS) : '—'} />
         </div>
       </section>

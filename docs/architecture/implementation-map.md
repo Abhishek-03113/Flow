@@ -5,14 +5,14 @@ two computers, Scroll Lock switches). Produced from a read of the current `main`
 `product-first-v1` tree. Not a redesign — a description of what exists.
 
 See [`../testing/user-journeys.md`](../testing/user-journeys.md) for the journeys these
-paths serve and their status, and [`docs/tasks/todos-product-first.md`](../tasks/todos-product-first.md)
+paths serve and their status, and [`docs/archive/tasks/todos-product-first.md`](../tasks/todos-product-first.md)
 for the work queue.
 
 ## Runtime shape
 
 ```
 flow-daemon (per machine)
-├── IPC listener        127.0.0.1:47823   ← Flutter UI (control plane, token-authed)
+├── IPC listener        127.0.0.1:47823   ← WebSocket clients (headless host only; the desktop app calls the engine in-process)
 ├── peer channel        0.0.0.0:<ephemeral>  ← the other daemon (data plane, Noise)
 ├── discovery           0.0.0.0:47824 UDP  ← announce every 5s + listen
 ├── hotkey runner       standalone switch-key detection (works with no UI)
@@ -48,19 +48,19 @@ is sent *to*. `Connected` = paired/reachable. These three are separate, delibera
 | Switch state transition | `service/mod.rs` `switch_active_device` (IPC) / `switch_active_device_local` (hotkey) | Both maintain the single-`Active` invariant; both emit a `stage="switch"` `hop_note!`. The IPC path is **not** Primary-gated (only the Scroll Lock path is, per task §6's concrete scope) — a known, documented limitation, not an oversight. |
 | Logging | `daemon/src/logging.rs` | `LevelFilter` reload layer (**not** `EnvFilter` — `RUST_LOG` is ignored today). `flow::hop` target: `hop!` = TRACE firehose, `hop_note!` = DEBUG milestones. `FLOW_TRACE` = global TRACE (pulls in tungstenite noise). **V1 gap.** |
 | Persistence | `daemon/src/storage/*` | Single SQLite DB under the data dir: settings, devices (= trust store), identity keypair, history. `DeviceState` deliberately not persisted. |
-| UI ↔ daemon | `flutter/lib/data/ipc_daemon_repository.dart`, `flutter/lib/state/*` | Implements the same `docs/contracts/daemon-ipc.md` contract as the Dart mock. `--dart-define=FLOW_DAEMON_MODE=ipc` points it at the real daemon. |
+| UI ↔ daemon | `app/ui/src/client/*` (`FlowClient`, Tauri/WebSocket/Mock transports), `app/src-tauri/src/bridge.rs` | All three transports speak `docs/contracts/daemon-ipc.md`; the app dispatches through `ipc::dispatch::run_command` and streams `ipc::events::StateStream`. `?daemon=ws://…&token=…` points the UI at a headless daemon. |
 
 ## Known un-resolved concerns (evidence-blocked — need a real two-machine run)
 
 - **#4 connection ownership:** when two paired daemons start together, each ends up with one
   connection it opened + one it accepted; `connection_precedence` is meant to keep exactly
-  one. Whether the loser's `close()` ever tears down the winner, and whether the Flutter IPC
+  one. Whether the loser's `close()` ever tears down the winner, and whether the UI's WebSocket
   layer misreads that as a fatal daemon disconnect, can only be judged from `FLOW_TRACE`
   logs of a real simultaneous start. Capture `stage=claim|claim_lost|claim_dropped|
   pipeline_up|pipeline_down|link_connected` from both sides.
 - **#5 WebSocket 1006:** no abnormal-close handling exists. Need a real capture showing which
   socket (IPC `47823` vs. the peer channel) closed abnormally and the preceding lines.
-- **`manual-testing-strategy.md` Tier 0 note:** after a process has opened >1 IPC
+- **`docs/archive/manual-testing-strategy.md` Tier 0 note:** after a process has opened >1 IPC
   connection, a later connection's detection of a killed daemon can take >40 s. Pre-existing,
   reproduced with raw sockets. Worth its own look if reconnect UX feels wrong.
 

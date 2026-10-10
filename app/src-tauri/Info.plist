@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Merged into the generated Info.plist by `tauri build`. -->
+  <key>NSInputMonitoringUsageDescription</key>
+  <string>Flow watches your keyboard and mouse so it can send them to your other computers when you switch. It never records what you type.</string>
+  <key>NSAccessibilityUsageDescription</key>
+  <string>Flow needs Accessibility access to move the pointer and type on this computer when another computer is controlling it.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>Flow finds and talks to your other computers on your local network.</string>
+  <key>LSUIElement</key>
+  <false/>
+</dict>
+</plist>

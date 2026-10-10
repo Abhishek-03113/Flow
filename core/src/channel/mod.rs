@@ -133,7 +133,7 @@ pub enum ChannelError {
     #[error("medium not supported on this platform")]
     UnsupportedMedium,
     /// The Noise handshake failed, or the peer's identity proof over it
-    /// didn't verify (`docs/tasks/daemon-todos.json` H3) — covers both "the bytes
+    /// didn't verify (`docs/archive/tasks/daemon-todos.json` H3) — covers both "the bytes
     /// were corrupt/tampered with" and "the signature didn't match,"
     /// deliberately not distinguished further since Noise itself
     /// doesn't distinguish a malformed handshake from a tampered one.

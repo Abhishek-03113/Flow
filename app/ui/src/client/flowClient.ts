@@ -2,6 +2,7 @@ import { decodeEvent, type FlowEvent } from './events';
 import { toWire } from './mapper';
 import type { Transport, TransportStatus } from './transport';
 import type {
+  ControlState,
   FlowState,
   HostOs,
   KeymapEntry,
@@ -70,6 +71,16 @@ type SwitchListener = (controlledDeviceId: string) => void;
  * external store consumed with `useSyncExternalStore`) and exposes one typed
  * method per contract command.
  */
+/**
+ * Where input is going, from this computer's point of view: a controller's
+ * active screen, or on a controlled computer `"local"` while the controller
+ * drives it and `"away"` otherwise.
+ */
+function focusOf(c: ControlState | null | undefined): string | undefined {
+  if (!c) return undefined;
+  return c.role === 'controlled' ? (c.entered ? 'local' : 'away') : c.activeScreen;
+}
+
 export class FlowClient {
   private state: FlowState = initialState;
   private seen = new Set<FlowEvent['type']>();
@@ -77,6 +88,11 @@ export class FlowClient {
   private activeScreenListeners = new Set<SwitchListener>();
 
   constructor(readonly transport: Transport) {}
+
+  /** True when a desktop shell hosts this UI (the tray popover is a separate window). */
+  get hasDesktopShell(): boolean {
+    return this.transport.kind === 'tauri';
+  }
 
   connect(): void {
     this.transport.connect({
@@ -112,18 +128,16 @@ export class FlowClient {
   }
 
   private apply(e: FlowEvent): void {
-    const prevScreen = this.state.controlState?.activeScreen;
+    const prevFocus = focusOf(this.state.controlState);
     this.seen.add(e.type);
     let next = reduce(this.state, e);
     const loaded = SNAPSHOT.every((t) => this.seen.has(t));
     if (loaded !== next.loaded) next = { ...next, loaded };
     this.set(next);
-    if (
-      e.type === 'control_state_changed' &&
-      prevScreen !== undefined &&
-      prevScreen !== e.controlState.activeScreen
-    ) {
-      this.activeScreenListeners.forEach((l) => l(e.controlState.activeScreen));
+    if (e.type === 'control_state_changed') {
+      const focus = focusOf(e.controlState);
+      if (prevFocus !== undefined && prevFocus !== focus)
+        this.activeScreenListeners.forEach((l) => l(focus!));
     }
   }
 
@@ -154,6 +168,22 @@ export class FlowClient {
   resetSettings = () => this.cmd('reset_settings');
   requestPermission = () => this.cmd('request_permission');
   retryConnection = () => this.cmd('retry_connection');
+  /** "Check Again": the engine re-probes the OS permissions now. */
+  recheckPermissions = () => this.cmd('recheck_permissions');
+  /** Stops automatic redialling after a lost link, until `retryConnection`. */
+  cancelReconnect = () => this.cmd('cancel_reconnect');
+  /**
+   * Opens the OS settings page where `name` (a permission item) is granted.
+   * The desktop shell opens it itself; any other client gets the URL and
+   * opens it here.
+   */
+  openPermissionSettings = async (name: string): Promise<void> => {
+    const r = await this.cmd<{ url?: string | null }>('open_permission_settings', { name });
+    if (r?.url && this.transport.kind !== 'tauri') window.open(r.url, '_blank', 'noopener');
+  };
+  /** Tray popover → full window, optionally with a sheet open. Desktop shell only. */
+  openMainWindow = (target: { route?: string; sheet?: 'pairing' | 'permission' } = {}) =>
+    this.cmd('open_main_window', target);
   setScreenLayout = (layout: ScreenLayout) => this.cmd('set_screen_layout', { layout });
   setRole = (role: Role) => this.cmd('set_role', { role });
   getKeymap = (os: HostOs) => this.cmd<{ os: HostOs; entries: KeymapEntry[] }>('get_keymap', { os });

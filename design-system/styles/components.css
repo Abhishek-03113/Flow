@@ -1062,6 +1062,27 @@
   text-align: left;
 }
 
+/* Code block (copyable command) ----------------------------------------------------------------------------- */
+.fl-codeblock {
+  display: flex;
+  gap: var(--s-2);
+  align-items: flex-start;
+  padding: var(--s-2) var(--s-2) var(--s-2) var(--s-3);
+  border-radius: var(--r-control);
+  background: var(--bg-tertiary);
+}
+
+.fl-codeblock__code {
+  flex: 1;
+  min-width: 0;
+  padding-top: 2px;
+  font: var(--fs-footnote) / 1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 /* Cards ---------------------------------------------------------------------------------------------------- */
 .fl-card {
   padding: var(--s-4);

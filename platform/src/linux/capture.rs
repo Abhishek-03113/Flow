@@ -3,7 +3,7 @@
 //! [`InputEvent`]s over a channel.
 //!
 //! evdev reads block, so the read loop runs on its own thread
-//! (`docs/tasks/daemon-todos.json` E1) rather than tying up an async runtime worker.
+//! (`docs/archive/tasks/daemon-todos.json` E1) rather than tying up an async runtime worker.
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};

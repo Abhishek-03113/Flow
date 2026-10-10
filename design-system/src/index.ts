@@ -9,6 +9,7 @@ export { Alert, type AlertAction } from "./components/Alert";
 export { Badge, StatusDot, type Tone, type DotTone } from "./components/Badge";
 export { Banner } from "./components/Banner";
 export { Button, type ButtonVariant } from "./components/Button";
+export { CodeBlock } from "./components/CodeBlock";
 export { EmptyState } from "./components/EmptyState";
 export { Hud } from "./components/Hud";
 export { KeyCap, KeyCombo } from "./components/KeyCap";

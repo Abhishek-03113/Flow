@@ -63,7 +63,7 @@ describe('WebSocketTransport', () => {
     await expect(p).resolves.toBeUndefined();
   });
 
-  it('rejects with the daemon error code and surfaces ack data', async () => {
+  it('rejects with the daemon error code and surfaces the ack result', async () => {
     const { client, ws } = make();
     ws.open();
     const bad = client.switchTo('x');
@@ -74,7 +74,7 @@ describe('WebSocketTransport', () => {
     });
     await expect(bad).rejects.toMatchObject({ code: 'device_not_found', message: 'no device x' });
     const good = client.exportDiagnostics();
-    ws.push({ id: JSON.parse(ws.sent[1]!).id, ok: true, data: { path: '/tmp/x' } });
+    ws.push({ id: JSON.parse(ws.sent[1]!).id, ok: true, result: { path: '/tmp/x' } });
     await expect(good).resolves.toEqual({ path: '/tmp/x' });
   });
 

@@ -1,7 +1,7 @@
 import { Download } from 'lucide-react';
 import { useState } from 'react';
 import { Alert, Button, Row, Section, Toggle } from '@flow/design-system';
-import { formatUptime } from '../../copy';
+import { formatMs, formatUptime } from '../../copy';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { useAction } from '../../state/useAction';
 import { useToast } from '@flow/design-system';
@@ -37,9 +37,9 @@ export function DiagnosticsView() {
           Performance
         </h2>
         <div className="fl-grid" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-          <Stat value={d ? `${d.switchLatencyMsP50} ms` : '—'} label="Switch time (typical)" hint="Median" />
+          <Stat value={formatMs(d?.switchLatencyMsP50)} label="Switch time (typical)" hint="Median" />
           <Stat
-            value={d ? `${d.switchLatencyMsP95} ms` : '—'}
+            value={formatMs(d?.switchLatencyMsP95)}
             label="Switch time (slowest)"
             hint="95th percentile"
           />
