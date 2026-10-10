@@ -12,7 +12,7 @@ import {
   Toggle,
   useTheme,
   type ThemeChoice,
-} from '../../design';
+} from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localOs, myRole, remoteDevices } from '../../state/selectors';
 import { useAction } from '../../state/useAction';

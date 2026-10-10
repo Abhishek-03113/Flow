@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { Device, ScreenLayout } from '../../client/types';
-import { cx } from '../../design';
+import { cx } from '@flow/design-system';
 import { DeviceGlyph } from '../DeviceGlyph';
 import { nextSlot, replaceRect, snap, type Dir, type Rect } from './layoutMath';
 

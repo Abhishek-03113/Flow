@@ -1,6 +1,6 @@
 import { Activity, Home, Keyboard, Laptop, Settings } from 'lucide-react';
 import { useEffect, type ReactNode } from 'react';
-import { Sidebar, SidebarItem, StatusDot, Toolbar, type DotTone } from '../../design';
+import { Sidebar, SidebarItem, StatusDot, Toolbar, type DotTone } from '@flow/design-system';
 import { useFlow } from '../../state/FlowProvider';
 import { useUi } from '../../state/ui';
 import { DevicesToolbarAction, DevicesView } from '../devices/DevicesView';

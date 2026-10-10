@@ -1,5 +1,5 @@
 import { CircleAlert, ShieldAlert, Unplug, WifiOff } from 'lucide-react';
-import { Banner, Button, useToast } from '../../design';
+import { Banner, Button, useToast } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { useAction } from '../../state/useAction';
 import { useUi } from '../../state/ui';

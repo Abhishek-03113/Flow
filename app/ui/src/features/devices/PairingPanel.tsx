@@ -1,7 +1,7 @@
 import { Check, TriangleAlert } from 'lucide-react';
 import type { Role } from '../../client/types';
 import { osName } from '../../copy';
-import { Button, EmptyState, Row, Section, Spinner } from '../../design';
+import { Button, EmptyState, Row, Section, Spinner } from '@flow/design-system';
 import { DeviceGlyph } from '../DeviceGlyph';
 import type { usePairingFlow } from './usePairingFlow';
 

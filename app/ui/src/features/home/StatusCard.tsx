@@ -1,6 +1,6 @@
 import { ArrowLeftRight, Keyboard, Laptop, MonitorCheck, Undo2 } from 'lucide-react';
 import type { ReactNode } from 'react';
-import { cx, Button, EmptyState, KeyCombo } from '../../design';
+import { cx, Button, EmptyState, KeyCombo } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localDevice, localOs, situation, switchTargets } from '../../state/selectors';
 import { useAction } from '../../state/useAction';

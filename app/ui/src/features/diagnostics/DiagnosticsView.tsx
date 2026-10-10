@@ -1,10 +1,10 @@
 import { Download } from 'lucide-react';
 import { useState } from 'react';
-import { Alert, Button, Row, Section, Toggle } from '../../design';
+import { Alert, Button, Row, Section, Toggle } from '@flow/design-system';
 import { formatUptime } from '../../copy';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { useAction } from '../../state/useAction';
-import { useToast } from '../../design';
+import { useToast } from '@flow/design-system';
 
 function Stat({ value, label, hint }: { value: string; label: string; hint?: string }) {
   return (

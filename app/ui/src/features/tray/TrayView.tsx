@@ -1,5 +1,5 @@
 import { Check, Plus } from 'lucide-react';
-import { Banner, Button, KeyCombo, StatusDot, type DotTone } from '../../design';
+import { Banner, Button, KeyCombo, StatusDot, type DotTone } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { isReachable, localDevice, localOs, myRole, situation } from '../../state/selectors';
 import { useAction } from '../../state/useAction';

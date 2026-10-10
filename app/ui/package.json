@@ -5,17 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc -p tsconfig.app.json --noEmit && vite build",
     "preview": "vite preview --port 4173 --strictPort",
-    "lint": "eslint . && prettier --check .",
-    "format": "prettier --write .",
-    "typecheck": "tsc --noEmit",
+    "lint": "eslint . && prettier --check . ../../design-system",
+    "format": "prettier --write . ../../design-system",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "test": "vitest run",
     "e2e": "playwright test",
-    "format:check": "prettier --check .",
+    "format:check": "prettier --check . ../../design-system",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@flow/design-system": "file:../../design-system",
     "@tauri-apps/api": "2.12.2",
     "lucide-react": "1.54.0",
     "react": "18.3.1",

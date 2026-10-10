@@ -13,7 +13,7 @@ import {
   Toggle,
   Tooltip,
   useToast,
-} from '../../design';
+} from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localOs, myRole } from '../../state/selectors';
 import { useAction } from '../../state/useAction';
