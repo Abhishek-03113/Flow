@@ -261,7 +261,9 @@ mod tests {
 
     async fn an_identity() -> DeviceIdentity {
         let storage = Storage::open_in_memory().await.expect("open db");
-        DeviceIdentity::load_or_generate(storage).await
+        DeviceIdentity::load_or_generate(storage)
+            .await
+            .expect("identity")
     }
 
     #[tokio::test]

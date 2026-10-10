@@ -10,7 +10,9 @@ use chrono::SecondsFormat;
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
 use rusqlite::{OptionalExtension, Row};
 
-use super::{parse_rfc3339, Storage};
+use chrono::{DateTime, Utc};
+
+use super::{parse_rfc3339, Storage, StorageError};
 
 /// A device row as stored on disk: the contract [`Device`] plus the two
 /// storage-only concerns (trust key, removability) that aren't part of
@@ -32,39 +34,37 @@ impl DeviceRepo {
         Self { storage }
     }
 
-    pub async fn list(&self) -> Vec<DeviceRecord> {
+    pub async fn list(&self) -> Result<Vec<DeviceRecord>, StorageError> {
         self.storage
             .with_connection(|conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, name, os, last_seen, public_key, removable FROM devices
+                let mut stmt = conn.prepare(
+                    "SELECT id, name, os, last_seen, public_key, removable FROM devices
                          ORDER BY id",
-                    )
-                    .expect("prepare device list query");
-                stmt.query_map([], row_to_record)
-                    .expect("query devices")
-                    .map(|r| r.expect("read device row"))
-                    .collect()
+                )?;
+                let rows = stmt
+                    .query_map([], row_to_record)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
             })
             .await
     }
 
-    pub async fn find_by_id(&self, id: DeviceId) -> Option<DeviceRecord> {
+    pub async fn find_by_id(&self, id: DeviceId) -> Result<Option<DeviceRecord>, StorageError> {
         self.storage
             .with_connection(move |conn| {
-                conn.query_row(
-                    "SELECT id, name, os, last_seen, public_key, removable FROM devices
-                     WHERE id = ?1",
-                    [&id.0],
-                    row_to_record,
-                )
-                .optional()
-                .expect("query device by id")
+                Ok(conn
+                    .query_row(
+                        "SELECT id, name, os, last_seen, public_key, removable FROM devices
+                         WHERE id = ?1",
+                        [&id.0],
+                        row_to_record,
+                    )
+                    .optional()?)
             })
             .await
     }
 
-    pub async fn upsert(&self, record: DeviceRecord) {
+    pub async fn upsert(&self, record: DeviceRecord) -> Result<(), StorageError> {
         self.storage
             .with_connection(move |conn| {
                 conn.execute(
@@ -87,17 +87,36 @@ impl DeviceRepo {
                         record.public_key,
                         record.removable,
                     ],
-                )
-                .expect("upsert device row");
+                )?;
+                Ok(())
             })
             .await
     }
 
-    pub async fn remove(&self, id: DeviceId) {
+    /// Persists only a device's `last_seen`. Unlike [`Self::upsert`] this
+    /// leaves the trust key and every other column alone, and a missing
+    /// row (device removed meanwhile) is a no-op.
+    pub async fn set_last_seen(
+        &self,
+        id: DeviceId,
+        last_seen: DateTime<Utc>,
+    ) -> Result<(), StorageError> {
         self.storage
             .with_connection(move |conn| {
-                conn.execute("DELETE FROM devices WHERE id = ?1", [&id.0])
-                    .expect("delete device row");
+                conn.execute(
+                    "UPDATE devices SET last_seen = ?1 WHERE id = ?2",
+                    rusqlite::params![last_seen.to_rfc3339_opts(SecondsFormat::Secs, true), id.0],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    pub async fn remove(&self, id: DeviceId) -> Result<(), StorageError> {
+        self.storage
+            .with_connection(move |conn| {
+                conn.execute("DELETE FROM devices WHERE id = ?1", [&id.0])?;
+                Ok(())
             })
             .await
     }
@@ -107,33 +126,33 @@ impl DeviceRepo {
     /// the discovery-driven reconnect dial (a full TCP + Noise handshake)
     /// entirely on a daemon that has never paired with anything, where it
     /// could only ever fail.
-    pub async fn has_any_trusted(&self) -> bool {
+    pub async fn has_any_trusted(&self) -> Result<bool, StorageError> {
         self.storage
             .with_connection(move |conn| {
-                conn.query_row(
-                    "SELECT 1 FROM devices WHERE public_key IS NOT NULL LIMIT 1",
-                    [],
-                    |_| Ok(()),
-                )
-                .optional()
-                .expect("query for any trusted device")
-                .is_some()
+                Ok(conn
+                    .query_row(
+                        "SELECT 1 FROM devices WHERE public_key IS NOT NULL LIMIT 1",
+                        [],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some())
             })
             .await
     }
 
     /// Whether `public_key` matches a stored device's trust key.
-    pub async fn is_trusted(&self, public_key: Vec<u8>) -> bool {
+    pub async fn is_trusted(&self, public_key: Vec<u8>) -> Result<bool, StorageError> {
         self.storage
             .with_connection(move |conn| {
-                conn.query_row(
-                    "SELECT 1 FROM devices WHERE public_key = ?1",
-                    [public_key],
-                    |_| Ok(()),
-                )
-                .optional()
-                .expect("query trust by public key")
-                .is_some()
+                Ok(conn
+                    .query_row(
+                        "SELECT 1 FROM devices WHERE public_key = ?1",
+                        [public_key],
+                        |_| Ok(()),
+                    )
+                    .optional()?
+                    .is_some())
             })
             .await
     }
@@ -210,11 +229,12 @@ mod tests {
         let repo = DeviceRepo::new(storage);
 
         let record = sample("d2", Some(vec![1, 2, 3]));
-        repo.upsert(record.clone()).await;
+        repo.upsert(record.clone()).await.expect("upsert");
 
         let reloaded = repo
             .find_by_id(DeviceId("d2".to_string()))
             .await
+            .expect("find")
             .expect("device present after upsert");
 
         assert_eq!(reloaded.device.id, record.device.id);
@@ -234,10 +254,12 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let repo = DeviceRepo::new(storage);
 
-        repo.upsert(sample("d2", Some(vec![9, 9, 9]))).await;
+        repo.upsert(sample("d2", Some(vec![9, 9, 9])))
+            .await
+            .expect("upsert");
 
-        assert!(repo.is_trusted(vec![9, 9, 9]).await);
-        assert!(!repo.is_trusted(vec![1, 1, 1]).await);
+        assert!(repo.is_trusted(vec![9, 9, 9]).await.expect("query"));
+        assert!(!repo.is_trusted(vec![1, 1, 1]).await.expect("query"));
     }
 
     #[tokio::test]
@@ -245,13 +267,43 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let repo = DeviceRepo::new(storage);
 
-        repo.upsert(sample("d2", None)).await;
-        repo.upsert(sample("d3", None)).await;
-        assert_eq!(repo.list().await.len(), 2);
+        repo.upsert(sample("d2", None)).await.expect("upsert");
+        repo.upsert(sample("d3", None)).await.expect("upsert");
+        assert_eq!(repo.list().await.expect("list").len(), 2);
 
-        repo.remove(DeviceId("d2".to_string())).await;
-        let remaining = repo.list().await;
+        repo.remove(DeviceId("d2".to_string()))
+            .await
+            .expect("remove");
+        let remaining = repo.list().await.expect("list");
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].device.id, DeviceId("d3".to_string()));
+    }
+
+    #[tokio::test]
+    async fn set_last_seen_persists_time_and_keeps_trust_key() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let repo = DeviceRepo::new(storage);
+        repo.upsert(sample("d2", Some(vec![4, 5, 6])))
+            .await
+            .expect("upsert");
+
+        let heard = DateTime::parse_from_rfc3339("2026-09-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        repo.set_last_seen(DeviceId("d2".to_string()), heard)
+            .await
+            .expect("set last seen");
+        // A device that no longer exists is a harmless no-op.
+        repo.set_last_seen(DeviceId("gone".to_string()), heard)
+            .await
+            .expect("no-op");
+
+        let reloaded = repo
+            .find_by_id(DeviceId("d2".to_string()))
+            .await
+            .expect("find")
+            .expect("present");
+        assert_eq!(reloaded.device.last_seen, heard);
+        assert_eq!(reloaded.public_key, Some(vec![4, 5, 6]));
     }
 }

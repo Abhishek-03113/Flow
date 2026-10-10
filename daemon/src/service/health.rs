@@ -10,6 +10,7 @@ use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
 
 use super::DaemonService;
+use crate::storage::device_repo::DeviceRepo;
 
 /// At most one `last_seen` update per peer in this window, so a 2 s
 /// heartbeat does not become a 2 s `devices_changed` stream.
@@ -33,8 +34,19 @@ impl DaemonService {
             }
         };
         if due {
-            self.update_device(device_id, |device| device.last_seen = Utc::now())
+            let now = Utc::now();
+            self.update_device(device_id, |device| device.last_seen = now)
                 .await;
+            // Same throttle as the publish above, so a 2 s heartbeat is
+            // one write per peer per 5 s, not one per heartbeat. Best
+            // effort: a failed write only costs a stale "last seen" after
+            // a restart.
+            if let Err(err) = DeviceRepo::new(self.storage.clone())
+                .set_last_seen(device_id.clone(), now)
+                .await
+            {
+                tracing::warn!(%err, device = %device_id.0, "could not persist last_seen");
+            }
         }
     }
 
@@ -64,11 +76,45 @@ mod tests {
     use flow_core::settings::SettingsPatch;
 
     use super::*;
+    use crate::storage::device_repo::DeviceRepo;
     use crate::storage::Storage;
 
     async fn service() -> DaemonService {
         let storage = Storage::open_in_memory().await.expect("db");
         DaemonService::new_seeded_for_test(storage).await
+    }
+
+    #[tokio::test]
+    async fn heard_peers_have_last_seen_persisted_at_most_once_per_window() {
+        let storage = Storage::open_in_memory().await.expect("db");
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
+        let repo = DeviceRepo::new(storage);
+        let id = DeviceId("d2".to_string());
+        let stored = |repo: DeviceRepo, id: DeviceId| async move {
+            repo.find_by_id(id)
+                .await
+                .expect("query")
+                .expect("d2 is stored")
+                .device
+                .last_seen
+        };
+
+        let before = stored(repo.clone(), id.clone()).await;
+        service.note_heard(&id).await;
+        let after = stored(repo.clone(), id.clone()).await;
+        assert!(after > before, "heard peer must persist a newer last_seen");
+        assert!(
+            (Utc::now() - after).num_seconds() <= 5,
+            "persisted time is the time it was heard"
+        );
+
+        // Inside the throttle window a second heartbeat writes nothing.
+        let sentinel = before;
+        repo.set_last_seen(id.clone(), sentinel)
+            .await
+            .expect("reset");
+        service.note_heard(&id).await;
+        assert_eq!(stored(repo, id).await, sentinel);
     }
 
     #[tokio::test]
@@ -142,8 +188,23 @@ mod tests {
         let refused = |s: &DaemonService| s.refused_peers.lock().unwrap().contains(&id);
         assert!(refused(&service), "not redialled");
 
+        // A later redial that drops before its Hello must not hide the conflict.
+        service.link_down(&id, Some("connection_lost")).await;
+        assert_eq!(*service.watch_link_state().borrow(), DaemonLinkState::Error);
+        let error = |s: &DaemonService| {
+            s.watch_devices()
+                .borrow()
+                .iter()
+                .find(|d| d.id == id)
+                .and_then(|d| d.link_error.clone())
+        };
+        assert_eq!(error(&service).as_deref(), Some("role_conflict"));
+
         service.set_role(Role::Controlled).await.expect("role");
         assert!(!refused(&service), "a role change dials again");
+        // Once the roles differ, a lost link is reported as such again.
+        service.link_down(&id, Some("connection_lost")).await;
+        assert_eq!(error(&service).as_deref(), Some("connection_lost"));
     }
 
     #[tokio::test]

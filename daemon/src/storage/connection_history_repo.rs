@@ -6,7 +6,7 @@
 use chrono::{DateTime, SecondsFormat, Utc};
 use rusqlite::Row;
 
-use super::{parse_rfc3339, Storage};
+use super::{parse_rfc3339, Storage, StorageError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionHistoryEntry {
@@ -28,7 +28,12 @@ impl ConnectionHistoryRepo {
     }
 
     /// Appends one history row, timestamped now.
-    pub async fn append(&self, device_id: &str, event_type: &str, detail: Option<&str>) {
+    pub async fn append(
+        &self,
+        device_id: &str,
+        event_type: &str,
+        detail: Option<&str>,
+    ) -> Result<(), StorageError> {
         let device_id = device_id.to_string();
         let event_type = event_type.to_string();
         let detail = detail.map(|d| d.to_string());
@@ -40,30 +45,32 @@ impl ConnectionHistoryRepo {
                     "INSERT INTO connection_history (device_id, event_type, occurred_at, detail)
                      VALUES (?1, ?2, ?3, ?4)",
                     rusqlite::params![device_id, event_type, occurred_at, detail],
-                )
-                .expect("insert connection_history row");
+                )?;
+                Ok(())
             })
-            .await;
+            .await
     }
 
     /// The `limit` most recent rows for `device_id`, newest first.
-    pub async fn recent(&self, device_id: &str, limit: i64) -> Vec<ConnectionHistoryEntry> {
+    pub async fn recent(
+        &self,
+        device_id: &str,
+        limit: i64,
+    ) -> Result<Vec<ConnectionHistoryEntry>, StorageError> {
         let device_id = device_id.to_string();
         self.storage
             .with_connection(move |conn| {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT id, device_id, event_type, occurred_at, detail
+                let mut stmt = conn.prepare(
+                    "SELECT id, device_id, event_type, occurred_at, detail
                          FROM connection_history
                          WHERE device_id = ?1
                          ORDER BY occurred_at DESC, id DESC
                          LIMIT ?2",
-                    )
-                    .expect("prepare recent history query");
-                stmt.query_map(rusqlite::params![device_id, limit], row_to_entry)
-                    .expect("query recent history")
-                    .map(|r| r.expect("read history row"))
-                    .collect()
+                )?;
+                let rows = stmt
+                    .query_map(rusqlite::params![device_id, limit], row_to_entry)?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows)
             })
             .await
     }
@@ -89,11 +96,17 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let repo = ConnectionHistoryRepo::new(storage);
 
-        repo.append("d2", "device_activated", None).await;
-        repo.append("d2", "device_removed", Some("manual")).await;
-        repo.append("d3", "device_activated", None).await;
+        repo.append("d2", "device_activated", None)
+            .await
+            .expect("append");
+        repo.append("d2", "device_removed", Some("manual"))
+            .await
+            .expect("append");
+        repo.append("d3", "device_activated", None)
+            .await
+            .expect("append");
 
-        let d2_history = repo.recent("d2", 10).await;
+        let d2_history = repo.recent("d2", 10).await.expect("recent");
         assert_eq!(d2_history.len(), 2);
         assert_eq!(d2_history[0].event_type, "device_removed");
         assert_eq!(d2_history[0].detail.as_deref(), Some("manual"));
@@ -106,9 +119,11 @@ mod tests {
         let repo = ConnectionHistoryRepo::new(storage);
 
         for _ in 0..5 {
-            repo.append("d2", "device_activated", None).await;
+            repo.append("d2", "device_activated", None)
+                .await
+                .expect("append");
         }
 
-        assert_eq!(repo.recent("d2", 2).await.len(), 2);
+        assert_eq!(repo.recent("d2", 2).await.expect("recent").len(), 2);
     }
 }
