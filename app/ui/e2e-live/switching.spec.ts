@@ -81,11 +81,11 @@ test('2. switching from the UI: controller drives the PC, keys land only there, 
   expect(keyLog((await pc.virtualIo()).injected)).toEqual([]);
 });
 
-test('3. the switch hotkey on the controller updates both pages live', async ({ live }) => {
+test('3. the switch hotkey on the controller updates both pages live', async ({ live, browser }) => {
   const mac = live.daemon('Mac');
   const pc = live.daemon('PC');
-  const macPage = await live.open('Mac');
-  const pcPage = await live.open('PC');
+  const macPage = await live.open('Mac', { theme: 'dark' });
+  const pcPage = await live.open('PC', { theme: 'dark' });
   await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
 
   // The harness gives a Mac controller the F13 preset (no Scroll Lock key).
@@ -97,6 +97,15 @@ test('3. the switch hotkey on the controller updates both pages live', async ({ 
   // The hotkey itself reaches no OS.
   expect((await mac.virtualIo()).delivered_locally).toEqual([]);
   expect((await pc.virtualIo()).injected).toEqual([]);
+  await composite(
+    browser,
+    '03-hotkey-dark.png',
+    [
+      { page: macPage, label: 'Mac (dark): switched by the hotkey' },
+      { page: pcPage, label: 'PC (dark): being controlled' },
+    ],
+    'dark',
+  );
 
   await mac.chord(['F13']);
   await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
