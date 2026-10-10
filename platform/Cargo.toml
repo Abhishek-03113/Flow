@@ -19,7 +19,7 @@ evdev = "0.13"
 [target.'cfg(target_os = "macos")'.dependencies]
 # "highsierra" gates CGEvent::new_scroll_event, used by translate.rs's tests
 # to build a synthetic scroll CGEvent without needing a live event tap.
-core-graphics = { version = "0.24", features = ["highsierra"] }
+core-graphics = { version = "0.25", features = ["highsierra"] }
 core-foundation = "0.10"
 # `ForeignType::from_ptr` — lets capture.rs's raw event-tap trampoline
 # borrow a `CGEvent` from the `CGEventRef` the C callback hands it,
@@ -28,7 +28,7 @@ core-foundation = "0.10"
 foreign-types = "0.5"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
+windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
