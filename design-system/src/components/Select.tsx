@@ -6,8 +6,10 @@ export interface SelectOption<T extends string> {
   label: string;
 }
 
-export interface SelectProps<T extends string>
-  extends Omit<SelectHTMLAttributes<HTMLSelectElement>, "onChange" | "value"> {
+export interface SelectProps<T extends string> extends Omit<
+  SelectHTMLAttributes<HTMLSelectElement>,
+  "onChange" | "value"
+> {
   value: T;
   options: SelectOption<T>[];
   onChange(v: T): void;

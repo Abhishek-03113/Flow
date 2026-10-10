@@ -36,12 +36,7 @@ export interface Device {
 }
 
 export type LinkState =
-  | 'connected'
-  | 'connecting'
-  | 'reconnecting'
-  | 'disconnected'
-  | 'error'
-  | 'permission_required';
+  'connected' | 'connecting' | 'reconnecting' | 'disconnected' | 'error' | 'permission_required';
 
 export type PairingStage = 'idle' | 'searching' | 'found' | 'requesting' | 'paired' | 'failed';
 
