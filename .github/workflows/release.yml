@@ -44,9 +44,8 @@ jobs:
       - name: Add universal macOS targets
         if: matrix.rust_targets != ''
         run: rustup target add ${{ matrix.rust_targets }}
+      # flow-app is a member of the root workspace, so the target dir is ./target (the default).
       - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: app/src-tauri
       - uses: actions/setup-node@v4
         with:
           node-version: 22

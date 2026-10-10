@@ -79,7 +79,21 @@ config/         keymaps/ — default per-OS key tables and remap rules (TOML)
 docs/           contracts/ (UI↔engine), adr/, redesign/, architecture/, archive/
 ```
 
-Build everything with `cargo build --workspace`; run the app with `npm --prefix app/ui ci && npm --prefix app/ui run build && cargo run -p flow-app` (or `npx tauri dev` from `app/ui`). Run the headless engine with `cargo run -p flow-daemon`; see `daemon/README.md` and `app/ui/README.md`.
+## Quick start
+
+From a clean checkout (Rust via rustup, Node 22, and on Linux the packages listed in [`CONTRIBUTING.md`](CONTRIBUTING.md#setup)):
+
+```sh
+npm --prefix app/ui ci                  # UI dependencies
+npm --prefix app/ui run build           # the UI the app embeds
+cargo run -p flow-app                   # the desktop app (engine in-process)
+cargo run -p flow-daemon                # or: the headless engine (loopback WebSocket + token)
+just dev                                # or: the app with UI hot reload (tauri dev, run from app/)
+npm --prefix app/ui run dev             # the UI alone in a browser, on mock data (http://localhost:5173)
+```
+
+Tests: `cargo test --workspace`, `npm --prefix app/ui test`, `npm --prefix app/ui run e2e`, and `just harness` for the
+multi-device scenario matrix (no hardware needed). See `daemon/README.md` and `app/ui/README.md`.
 
 ## Development
 

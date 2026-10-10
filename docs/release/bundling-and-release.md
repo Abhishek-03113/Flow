@@ -12,7 +12,7 @@ Flow ships as one desktop app per OS. The engine is a library linked into the Ta
 | Windows | `.msi`, NSIS `.exe` | Per-user NSIS install. No elevation needed; apps running as administrator can only be driven by an elevated Flow. |
 | Linux | `.deb`, `.AppImage` | Depends on `libwebkit2gtk-4.1`, GTK 3 and `libayatana-appindicator3`. The user must be in the `input` group and have a uinput rule (the app explains this on first run). |
 
-Build locally on the target OS (no cross-compiling): `npm --prefix app/ui ci && cd app/ui && npx tauri build`.
+Build locally on the target OS (no cross-compiling): `npm --prefix app/ui ci && cd app && npm --prefix ui exec -- tauri build` (or `just build`; the Tauri CLI must run from `app/`).
 
 ## Versioning
 
