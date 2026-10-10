@@ -2775,6 +2775,17 @@ mod tests {
     }
 
     /// Brings a controlled peer's link up the way a real link does.
+    /// Takes the arrangement(s) a controller sends as soon as a controlled
+    /// peer links up, so a test can wait for the message it is about.
+    fn skip_arrangement(registration: &mut LinkRegistration) {
+        while let Ok(message) = registration.inbox.try_recv() {
+            assert!(
+                matches!(message, LinkOut::Arrangement { .. }),
+                "{message:?}"
+            );
+        }
+    }
+
     async fn connect_peer(service: &DaemonService, id: &str, role: Role) -> LinkRegistration {
         // (`connect_peer_for_test` is the controlled-peer shorthand.)
         let id = DeviceId(id.to_string());
@@ -2838,6 +2849,7 @@ mod tests {
     async fn switching_makes_exactly_the_active_screens_device_active() {
         let service = seeded().await;
         let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
+        skip_arrangement(&mut registration);
         let mut watch = service.watch_devices();
 
         service.switch_to("d2").await.expect("switch to d2");
@@ -2941,6 +2953,7 @@ mod tests {
     async fn changing_role_closes_live_links_and_is_persisted() {
         let service = seeded().await;
         let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
+        skip_arrangement(&mut registration);
 
         service.set_role(Role::Controlled).await.expect("set role");
 
