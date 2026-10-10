@@ -77,8 +77,12 @@ test('7. settings round-trip: switch key, sharing and edge switching reach the e
 
   // Sharing: keyboard off keeps typing on the Mac even while controlling the PC.
   await page.getByRole('button', { name: 'General' }).click();
-  await page.getByRole('switch', { name: 'Share keyboard' }).click();
+  const shareKeyboard = page.getByRole('switch', { name: 'Share keyboard' });
+  await shareKeyboard.click();
   await expect.poll(() => mac.settings()?.share_keyboard).toBe(false);
+  // The toggle is driven by the engine's settings_changed; wait for the page to
+  // show it before the next click, or that click would turn it off again.
+  await expect(shareKeyboard).not.toBeChecked();
   await mac.clearIo();
   await pc.clearIo();
   await mac.tap('A');
@@ -88,8 +92,9 @@ test('7. settings round-trip: switch key, sharing and edge switching reach the e
   expect(keyLog((await pc.virtualIo()).injected)).toEqual([]);
 
   // ...and back on, typing goes to the PC again.
-  await page.getByRole('switch', { name: 'Share keyboard' }).click();
+  await shareKeyboard.click();
   await expect.poll(() => mac.settings()?.share_keyboard).toBe(true);
+  await expect(shareKeyboard).toBeChecked();
   await mac.tap('B');
   await expect.poll(async () => keyLog((await pc.virtualIo()).injected)).toEqual(['down B', 'up B']);
 
