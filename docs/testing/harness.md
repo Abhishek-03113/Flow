@@ -265,6 +265,7 @@ cargo run -p flow-harness --release -- up \
 | `--base-port N` | Device `i` (in `--devices` order) serves its control API on `127.0.0.1:N+i`. Default: ephemeral ports. |
 | `--manifest FILE` | Also write the manifest as a JSON array. The file appears once every device is up, so it doubles as the ready signal. |
 | `--security secure\|insecure` | Peer security (default `insecure`, like local development). |
+| `--stop-on-eof` | Stop when stdin closes (see below). |
 
 Each device prints one JSON line on stdout, then `devices are up; Ctrl-C to stop` on stderr.
 The manifest (file) is an array of the same objects:
@@ -277,6 +278,19 @@ The manifest (file) is an array of the same objects:
 ```
 
 Each engine runs with test hooks enabled. Ctrl-C (SIGINT) stops them all.
+
+### Controlling a running world (stdin)
+
+`up` reads one command per line on stdin and answers each with a JSON line on stdout
+(`{"control": "disconnect PC", "ok": true}` or `{..., "ok": false, "error": "..."}`):
+
+| Line | Effect |
+|---|---|
+| `disconnect NAME` | Kills that device's engine abruptly (its peers see the link drop; its control server goes away). |
+| `reconnect NAME` | Restarts it on the same data (still paired) **and the same control port and token**, rediscovers the other devices; paired links come back on their own. |
+
+`--stop-on-eof` also stops the world when stdin closes, so a test runner that dies takes its
+engines with it. Without it, end of input just stops reading.
 
 ### Connecting
 
@@ -310,3 +324,29 @@ A round trip, as `harness/tests/up_mode.rs` does it automatically:
 4. On the controlled device: `debug_virtual_io` lists the events under `injected`; the
    controller's own `debug_virtual_io` shows `suppressed: true` and nothing in
    `delivered_locally`.
+
+## UI end-to-end against live daemons
+
+`app/ui/e2e-live/` (`npm run e2e:live` in `app/ui`, config `playwright.live.config.ts`) runs the
+real UI against `up` worlds. Per test: `flow-harness up --stop-on-eof` with ephemeral ports in its
+own process group, wait for the manifest, one browser context per device on
+`?daemon=<ws_url>&token=<token>`, and a Node control-API client per device for
+`debug_inject_input`, `debug_virtual_io` and any command. Teardown sends SIGINT to the group
+(SIGKILL after 5 s). Every journey asserts both sides: what the pages show and what the engines
+did (`injected`, `delivered_locally`, `suppressed`, state events).
+
+| Spec | Journey |
+|---|---|
+| `pairing.spec.ts` | First run on two fresh computers (secure): onboarding, role choice, the search finds the other computer, the same verification code on both pages, accept, Home shows it; cancelling withdraws the request on the other side. |
+| `switching.spec.ts` | Switch from Home, keys only on the PC and none locally, back; the hotkey updates both pages live; "Release control" on the controlled page. |
+| `disconnect.spec.ts` | Kill the PC (`disconnect`): Reconnecting banner, controller back home, Stop Trying (`cancel_reconnect`) → Not connected, Try Again, `reconnect` → connected; and automatic reconnection. |
+| `role-conflict.spec.ts` | The PC becomes a controller in General: both rows explain the conflict (`role_conflict`, link state `error`, no reconnect banner), nothing is forwarded, Change Role… heals it without Try Again. |
+| `settings.spec.ts` | Switch key preset, edge switching, keyboard sharing and pointer speed set in the UI, read back on a fresh page and from `settings_changed`, and acting on input. |
+| `arrangement.spec.ts` | Drag the PC below the Mac → `screen_layout_changed`; the right edge no longer switches, the bottom edge does. |
+| `remaps.spec.ts` | The key map from `get_keymap`, a shortcut recorded with a named key (Ctrl + Up) switches, remap rules made in the UI change what a Mac target receives. |
+| `three-devices.spec.ts` | Cycle Mac → PC → Linux → home from the UI and with the hotkey; each computer gets only its own keys. |
+| `diagnostics.spec.ts` | Real switch time and counters after a switch (matching `diagnostics_changed`); Export Diagnostics writes a JSON bundle whose path the page shows. |
+
+Screenshots (side-by-side controller/controlled) go to `docs/progress/track-g/`. CI runs the
+suite in the `ui-e2e-live` job after `harness`, and uploads the Playwright report, traces and
+screenshots when it fails.
