@@ -57,12 +57,13 @@ fn sync_autostart(app: &AppHandle, wanted: bool) {
 }
 
 fn sync_tray(app: &AppHandle, visible: bool) {
-    TRAY_VISIBLE.store(visible, Ordering::Relaxed);
+    let was_visible = TRAY_VISIBLE.swap(visible, Ordering::Relaxed);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_visible(visible);
     }
-    if !visible {
-        // Keep the app reachable.
+    if was_visible && !visible {
+        // Keep the app reachable — once, when the icon goes away, not on
+        // every later settings change (that would keep un-minimizing it).
         shell::show_main(app);
     }
 }
@@ -104,7 +105,7 @@ impl StateObserver for PairingNotifier {
             .builder()
             .title("Pairing request")
             .body(format!(
-                "{} wants to share its keyboard and mouse. Open Flow to accept or decline.",
+                "{} wants to connect to this computer. Open Flow to accept or decline.",
                 request.device_name
             ))
             .show();
