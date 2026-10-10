@@ -256,21 +256,7 @@ export function DesignGallery() {
             <Button onClick={() => toast.show('Settings saved')}>Show toast</Button>
             <Button onClick={() => setAlert(true)}>Show alert</Button>
           </div>
-          <div style={{ position: 'relative', height: 190 }}>
-            <div
-              style={{
-                transform: 'scale(.8)',
-                transformOrigin: 'top left',
-                position: 'absolute',
-                left: 0,
-                top: 0,
-              }}
-            >
-              <div style={{ position: 'relative', height: 200 }}>
-                <Hud icon={<Monitor size={30} strokeWidth={1.4} />} title="Now controlling Office PC" />
-              </div>
-            </div>
-          </div>
+          <Hud inline icon={<Monitor size={30} strokeWidth={1.4} />} title="Now controlling Office PC" />
         </Card>
       </div>
       <Alert

@@ -7,15 +7,17 @@ export function Hud({
   title,
   subtitle,
   leaving,
+  inline,
 }: {
   icon: ReactNode;
   title: string;
   subtitle?: string;
   leaving?: boolean;
+  inline?: boolean;
 }) {
   return (
     <div
-      className={cx('fl-hud', leaving && 'fl-hud--out')}
+      className={cx('fl-hud', leaving && 'fl-hud--out', inline && 'fl-hud--static')}
       role="status"
       aria-live="polite"
       data-testid="hud"

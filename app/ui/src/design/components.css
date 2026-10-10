@@ -782,7 +782,6 @@
   display: flex;
   align-items: center;
   gap: var(--s-3);
-  margin: 0 var(--s-6) var(--s-4);
   padding: var(--s-3) var(--s-4);
   border-radius: var(--r-group);
   background: var(--bg-secondary);
@@ -815,13 +814,34 @@
   flex: 1;
   min-width: 0;
 }
+.fl-banner__text {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--s-2);
+}
 .fl-banner__title {
   font-weight: var(--fw-semibold);
+  white-space: nowrap;
 }
 .fl-banner__detail {
   color: var(--label-secondary);
   font-size: var(--fs-callout);
   line-height: var(--lh-callout);
+}
+.fl-banner-region {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  margin: 0 var(--s-6) var(--s-4);
+}
+.fl-hud--static {
+  position: relative;
+  top: auto;
+  left: auto;
+  transform: none;
+  animation: none;
+  margin: 0 auto;
 }
 .fl-banner__actions {
   display: flex;
