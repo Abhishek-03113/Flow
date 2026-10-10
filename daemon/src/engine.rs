@@ -165,6 +165,10 @@ impl Engine {
             Arc::clone(&service),
             Arc::clone(&config.backend),
         ));
+        tasks.spawn(drive_local_pointer(
+            Arc::clone(&service),
+            Arc::clone(&config.backend),
+        ));
 
         let runtime = Runtime {
             link: LinkEnv {
@@ -289,6 +293,38 @@ async fn manage_capture(service: Arc<DaemonService>, backend: Arc<dyn PlatformBa
         }
         if settings.changed().await.is_err() {
             return;
+        }
+    }
+}
+
+/// The controller's own pointer: reports where it is so the router can
+/// switch at a screen edge, and moves it when an edge switch comes home.
+/// Backends that can't read the pointer simply never trigger edge
+/// switching from the local side.
+async fn drive_local_pointer(service: Arc<DaemonService>, backend: Arc<dyn PlatformBackend>) {
+    let (warp_tx, mut warps) = tokio::sync::mpsc::unbounded_channel();
+    service.router().set_local_warp(warp_tx);
+    let mut injector = None;
+    let mut poll = tokio::time::interval(Duration::from_millis(25));
+    loop {
+        tokio::select! {
+            Some((x, y)) = warps.recv() => {
+                if injector.is_none() {
+                    injector = backend.new_injector().ok();
+                }
+                if let Some(injector) = injector.as_mut() {
+                    if let Err(err) = injector.warp_cursor(x, y) {
+                        crate::logging::product::error("move the local pointer", &err);
+                    }
+                }
+            }
+            _ = poll.tick() => {
+                if service.local_role() == Role::Controller {
+                    if let Some((x, y)) = backend.cursor_position() {
+                        service.router().local_cursor(x, y);
+                    }
+                }
+            }
         }
     }
 }

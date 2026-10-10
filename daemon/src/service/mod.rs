@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use flow_core::channel::{Channel, ChannelAddress, ChannelError};
+use flow_core::control::layout::ScreenLayout;
 use flow_core::control::{ActiveScreen, ControlState, Role};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
@@ -42,6 +43,7 @@ use crate::pairing_fingerprint::key_fingerprint;
 use crate::router::{InputRouter, LinkOut, PeerSlot};
 use crate::security::Security;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
+use crate::storage::layout_repo::LayoutRepo;
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
 use crate::trust::TrustGate;
@@ -68,10 +70,7 @@ pub enum ConnectionPrecedence {
     Redundant,
 }
 
-/// "This device" — the machine `flow-daemon` itself is running on. Never
-/// removable, never offered as a pairing candidate; matches
-/// `MockDaemonRepository._localDeviceId`.
-pub const LOCAL_DEVICE_ID: &str = "d1";
+pub use flow_core::device::LOCAL_DEVICE_ID;
 
 /// `sharedContractConstants.mockParityTimings.pairingSearchToFoundMs`.
 const PAIRING_SEARCH_TO_FOUND: Duration = Duration::from_millis(1200);
@@ -347,6 +346,7 @@ pub struct DaemonService {
     router: Arc<InputRouter>,
     control_tx: watch::Sender<ControlState>,
     remap_rules_tx: watch::Sender<Vec<RemapRule>>,
+    layout_tx: watch::Sender<ScreenLayout>,
     /// Live peer links, keyed by the peer's proven identity.
     links: Arc<std::sync::Mutex<HashMap<DeviceId, LinkEntry>>>,
     local_screen: ScreenSize,
@@ -425,6 +425,13 @@ impl DaemonService {
             flow_platform::keymap::load(options.host_os, options.keymap_dir.as_deref()).remap_rules;
         let router = Arc::new(InputRouter::new(&state.settings, remap_rules.clone()));
         let (remap_rules_tx, _) = watch::channel(remap_rules);
+        let layout = match LayoutRepo::new(storage.clone()).load().await {
+            Some(layout) if layout.validate().is_ok() => layout,
+            _ => ScreenLayout::local_only(options.screen),
+        };
+        router.set_local_screen(options.screen);
+        router.set_layout(layout.clone());
+        let (layout_tx, _) = watch::channel(layout);
 
         let (devices_tx, _) = watch::channel(devices_list(&state));
         let (link_state_tx, _) = watch::channel(state.link_state);
@@ -451,6 +458,7 @@ impl DaemonService {
             router,
             control_tx,
             remap_rules_tx,
+            layout_tx,
             links: Arc::new(std::sync::Mutex::new(HashMap::new())),
             local_screen: options.screen,
             keymap_dir: options.keymap_dir,
@@ -653,6 +661,50 @@ impl DaemonService {
         Ok(())
     }
 
+    pub fn watch_screen_layout(&self) -> watch::Receiver<ScreenLayout> {
+        self.layout_tx.subscribe()
+    }
+
+    /// Replaces the screen arrangement (controller only). Every screen
+    /// but this computer must be a known device.
+    #[tracing::instrument(skip(self, layout))]
+    pub async fn set_screen_layout(&self, layout: ScreenLayout) -> Result<(), FlowError> {
+        if self.local_role() != Role::Controller {
+            return Err(FlowError::NotController);
+        }
+        layout
+            .validate()
+            .map_err(|err| FlowError::InvalidLayout(err.to_string()))?;
+        {
+            let state = self.state.read().await;
+            if let Some(unknown) = layout
+                .screens
+                .iter()
+                .find(|s| !state.devices.contains_key(&s.device_id))
+            {
+                return Err(FlowError::InvalidLayout(format!(
+                    "unknown device {:?}",
+                    unknown.device_id.0
+                )));
+            }
+        }
+        self.mutate_layout(|current| *current = layout).await;
+        Ok(())
+    }
+
+    /// Applies `change` to the layout and, if it changed anything,
+    /// persists it, hands it to the router and announces it.
+    async fn mutate_layout(&self, change: impl FnOnce(&mut ScreenLayout)) {
+        let mut layout = self.layout_tx.borrow().clone();
+        change(&mut layout);
+        if layout == *self.layout_tx.borrow() {
+            return;
+        }
+        LayoutRepo::new(self.storage.clone()).save(&layout).await;
+        self.router.set_layout(layout.clone());
+        self.layout_tx.send_replace(layout);
+    }
+
     pub fn watch_control_state(&self) -> watch::Receiver<ControlState> {
         self.control_tx.subscribe()
     }
@@ -749,6 +801,8 @@ impl DaemonService {
             link.peer_role = Some(peer.role);
         }
         if self.local_role() == Role::Controller {
+            self.mutate_layout(|layout| layout.add_to_the_right(device_id, peer.screen))
+                .await;
             self.router.peer_connected(PeerSlot {
                 id: device_id.clone(),
                 os: peer.os,
@@ -823,6 +877,8 @@ impl DaemonService {
     /// the router's picture of the peer current.
     pub async fn peer_screen_changed(&self, device_id: &DeviceId, screen: ScreenSize) {
         self.router.peer_screen_changed(device_id, screen);
+        self.mutate_layout(|layout| layout.resize(device_id, screen))
+            .await;
         self.update_device(device_id, |device| device.screen = Some(screen))
             .await;
     }
@@ -900,10 +956,11 @@ impl DaemonService {
         // Removal is durable: a removed device must not reappear from a
         // stale devices-table row after a restart.
         DeviceRepo::new(self.storage.clone())
-            .remove(target_id)
+            .remove(target_id.clone())
             .await;
 
         self.devices_tx.send_replace(devices);
+        self.mutate_layout(|layout| layout.remove(&target_id)).await;
 
         // Removing the last paired device means there is nothing left for
         // the link to legitimately be `Connected` to. `main.rs`'s peer
@@ -2572,6 +2629,89 @@ mod tests {
         assert!(service.register_link(&id).is_none());
         drop(first);
         assert!(service.register_link(&id).is_some());
+    }
+
+    #[tokio::test]
+    async fn a_connected_peer_is_placed_to_the_right_of_this_screen_by_default() {
+        let service = seeded().await;
+        let _link = connect_peer(&service, "d2", Role::Controlled).await;
+
+        let layout = service.watch_screen_layout().borrow().clone();
+        let local = layout
+            .placement(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .unwrap();
+        let peer = layout.placement(&DeviceId("d2".to_string())).unwrap();
+        assert_eq!(peer.x, local.x + local.width as i32);
+        assert_eq!((peer.width, peer.height), (1000, 800));
+        assert_eq!(layout.validate(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn set_screen_layout_validates_persists_and_reaches_the_router() {
+        use flow_core::control::layout::Placement;
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
+        let local = DeviceId(LOCAL_DEVICE_ID.to_string());
+        let d2 = DeviceId("d2".to_string());
+        let stack = ScreenLayout {
+            screens: vec![
+                Placement {
+                    device_id: local.clone(),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                Placement {
+                    device_id: d2.clone(),
+                    x: 0,
+                    y: 1080,
+                    width: 1000,
+                    height: 800,
+                },
+            ],
+        };
+
+        service
+            .set_screen_layout(stack.clone())
+            .await
+            .expect("valid layout");
+
+        assert_eq!(*service.watch_screen_layout().borrow(), stack);
+        assert_eq!(LayoutRepo::new(storage).load().await, Some(stack.clone()));
+
+        let mut overlapping = stack.clone();
+        overlapping.screens[1].y = 0;
+        assert!(matches!(
+            service.set_screen_layout(overlapping).await,
+            Err(FlowError::InvalidLayout(_))
+        ));
+        let mut stranger = stack.clone();
+        stranger.screens[1].device_id = DeviceId("nobody".to_string());
+        assert!(matches!(
+            service.set_screen_layout(stranger).await,
+            Err(FlowError::InvalidLayout(_))
+        ));
+        assert_eq!(*service.watch_screen_layout().borrow(), stack);
+    }
+
+    #[tokio::test]
+    async fn removing_a_device_removes_its_screen_and_a_controlled_device_cannot_set_layouts() {
+        let service = seeded().await;
+        let _link = connect_peer(&service, "d2", Role::Controlled).await;
+        service.remove_device("d2").await.unwrap();
+        assert!(service
+            .watch_screen_layout()
+            .borrow()
+            .placement(&DeviceId("d2".to_string()))
+            .is_none());
+
+        service.set_role(Role::Controlled).await.unwrap();
+        let layout = service.watch_screen_layout().borrow().clone();
+        assert_eq!(
+            service.set_screen_layout(layout).await,
+            Err(FlowError::NotController)
+        );
     }
 
     #[tokio::test]

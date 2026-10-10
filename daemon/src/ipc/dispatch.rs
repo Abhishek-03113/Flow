@@ -82,6 +82,13 @@ async fn handle_ack_only(
                 .await
                 .map_err(ErrorPayload::from)
         }
+        "set_screen_layout" => {
+            let args: LayoutPayload = parse_payload(payload)?;
+            service
+                .set_screen_layout(args.layout)
+                .await
+                .map_err(ErrorPayload::from)
+        }
         "set_remap_rules" => {
             let args: RemapRulesPayload = parse_payload(payload)?;
             service
@@ -161,6 +168,11 @@ struct TargetPayload {
 #[derive(serde::Deserialize)]
 struct RolePayload {
     role: flow_core::control::Role,
+}
+
+#[derive(serde::Deserialize)]
+struct LayoutPayload {
+    layout: flow_core::control::layout::ScreenLayout,
 }
 
 #[derive(serde::Deserialize)]

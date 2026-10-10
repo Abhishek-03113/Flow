@@ -62,6 +62,15 @@ pub fn migrations() -> Migrations<'static> {
         ALTER TABLE settings ADD COLUMN edge_switch_delay_ms INTEGER NOT NULL DEFAULT 0;
         ",
         ),
+        // The controller's screen arrangement, as one JSON document.
+        M::up(
+            "
+        CREATE TABLE screen_layout (
+            id      INTEGER PRIMARY KEY CHECK (id = 1),
+            layout  TEXT NOT NULL
+        );
+        ",
+        ),
     ])
 }
 
@@ -94,7 +103,13 @@ mod tests {
 
         assert_eq!(
             table_names(&conn),
-            vec!["connection_history", "devices", "identity", "settings"]
+            vec![
+                "connection_history",
+                "devices",
+                "identity",
+                "screen_layout",
+                "settings"
+            ]
         );
     }
 
@@ -106,7 +121,13 @@ mod tests {
 
         assert_eq!(
             table_names(&conn),
-            vec!["connection_history", "devices", "identity", "settings"]
+            vec![
+                "connection_history",
+                "devices",
+                "identity",
+                "screen_layout",
+                "settings"
+            ]
         );
     }
 }

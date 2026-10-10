@@ -1,5 +1,7 @@
 //! The controller/controlled model (`docs/adr/0001-controller-controlled-input-model.md`).
 
+pub mod layout;
+
 use serde::{Deserialize, Serialize};
 
 use crate::device::DeviceId;

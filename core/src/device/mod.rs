@@ -5,6 +5,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::control::Role;
 
+/// "This device": the machine the engine itself runs on. Never
+/// removable, never a pairing candidate.
+pub const LOCAL_DEVICE_ID: &str = "d1";
+
 /// Opaque identifier for a paired device. Serializes transparently as its
 /// inner string (matches `data-model.md`'s `Device.id: String`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

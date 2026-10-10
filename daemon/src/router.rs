@@ -20,8 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use flow_core::control::layout::{Edge, ScreenLayout};
 use flow_core::control::ActiveScreen;
-use flow_core::device::{DeviceId, HostOs, ScreenSize};
+use flow_core::device::{DeviceId, HostOs, ScreenSize, LOCAL_DEVICE_ID};
 use flow_core::input::{CaptureSink, Disposition};
 use flow_core::keymap::remap::{apply_remaps, RemapRule};
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
@@ -94,6 +95,11 @@ pub struct RouterStats {
 
 const MAX_LATENCY_SAMPLES: usize = 256;
 
+const DEFAULT_SCREEN: ScreenSize = ScreenSize {
+    width: 1920,
+    height: 1080,
+};
+
 struct State {
     peers: Vec<PeerSlot>,
     active: ActiveScreen,
@@ -110,6 +116,18 @@ struct State {
     /// Fractional pointer movement carried between scaled deltas.
     pointer_remainder: (f32, f32),
     remap_rules: Vec<RemapRule>,
+    layout: ScreenLayout,
+    local_screen: ScreenSize,
+    edge_switching: bool,
+    edge_delay: Duration,
+    /// The pointer on the active remote screen, in that screen's pixels,
+    /// integrated from relative deltas.
+    cursor: (i32, i32),
+    /// Which edge the pointer is resting against, and since when.
+    edge_rest: Option<(Edge, Instant)>,
+    /// Where to put this machine's own pointer when edge switching
+    /// returns home.
+    local_warp: Option<mpsc::UnboundedSender<(i32, i32)>>,
     events_forwarded: u64,
     events_dropped: u64,
     switch_latencies_ms: VecDeque<f64>,
@@ -147,6 +165,13 @@ impl InputRouter {
                 pointer_scale: 1.0,
                 pointer_remainder: (0.0, 0.0),
                 remap_rules,
+                layout: ScreenLayout::local_only(DEFAULT_SCREEN),
+                local_screen: DEFAULT_SCREEN,
+                edge_switching: true,
+                edge_delay: Duration::ZERO,
+                cursor: (0, 0),
+                edge_rest: None,
+                local_warp: None,
                 events_forwarded: 0,
                 events_dropped: 0,
                 switch_latencies_ms: VecDeque::new(),
@@ -171,6 +196,22 @@ impl InputRouter {
         st.share_keyboard = settings.share_keyboard;
         st.share_mouse = settings.share_mouse;
         st.pointer_scale = pointer_scale(settings.pointer_sensitivity);
+        st.edge_switching = settings.edge_switching;
+        st.edge_delay = Duration::from_millis(u64::from(settings.edge_switch_delay_ms));
+    }
+
+    pub fn set_layout(&self, layout: ScreenLayout) {
+        self.lock().layout = layout;
+    }
+
+    pub fn set_local_screen(&self, screen: ScreenSize) {
+        self.lock().local_screen = screen;
+    }
+
+    /// Where the router asks for this machine's own pointer to be moved
+    /// when an edge switch brings control home.
+    pub fn set_local_warp(&self, warp: mpsc::UnboundedSender<(i32, i32)>) {
+        self.lock().local_warp = Some(warp);
     }
 
     pub fn set_remap_rules(&self, rules: Vec<RemapRule>) {
@@ -220,7 +261,7 @@ impl InputRouter {
         if st.active.remote() == Some(id) {
             // No `Leave`: nobody is listening, and the controlled side
             // releases everything itself when its link ends.
-            self.apply_switch(&mut st, ActiveScreen::Local, false);
+            self.apply_switch(&mut st, ActiveScreen::Local, false, None);
         }
         for route in st.held.values_mut() {
             if *route == Route::Remote(id.clone()) {
@@ -234,7 +275,7 @@ impl InputRouter {
     pub fn release_requested(&self, id: &DeviceId) {
         let mut st = self.lock();
         if st.active.remote() == Some(id) {
-            self.apply_switch(&mut st, ActiveScreen::Local, true);
+            self.apply_switch(&mut st, ActiveScreen::Local, true, None);
         }
     }
 
@@ -250,14 +291,17 @@ impl InputRouter {
     pub fn switch_to(&self, target: ActiveScreen) -> Result<(), SwitchError> {
         let mut st = self.lock();
         let started = Instant::now();
-        self.switch_locked(&mut st, target, started)
+        self.switch_locked(&mut st, target, started, None)
     }
 
+    /// `entry` is where the pointer lands on `target` (its own pixels);
+    /// `None` = the middle of a remote screen, no warp at home.
     fn switch_locked(
         &self,
         st: &mut State,
         target: ActiveScreen,
         started: Instant,
+        entry: Option<(i32, i32)>,
     ) -> Result<(), SwitchError> {
         if let ActiveScreen::Remote(id) = &target {
             if !st.peers.iter().any(|p| &p.id == id) {
@@ -267,7 +311,7 @@ impl InputRouter {
         if st.active == target {
             return Ok(());
         }
-        self.apply_switch(st, target, true);
+        self.apply_switch(st, target, true, entry);
         let elapsed = started.elapsed().as_secs_f64() * 1000.0;
         if st.switch_latencies_ms.len() == MAX_LATENCY_SAMPLES {
             st.switch_latencies_ms.pop_front();
@@ -278,7 +322,14 @@ impl InputRouter {
 
     /// The transition itself; `target` must be valid. `notify_old` is false
     /// when the previous remote is already gone.
-    fn apply_switch(&self, st: &mut State, target: ActiveScreen, notify_old: bool) {
+    fn apply_switch(
+        &self,
+        st: &mut State,
+        target: ActiveScreen,
+        notify_old: bool,
+        entry: Option<(i32, i32)>,
+    ) {
+        st.edge_rest = None;
         let old = std::mem::replace(&mut st.active, target.clone());
 
         // Leave the old screen: the remote releases everything it holds,
@@ -299,7 +350,8 @@ impl InputRouter {
         match &target {
             ActiveScreen::Remote(id) => {
                 self.suppressing.store(true, Ordering::SeqCst);
-                let (x, y) = entry_point(st, id);
+                let (x, y) = entry.unwrap_or_else(|| centre_of(st, id));
+                st.cursor = (x, y);
                 let held_modifiers = st.modifiers.clone();
                 send(
                     st,
@@ -311,7 +363,12 @@ impl InputRouter {
                     },
                 );
             }
-            ActiveScreen::Local => self.suppressing.store(false, Ordering::SeqCst),
+            ActiveScreen::Local => {
+                self.suppressing.store(false, Ordering::SeqCst);
+                if let (Some(point), Some(warp)) = (entry, &st.local_warp) {
+                    let _ = warp.send(point);
+                }
+            }
         }
         self.active_tx.send_replace(target);
     }
@@ -357,7 +414,7 @@ impl InputRouter {
                 };
                 if let Some(target) = target {
                     // A peer vanishing mid-cycle can't happen under this lock.
-                    let _ = self.switch_locked(st, target, started);
+                    let _ = self.switch_locked(st, target, started, None);
                 }
             }
             return Disposition::Swallow;
@@ -414,6 +471,95 @@ impl InputRouter {
         }
     }
 
+    /// Integrates a pointer delta on the remote screen `id`. When it
+    /// pushes through an edge that has a neighbour — after resting there
+    /// for the configured delay — switches to that neighbour and returns
+    /// `true`.
+    fn cross_edge(&self, st: &mut State, id: &DeviceId, dx: i32, dy: i32) -> bool {
+        let Some(size) = st.peers.iter().find(|p| &p.id == id).map(|p| p.screen) else {
+            return false;
+        };
+        let (w, h) = (size.width as i32, size.height as i32);
+        let (vx, vy) = (st.cursor.0 + dx, st.cursor.1 + dy);
+        st.cursor = (vx.clamp(0, w - 1), vy.clamp(0, h - 1));
+        if !st.edge_switching {
+            return false;
+        }
+        let (edge, along) = if vx < 0 {
+            (Edge::Left, st.cursor.1)
+        } else if vx >= w {
+            (Edge::Right, st.cursor.1)
+        } else if vy < 0 {
+            (Edge::Top, st.cursor.0)
+        } else if vy >= h {
+            (Edge::Bottom, st.cursor.0)
+        } else {
+            st.edge_rest = None;
+            return false;
+        };
+        let Some(crossing) = st.layout.neighbour(id, edge, along) else {
+            st.edge_rest = None;
+            return false;
+        };
+        let target = if crossing.to.0 == LOCAL_DEVICE_ID {
+            ActiveScreen::Local
+        } else if st.peers.iter().any(|p| p.id == crossing.to) {
+            ActiveScreen::Remote(crossing.to.clone())
+        } else {
+            st.edge_rest = None;
+            return false;
+        };
+        if !edge_dwelled(st, edge) {
+            return false;
+        }
+        let _ = self.switch_locked(st, target, Instant::now(), Some((crossing.x, crossing.y)));
+        true
+    }
+
+    /// Where this machine's own pointer is, while the local screen is
+    /// active: pressing against an edge that has a connected neighbour
+    /// switches to it, entering at the mirrored position. Fed by the
+    /// engine from the backend's cursor position.
+    pub fn local_cursor(&self, x: i32, y: i32) {
+        let mut st = self.lock();
+        if !st.edge_switching || st.active != ActiveScreen::Local {
+            st.edge_rest = None;
+            return;
+        }
+        let (w, h) = (st.local_screen.width as i32, st.local_screen.height as i32);
+        let (edge, along) = if x <= 0 {
+            (Edge::Left, y)
+        } else if x >= w - 1 {
+            (Edge::Right, y)
+        } else if y <= 0 {
+            (Edge::Top, x)
+        } else if y >= h - 1 {
+            (Edge::Bottom, x)
+        } else {
+            st.edge_rest = None;
+            return;
+        };
+        let local = DeviceId(LOCAL_DEVICE_ID.to_string());
+        let crossing = st
+            .layout
+            .neighbour(&local, edge, along)
+            .filter(|c| st.peers.iter().any(|p| p.id == c.to));
+        let Some(crossing) = crossing else {
+            st.edge_rest = None;
+            return;
+        };
+        if !edge_dwelled(&mut st, edge) {
+            return;
+        }
+        let target = ActiveScreen::Remote(crossing.to);
+        let _ = self.switch_locked(
+            &mut st,
+            target,
+            Instant::now(),
+            Some((crossing.x, crossing.y)),
+        );
+    }
+
     fn forward(&self, st: &mut State, id: &DeviceId, event: InputEvent) {
         let Some(os) = st.peers.iter().find(|p| &p.id == id).map(|p| p.os) else {
             st.events_dropped += 1;
@@ -428,6 +574,10 @@ impl InputRouter {
             }) => {
                 let (dx, dy) = scale_pointer(st, dx, dy);
                 if dx == 0 && dy == 0 {
+                    return;
+                }
+                if self.cross_edge(st, id, dx, dy) {
+                    // The move that crossed the edge belongs to neither screen.
                     return;
                 }
                 InputEvent::Mouse(MouseEvent::Move {
@@ -446,6 +596,20 @@ impl InputRouter {
     }
 }
 
+/// Whether the pointer has rested against `edge` for the configured delay
+/// (starting the clock on first contact).
+fn edge_dwelled(st: &mut State, edge: Edge) -> bool {
+    let now = Instant::now();
+    let since = match st.edge_rest {
+        Some((resting, since)) if resting == edge => since,
+        _ => {
+            st.edge_rest = Some((edge, now));
+            now
+        }
+    };
+    now.duration_since(since) >= st.edge_delay
+}
+
 /// Queues `message` for `id`'s link task; `false` if the link is gone.
 fn send(st: &State, id: &DeviceId, message: LinkOut) -> bool {
     st.peers
@@ -455,7 +619,7 @@ fn send(st: &State, id: &DeviceId, message: LinkOut) -> bool {
 }
 
 /// Where the pointer appears on a screen the user switches to by key.
-fn entry_point(st: &State, id: &DeviceId) -> (i32, i32) {
+fn centre_of(st: &State, id: &DeviceId) -> (i32, i32) {
     st.peers
         .iter()
         .find(|p| &p.id == id)
@@ -886,5 +1050,178 @@ mod tests {
         let stats = r.stats();
         assert_eq!(stats.events_forwarded, 2);
         assert_eq!(stats.switch_latencies_ms.len(), 1);
+    }
+
+    // ---- screen layout and edge switching ----
+
+    use flow_core::control::layout::Placement;
+
+    fn place(name: &str, x: i32, y: i32, width: u32, height: u32) -> Placement {
+        Placement {
+            device_id: id(name),
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    /// d1 (1920x1080) | p (1000x600) | q (800x600), side by side at y=0.
+    fn edge_router() -> InputRouter {
+        let r = router();
+        r.set_local_screen(ScreenSize {
+            width: 1920,
+            height: 1080,
+        });
+        r.set_layout(ScreenLayout {
+            screens: vec![
+                place("d1", 0, 0, 1920, 1080),
+                place("p", 1920, 0, 1000, 600),
+                place("q", 2920, 0, 800, 600),
+            ],
+        });
+        r
+    }
+
+    #[test]
+    fn pressing_the_local_right_edge_enters_the_neighbour_at_the_mirrored_height() {
+        let r = edge_router();
+        let mut p = connect(&r, "p");
+        r.local_cursor(960, 300);
+        assert_eq!(r.active(), ActiveScreen::Local);
+
+        r.local_cursor(1919, 300);
+
+        assert_eq!(r.active(), ActiveScreen::Remote(id("p")));
+        assert!(r.suppressing());
+        assert!(matches!(
+            drain(&mut p)[..],
+            [LinkOut::Enter { x: 0, y: 300, .. }]
+        ));
+    }
+
+    #[test]
+    fn an_edge_with_no_neighbour_at_that_height_does_not_switch() {
+        let r = edge_router();
+        let _p = connect(&r, "p");
+        r.local_cursor(1919, 800); // below the 600-high neighbour
+        r.local_cursor(0, 300); // nothing to the left
+        assert_eq!(r.active(), ActiveScreen::Local);
+    }
+
+    #[test]
+    fn a_neighbour_that_is_not_connected_is_not_entered() {
+        let r = edge_router();
+        r.local_cursor(1919, 300);
+        assert_eq!(r.active(), ActiveScreen::Local);
+    }
+
+    #[test]
+    fn edge_switching_can_be_turned_off() {
+        let r = edge_router();
+        let mut settings = FlowSettings::defaults();
+        settings.edge_switching = false;
+        r.apply_settings(&settings);
+        let mut p = connect(&r, "p");
+        r.local_cursor(1919, 300);
+        assert_eq!(r.active(), ActiveScreen::Local);
+
+        r.switch_to(ActiveScreen::Remote(id("p"))).unwrap();
+        drain(&mut p);
+        r.on_event(&motion(-2000, 0));
+        assert_eq!(r.active(), ActiveScreen::Remote(id("p")));
+    }
+
+    #[test]
+    fn the_pointer_must_rest_at_the_edge_for_the_configured_delay() {
+        let r = edge_router();
+        let mut settings = FlowSettings::defaults();
+        settings.edge_switch_delay_ms = 40;
+        r.apply_settings(&settings);
+        let _p = connect(&r, "p");
+
+        r.local_cursor(1919, 300);
+        assert_eq!(r.active(), ActiveScreen::Local);
+        std::thread::sleep(Duration::from_millis(60));
+        r.local_cursor(1919, 300);
+        assert_eq!(r.active(), ActiveScreen::Remote(id("p")));
+    }
+
+    #[test]
+    fn leaving_the_edge_resets_the_dwell_clock() {
+        let r = edge_router();
+        let mut settings = FlowSettings::defaults();
+        settings.edge_switch_delay_ms = 40;
+        r.apply_settings(&settings);
+        let _p = connect(&r, "p");
+
+        r.local_cursor(1919, 300);
+        std::thread::sleep(Duration::from_millis(60));
+        r.local_cursor(1000, 300); // moved away
+        r.local_cursor(1919, 300); // fresh contact
+        assert_eq!(r.active(), ActiveScreen::Local);
+    }
+
+    #[test]
+    fn pushing_back_through_the_left_edge_returns_home_and_warps_the_local_pointer() {
+        let r = edge_router();
+        let (warp_tx, mut warps) = mpsc::unbounded_channel();
+        r.set_local_warp(warp_tx);
+        let mut p = connect(&r, "p");
+        r.local_cursor(1919, 300);
+        drain(&mut p);
+
+        // Entered at x=0; one more step left crosses back.
+        assert_eq!(r.on_event(&motion(-3, 0)), Disposition::Swallow);
+
+        assert_eq!(r.active(), ActiveScreen::Local);
+        assert!(!r.suppressing());
+        assert_eq!(
+            drain(&mut p),
+            vec![LinkOut::Leave],
+            "the crossing move is not forwarded"
+        );
+        assert_eq!(warps.try_recv().ok(), Some((1919, 300)));
+    }
+
+    #[test]
+    fn moves_inside_the_remote_screen_are_forwarded_and_integrated() {
+        let r = edge_router();
+        let mut p = connect(&r, "p");
+        r.switch_to(ActiveScreen::Remote(id("p"))).unwrap(); // enters at 500,300
+        r.on_event(&motion(100, 50));
+        r.on_event(&motion(10, 0));
+        assert_eq!(r.active(), ActiveScreen::Remote(id("p")));
+        assert_eq!(inputs(&drain(&mut p)).len(), 2);
+    }
+
+    #[test]
+    fn crossing_between_two_remote_screens_leaves_one_and_enters_the_other() {
+        let r = edge_router();
+        let mut p = connect(&r, "p");
+        let mut q = connect(&r, "q");
+        r.switch_to(ActiveScreen::Remote(id("p"))).unwrap();
+        drain(&mut p);
+
+        r.on_event(&motion(600, 0)); // 500 -> 1100 > width 1000: right edge
+
+        assert_eq!(r.active(), ActiveScreen::Remote(id("q")));
+        assert!(r.suppressing());
+        assert_eq!(drain(&mut p), vec![LinkOut::Leave]);
+        assert!(matches!(
+            drain(&mut q)[..],
+            [LinkOut::Enter { x: 0, y: 300, .. }]
+        ));
+    }
+
+    #[test]
+    fn an_outer_edge_with_no_neighbour_just_keeps_the_pointer_on_screen() {
+        let r = edge_router();
+        let mut q = connect(&r, "q");
+        r.switch_to(ActiveScreen::Remote(id("q"))).unwrap();
+        drain(&mut q);
+        assert_eq!(r.on_event(&motion(5000, 0)), Disposition::Swallow);
+        assert_eq!(r.active(), ActiveScreen::Remote(id("q")));
+        assert_eq!(inputs(&drain(&mut q)).len(), 1);
     }
 }

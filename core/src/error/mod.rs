@@ -57,6 +57,9 @@ pub enum FlowError {
     #[error("invalid remap rule: {0}")]
     InvalidRemapRule(String),
 
+    #[error("invalid screen layout: {0}")]
+    InvalidLayout(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -81,6 +84,7 @@ impl FlowError {
             FlowError::NotControlled => "not_controlled",
             FlowError::NoController => "no_controller",
             FlowError::InvalidRemapRule(_) => "invalid_remap_rule",
+            FlowError::InvalidLayout(_) => "invalid_layout",
             FlowError::Internal(_) => "internal_error",
         }
     }
