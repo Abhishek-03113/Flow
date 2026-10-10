@@ -238,7 +238,7 @@ Props: `value: string[]|null`, `os`, `onChange({keys,label}|null)`, `label`, `mo
 
 ### Tooltip — `.fl-tip`, `.fl-tip__bubble`
 
-Props: `label`, child element (gets `aria-describedby`). For icon-only buttons.
+Props: `label`, `align?` (`'center'` default, `'end'` for controls at a row's trailing edge so the bubble stays in the window), child element (gets `aria-describedby`). For icon-only buttons.
 
 ### Banner — `.fl-banner` (`--orange --red --gray`)
 

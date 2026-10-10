@@ -880,6 +880,12 @@
   transition: opacity var(--dur-fast) var(--ease);
 }
 
+.fl-tip__bubble--end {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
 .fl-tip:hover .fl-tip__bubble,
 .fl-tip:focus-within .fl-tip__bubble {
   opacity: 1;
@@ -1093,6 +1099,8 @@
 
 .fl-grid {
   display: grid;
+  /* minmax(0, …): an implicit `auto` track grows to its widest child's min-content and overflows the column. */
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--s-4);
 }
 

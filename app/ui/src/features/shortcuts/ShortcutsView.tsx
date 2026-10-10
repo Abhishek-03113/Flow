@@ -83,7 +83,7 @@ function RuleEditor({
           ]}
         />
       </div>
-      <Tooltip label="Remove rule">
+      <Tooltip label="Remove rule" align="end">
         <Button
           size="small"
           aria-label="Remove rule"
