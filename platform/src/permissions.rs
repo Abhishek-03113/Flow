@@ -6,16 +6,19 @@
 //! * Linux: read access to `/dev/input/event*` and write access to
 //!   `/dev/uinput`, normally via the `input` group and a udev rule.
 //!
-//! The macOS and Windows branches could not be compiled or run in the
-//! Linux CI this was written in; they are kept deliberately small.
+//! The macOS and Windows branches are compile-checked (cross clippy) but
+//! have not run on real hardware; they are kept deliberately small.
 
-use flow_core::permission::{FixStep, HowToFix, PermissionItem};
+use flow_core::permission::PermissionItem;
+#[cfg(not(target_os = "windows"))]
+use flow_core::permission::{FixStep, HowToFix};
 
 pub const ACCESSIBILITY: &str = "Accessibility";
 pub const INPUT_MONITORING: &str = "Input Monitoring";
 pub const READ_INPUT: &str = "Read keyboard and mouse";
 pub const CREATE_INPUT: &str = "Create virtual input device";
 
+#[cfg(not(target_os = "windows"))]
 fn item(name: &str, granted: bool, how_to_fix: impl FnOnce() -> HowToFix) -> PermissionItem {
     PermissionItem {
         name: name.to_string(),
