@@ -17,7 +17,6 @@ use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, Mous
 use flow_core::switch_key::SwitchKeyBinding;
 use flow_daemon::devmode::SecurityMode;
 use flow_daemon::engine::{DiscoveryConfig, Engine, EngineConfig, EngineHandle, IpcConfig};
-use flow_daemon::platform_backend::PlatformBackend;
 use flow_daemon::service::{DaemonService, IpcClientGuard};
 use flow_daemon::virtual_backend::VirtualBackend;
 use tokio::task::JoinHandle;
@@ -106,8 +105,6 @@ pub struct VirtualDevice {
     ui_guard: Option<IpcClientGuard>,
     consent: Option<JoinHandle<()>>,
     held_modifiers: BTreeSet<String>,
-    /// Where its pointer starts (the screen centre).
-    pointer: (i32, i32),
     fed: Vec<Fed>,
     /// The control port it got first; a restarted engine serves on it again,
     /// so connected clients (the UI) find it where it was.
@@ -195,7 +192,6 @@ impl World {
                     ui_guard: None,
                     consent: None,
                     held_modifiers: BTreeSet::new(),
-                    pointer: centre,
                     fed: Vec::new(),
                     ipc_port: None,
                     spec,
@@ -578,7 +574,8 @@ impl World {
     pub fn pointer_move(&mut self, name: &str, dx: i32, dy: i32) -> Result<(), String> {
         let i = self.index(name)?;
         let timestamp_ms = self.next_timestamp();
-        let disposition = self.feed(
+        // The virtual OS moves its own pointer for motion it receives.
+        self.feed(
             i,
             InputEvent::Mouse(MouseEvent::Move {
                 dx,
@@ -586,15 +583,6 @@ impl World {
                 timestamp_ms,
             }),
         );
-        if disposition == Some(Disposition::Pass) {
-            let device = &self.devices[i];
-            let screen = device.spec.screen;
-            let (x, y) = device.backend.cursor_position().unwrap_or(device.pointer);
-            device.backend.set_cursor(Some((
-                (x + dx).clamp(0, screen.width as i32 - 1),
-                (y + dy).clamp(0, screen.height as i32 - 1),
-            )));
-        }
         Ok(())
     }
 
