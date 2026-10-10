@@ -69,9 +69,11 @@ fn sync_tray(app: &AppHandle, visible: bool) {
 }
 
 /// Tells the user about a pairing request while the window is hidden.
-/// Desktop notifications have no click callback, so the tray menu also
-/// carries a "Review pairing request" item that opens the window; the
-/// request sheet itself appears from engine state.
+/// tauri-plugin-notification 2.5.1 has no click callback on desktop, so the
+/// notification is paired with a taskbar/dock attention request, and the tray
+/// menu carries a "Review pairing request" item that opens the window. The
+/// request sheet is mounted globally and renders from engine state, so it is
+/// already showing whenever the window is brought forward by any route.
 pub struct PairingNotifier {
     last_notified: Mutex<Option<String>>,
 }
@@ -111,6 +113,9 @@ impl StateObserver for PairingNotifier {
             .show();
         if let Err(err) = shown {
             tracing::warn!("could not show the pairing notification: {err}");
+        }
+        if let Some(window) = app.get_webview_window(shell::MAIN_WINDOW) {
+            let _ = window.request_user_attention(Some(tauri::UserAttentionType::Critical));
         }
     }
 }
