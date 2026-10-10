@@ -170,6 +170,7 @@ mod tests {
             },
         )
         .await
+        .expect("service")
     }
 
     fn fake(granted: bool) -> Arc<Fake> {

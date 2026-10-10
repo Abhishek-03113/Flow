@@ -22,7 +22,9 @@ const MARKER: &str = "TOTALLY-SECRET-PLAINTEXT-MARKER-8f3c1e";
 
 async fn an_identity() -> DeviceIdentity {
     let storage = Storage::open_in_memory().await.expect("open db");
-    DeviceIdentity::load_or_generate(storage).await
+    DeviceIdentity::load_or_generate(storage)
+        .await
+        .expect("identity")
 }
 
 /// Binds a TCP proxy in front of `target`: every byte a client sends to
