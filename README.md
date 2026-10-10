@@ -78,6 +78,12 @@ flutter/    Flutter control-plane app (devices, onboarding, settings, tray,
 
 Build the daemon workspace with `cargo build --workspace`; see `flutter/README.md` for the UI.
 
+## Development
+
+Toolchain pinned via `rust-toolchain.toml`; common tasks run through `just` (or `./scripts/dev.sh <verb>`):
+`just setup`, `just lint`, `just test`, `just ci`. See [`CONTRIBUTING.md`](CONTRIBUTING.md) for setup per OS,
+commit conventions and the PR checklist.
+
 ## POC roadmap
 
 The proof of concept validates the core interaction before investing in full platform complexity:
