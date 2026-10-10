@@ -19,7 +19,9 @@
 node_modules
 dist
 test-results
+test-results-live
 playwright-report
+playwright-report-live
 app/src-tauri/target
 app/src-tauri/gen
 # Node / frontend
