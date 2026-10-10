@@ -38,10 +38,15 @@ impl DaemonService {
             self.update_device(device_id, |device| device.last_seen = now)
                 .await;
             // Same throttle as the publish above, so a 2 s heartbeat is
-            // one write per peer per 5 s, not one per heartbeat.
-            DeviceRepo::new(self.storage.clone())
+            // one write per peer per 5 s, not one per heartbeat. Best
+            // effort: a failed write only costs a stale "last seen" after
+            // a restart.
+            if let Err(err) = DeviceRepo::new(self.storage.clone())
                 .set_last_seen(device_id.clone(), now)
-                .await;
+                .await
+            {
+                tracing::warn!(%err, device = %device_id.0, "could not persist last_seen");
+            }
         }
     }
 
@@ -88,6 +93,7 @@ mod tests {
         let stored = |repo: DeviceRepo, id: DeviceId| async move {
             repo.find_by_id(id)
                 .await
+                .expect("query")
                 .expect("d2 is stored")
                 .device
                 .last_seen
@@ -104,7 +110,9 @@ mod tests {
 
         // Inside the throttle window a second heartbeat writes nothing.
         let sentinel = before;
-        repo.set_last_seen(id.clone(), sentinel).await;
+        repo.set_last_seen(id.clone(), sentinel)
+            .await
+            .expect("reset");
         service.note_heard(&id).await;
         assert_eq!(stored(repo, id).await, sentinel);
     }
