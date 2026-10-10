@@ -23,6 +23,8 @@ pub enum MacosInjectError {
     /// `core/src/input/mod.rs`: a caller that believes a key was
     /// injected when it wasn't is worse than a loud failure.
     UnmappedKey(String),
+    /// `CGWarpMouseCursorPosition` failed.
+    CursorWarpFailed,
 }
 
 impl fmt::Display for MacosInjectError {
@@ -30,6 +32,7 @@ impl fmt::Display for MacosInjectError {
         match self {
             Self::SourceCreationFailed => write!(f, "CGEventSourceCreate failed"),
             Self::UnmappedKey(key) => write!(f, "no CGKeyCode for key {key:?}"),
+            Self::CursorWarpFailed => write!(f, "CGWarpMouseCursorPosition failed"),
         }
     }
 }
@@ -85,5 +88,12 @@ impl InputInjector for MacosInputInjector {
         cg_event.set_integer_value_field(EventField::EVENT_SOURCE_USER_DATA, FLOW_INJECTED_MARKER);
         cg_event.post(CGEventTapLocation::HID);
         Ok(())
+    }
+
+    fn warp_cursor(&mut self, x: i32, y: i32) -> Result<(), Self::Error> {
+        core_graphics::display::CGDisplay::warp_mouse_cursor_position(
+            core_graphics::geometry::CGPoint::new(f64::from(x), f64::from(y)),
+        )
+        .map_err(|_| MacosInjectError::CursorWarpFailed)
     }
 }

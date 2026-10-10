@@ -21,9 +21,14 @@ use crate::service::DaemonService;
 /// ack" rule.
 pub async fn dispatch(service: &DaemonService, req: IpcRequest) -> IpcResponse {
     match handle(service, &req.command, req.payload).await {
-        Ok(()) => IpcResponse::Ack {
+        Ok(None) => IpcResponse::Ack {
             id: req.id,
             ok: true,
+        },
+        Ok(Some(result)) => IpcResponse::Data {
+            id: req.id,
+            ok: true,
+            result,
         },
         Err(error) => IpcResponse::Err {
             id: req.id,
@@ -33,16 +38,54 @@ pub async fn dispatch(service: &DaemonService, req: IpcRequest) -> IpcResponse {
     }
 }
 
+/// `Ok(None)` is a plain ack; `Ok(Some(_))` carries the command's answer.
 async fn handle(
+    service: &DaemonService,
+    command: &str,
+    payload: Value,
+) -> Result<Option<Value>, ErrorPayload> {
+    // Commands with an answer return it directly; the rest are acks only.
+    if command == "get_keymap" {
+        let args: OsPayload = parse_payload(payload)?;
+        return Ok(Some(service.keymap_for(args.os)));
+    }
+    handle_ack_only(service, command, payload)
+        .await
+        .map(|()| None)
+}
+
+async fn handle_ack_only(
     service: &DaemonService,
     command: &str,
     payload: Value,
 ) -> Result<(), ErrorPayload> {
     match command {
+        "switch_to" => {
+            let args: TargetPayload = parse_payload(payload)?;
+            service
+                .switch_to(&args.target)
+                .await
+                .map_err(ErrorPayload::from)
+        }
         "switch_active_device" => {
             let args: DeviceIdPayload = parse_payload(payload)?;
             service
                 .switch_active_device(&args.device_id)
+                .await
+                .map_err(ErrorPayload::from)
+        }
+        "release_control" => service.release_control().await.map_err(ErrorPayload::from),
+        "set_role" => {
+            let args: RolePayload = parse_payload(payload)?;
+            service
+                .set_role(args.role)
+                .await
+                .map_err(ErrorPayload::from)
+        }
+        "set_remap_rules" => {
+            let args: RemapRulesPayload = parse_payload(payload)?;
+            service
+                .set_remap_rules(args.rules)
                 .await
                 .map_err(ErrorPayload::from)
         }
@@ -111,6 +154,26 @@ struct DeviceIdPayload {
 }
 
 #[derive(serde::Deserialize)]
+struct TargetPayload {
+    target: String,
+}
+
+#[derive(serde::Deserialize)]
+struct RolePayload {
+    role: flow_core::control::Role,
+}
+
+#[derive(serde::Deserialize)]
+struct OsPayload {
+    os: flow_core::device::HostOs,
+}
+
+#[derive(serde::Deserialize)]
+struct RemapRulesPayload {
+    rules: Vec<flow_core::keymap::remap::RemapRule>,
+}
+
+#[derive(serde::Deserialize)]
 struct CandidateIdPayload {
     candidate_id: String,
 }
@@ -153,8 +216,43 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn switch_to_local_round_trips_through_dispatch() {
+        let service = service().await;
+        let req = IpcRequest {
+            id: "req-0".to_string(),
+            command: "switch_to".to_string(),
+            payload: json!({ "target": "local" }),
+        };
+        assert_eq!(
+            dispatch(&service, req).await,
+            IpcResponse::Ack {
+                id: "req-0".to_string(),
+                ok: true
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn get_keymap_answers_with_the_keymap_file() {
+        let service = service().await;
+        let req = IpcRequest {
+            id: "req-km".to_string(),
+            command: "get_keymap".to_string(),
+            payload: json!({ "os": "windows" }),
+        };
+        match dispatch(&service, req).await {
+            IpcResponse::Data { result, ok, .. } => {
+                assert!(ok);
+                assert_eq!(result["os"], "windows");
+            }
+            other => panic!("expected data, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn switch_active_device_round_trips_through_dispatch() {
         let service = service().await;
+        let _link = service.connect_peer_for_test("d2").await;
         let req = IpcRequest {
             id: "req-1".to_string(),
             command: "switch_active_device".to_string(),
@@ -312,12 +410,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn debug_inject_input_acks_and_reaches_a_pipeline_subscriber_with_test_hooks() {
+    async fn debug_inject_input_acks_and_reaches_the_active_peer_with_test_hooks() {
+        use flow_core::control::Role;
+        use flow_core::device::{HostOs, ScreenSize};
+
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new_seeded_for_test(storage)
             .await
             .with_test_hooks(true);
-        let mut rx = service.subscribe_debug_injections();
+        let d2 = flow_core::device::DeviceId("d2".to_string());
+        let mut link = service.register_link(&d2).expect("slot");
+        let peer = crate::service::PeerInfo {
+            role: Role::Controlled,
+            os: HostOs::Windows,
+            screen: ScreenSize {
+                width: 100,
+                height: 100,
+            },
+        };
+        service.link_up(&d2, &peer, link.outbox.clone()).await;
+        service.switch_to("d2").await.expect("switch");
 
         let resp = dispatch(
             &service,
@@ -336,9 +448,11 @@ mod tests {
             }
         );
 
-        let got = rx
-            .try_recv()
-            .expect("the synthetic event reached a subscriber");
+        let _enter = link.inbox.try_recv().expect("enter queued");
+        let crate::router::LinkOut::Input(got) = link.inbox.try_recv().expect("input queued")
+        else {
+            panic!("expected the injected event to be forwarded");
+        };
         assert_eq!(
             got,
             flow_core::protocol::InputEvent::Keyboard(

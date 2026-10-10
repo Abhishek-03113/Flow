@@ -274,7 +274,7 @@ async fn wait_for_pipeline(a_log: &Option<PathBuf>, b_log: &Option<PathBuf>) {
     loop {
         let up = [a_log, b_log].iter().any(|l| {
             l.as_deref()
-                .map(|p| count_marker(Some(p), "input-streaming pipeline starting") > 0)
+                .map(|p| count_marker(Some(p), "link starting") > 0)
                 .unwrap_or(false)
         });
         if up {

@@ -27,8 +27,25 @@ fn main() -> std::io::Result<()> {
     use flow_core::input::{InputCapture, InputInjector};
     use flow_platform::{LinuxInputCapture, LinuxInputInjector};
 
+    use std::sync::{Arc, Mutex};
+
+    use flow_core::input::{CaptureSink, Disposition};
+    use flow_core::protocol::InputEvent;
+
+    /// Passes every event through to the OS and queues it for the echo loop.
+    struct EchoSink(Mutex<mpsc::Sender<InputEvent>>);
+    impl CaptureSink for EchoSink {
+        fn on_event(&self, event: &InputEvent) -> Disposition {
+            let _ = self.0.lock().unwrap().send(event.clone());
+            Disposition::Pass
+        }
+        fn suppressing(&self) -> bool {
+            false
+        }
+    }
+
     let (sender, receiver) = mpsc::channel();
-    let mut capture = LinuxInputCapture::new(sender);
+    let mut capture = LinuxInputCapture::new(Arc::new(EchoSink(Mutex::new(sender))));
     let mut injector = LinuxInputInjector::new()?;
 
     capture.start()?;

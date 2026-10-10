@@ -1,13 +1,13 @@
 //! Detects the configured switch-key combination in the platform-neutral
-//! capture event stream (`docs/tasks/daemon-todos.json` F1), independent of which
-//! OS adapter (`flow-platform`) produced the events.
+//! capture event stream independent of which OS adapter
+//! (`flow-platform`) produced the events. Used by the router, on the
+//! controller's single capture stream.
 //!
 //! `vision.md` §12: "Switching is the defining interaction of the
 //! product... Users should eventually be able to choose... Custom key
 //! combinations."
 
 pub mod debounce;
-pub mod runner;
 
 use std::collections::HashSet;
 
@@ -89,12 +89,14 @@ fn canonicalize(key: &str) -> String {
     key.to_ascii_uppercase()
 }
 
+/// The one place binding tokens are normalised: users (and the UI) write
+/// `Cmd`, `Win`, `⌘`, `Super` or `Meta` for the same key.
 fn modifier_for_token(token: &str) -> Option<Modifier> {
-    match token {
-        "Ctrl" => Some(Modifier::Ctrl),
-        "Shift" => Some(Modifier::Shift),
-        "Alt" => Some(Modifier::Alt),
-        "Meta" => Some(Modifier::Meta),
+    match token.to_ascii_lowercase().as_str() {
+        "ctrl" | "control" | "^" => Some(Modifier::Ctrl),
+        "shift" | "⇧" => Some(Modifier::Shift),
+        "alt" | "option" | "opt" | "⌥" => Some(Modifier::Alt),
+        "meta" | "cmd" | "command" | "win" | "windows" | "super" | "⌘" => Some(Modifier::Meta),
         _ => None,
     }
 }
@@ -167,6 +169,21 @@ mod tests {
             timestamp_ms: 0,
         });
         assert!(!matcher.feed(&event));
+    }
+
+    #[test]
+    fn command_win_and_super_are_aliases_of_meta() {
+        for alias in ["Meta", "Cmd", "⌘", "Win", "Super", "command"] {
+            let binding = SwitchKeyBinding {
+                label: alias.to_string(),
+                keys: vec![alias.to_string(), "Space".to_string()],
+            };
+            let mut matcher = SwitchKeyMatcher::new(binding);
+            assert!(
+                matcher.feed(&key_down("SPACE", vec![Modifier::Meta])),
+                "{alias} should match the Meta modifier"
+            );
+        }
     }
 
     #[test]

@@ -3,26 +3,37 @@
 //! per-OS adapters in `flow-platform`, while a virtual backend (the test
 //! harness) can stand in for any OS with no input devices at all.
 
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use flow_core::device::{HostOs, ScreenSize};
-use flow_core::input::{InputCapture, InputInjector};
+use flow_core::input::{CaptureSink, InputCapture, InputInjector};
 use flow_core::protocol::InputEvent;
 use flow_platform::{new_default_input_injector, DefaultInputCapture};
 
 pub type BackendError = Box<dyn std::error::Error + Send + Sync>;
 
-/// A running capture, held by whoever started it.
-pub trait CaptureControl: Send {
-    /// Hides (or restores) the captured input from this machine's own
-    /// applications; see `flow_core::input::InputCapture::set_suppress_local`.
-    fn set_suppress_local(&mut self, suppress: bool) -> Result<(), BackendError>;
-    fn stop(&mut self);
+/// Keeps a capture running; dropping it stops the capture.
+pub struct CaptureGuard(Option<Box<dyn FnOnce() + Send>>);
+
+impl CaptureGuard {
+    pub fn new(stop: impl FnOnce() + Send + 'static) -> Self {
+        Self(Some(Box::new(stop)))
+    }
+}
+
+impl Drop for CaptureGuard {
+    fn drop(&mut self) {
+        if let Some(stop) = self.0.take() {
+            stop();
+        }
+    }
 }
 
 /// Replays events into this machine's input stream.
 pub trait Injector: Send {
     fn inject(&mut self, event: &InputEvent) -> Result<(), BackendError>;
+    /// Moves the pointer to an absolute position, where the OS allows it.
+    fn warp_cursor(&mut self, x: i32, y: i32) -> Result<(), BackendError>;
 }
 
 pub trait PlatformBackend: Send + Sync {
@@ -32,16 +43,11 @@ pub trait PlatformBackend: Send + Sync {
     fn cursor_position(&self) -> Option<(i32, i32)> {
         None
     }
-    /// Starts capturing physical input into `events`.
-    fn start_capture(
-        &self,
-        events: mpsc::Sender<InputEvent>,
-    ) -> Result<Box<dyn CaptureControl>, BackendError>;
+    /// Starts capturing physical input. `sink` decides synchronously, per
+    /// event, whether local applications still see it.
+    fn start_capture(&self, sink: Arc<dyn CaptureSink>) -> Result<CaptureGuard, BackendError>;
     fn new_injector(&self) -> Result<Box<dyn Injector>, BackendError>;
 }
-
-/// The real adapters for the OS this binary was built for.
-pub struct NativeBackend;
 
 /// The OS this binary was compiled for.
 pub fn native_host_os() -> HostOs {
@@ -51,6 +57,9 @@ pub fn native_host_os() -> HostOs {
         _ => HostOs::Linux,
     }
 }
+
+/// The real adapters for the OS this binary was built for.
+pub struct NativeBackend;
 
 impl PlatformBackend for NativeBackend {
     fn host_os(&self) -> HostOs {
@@ -68,21 +77,20 @@ impl PlatformBackend for NativeBackend {
         flow_platform::cursor_position()
     }
 
-    fn start_capture(
-        &self,
-        events: mpsc::Sender<InputEvent>,
-    ) -> Result<Box<dyn CaptureControl>, BackendError> {
-        let mut capture = DefaultInputCapture::new(events);
+    fn start_capture(&self, sink: Arc<dyn CaptureSink>) -> Result<CaptureGuard, BackendError> {
+        let mut capture = DefaultInputCapture::new(sink);
         capture.start().map_err(|err| format!("{err:?}"))?;
-        Ok(Box::new(NativeCapture(capture)))
+        Ok(CaptureGuard::new(move || {
+            let _ = capture.stop();
+        }))
     }
 
     /// The real injector can be thread-affine (macOS wraps a
     /// `CGEventSource`), so it lives on its own thread and the returned
-    /// handle just forwards events to it.
+    /// handle just forwards commands to it.
     fn new_injector(&self) -> Result<Box<dyn Injector>, BackendError> {
         let (ready_tx, ready_rx) = mpsc::channel();
-        let (events_tx, events_rx) = mpsc::channel::<InputEvent>();
+        let (commands_tx, commands_rx) = mpsc::channel::<InjectorCommand>();
 
         std::thread::spawn(move || {
             let mut injector = match new_default_input_injector() {
@@ -95,47 +103,49 @@ impl PlatformBackend for NativeBackend {
             if ready_tx.send(Ok(())).is_err() {
                 return;
             }
-            for event in events_rx {
-                if let Err(err) = injector.inject(&event) {
+            for command in commands_rx {
+                let result = match command {
+                    InjectorCommand::Event(event) => injector.inject(&event),
+                    InjectorCommand::Warp(x, y) => injector.warp_cursor(x, y),
+                };
+                if let Err(err) = result {
                     crate::logging::product::error("inject input", &err);
                 }
             }
         });
 
         match ready_rx.recv() {
-            Ok(Ok(())) => Ok(Box::new(ThreadedInjector(events_tx))),
+            Ok(Ok(())) => Ok(Box::new(ThreadedInjector(commands_tx))),
             Ok(Err(message)) => Err(message.into()),
             Err(_) => Err("injector thread exited before it was ready".into()),
         }
     }
 }
 
+/// `FLOW_SCREEN_SIZE=WIDTHxHEIGHT`, for adapters that can't query the display.
 fn screen_size_from_env() -> Option<(u32, u32)> {
     let raw = std::env::var("FLOW_SCREEN_SIZE").ok()?;
     let (w, h) = raw.split_once('x')?;
     Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
 }
 
-struct NativeCapture(DefaultInputCapture);
-
-impl CaptureControl for NativeCapture {
-    fn set_suppress_local(&mut self, suppress: bool) -> Result<(), BackendError> {
-        self.0
-            .set_suppress_local(suppress)
-            .map_err(|err| format!("{err:?}").into())
-    }
-
-    fn stop(&mut self) {
-        let _ = self.0.stop();
-    }
+enum InjectorCommand {
+    Event(InputEvent),
+    Warp(i32, i32),
 }
 
-struct ThreadedInjector(mpsc::Sender<InputEvent>);
+struct ThreadedInjector(mpsc::Sender<InjectorCommand>);
 
 impl Injector for ThreadedInjector {
     fn inject(&mut self, event: &InputEvent) -> Result<(), BackendError> {
         self.0
-            .send(event.clone())
+            .send(InjectorCommand::Event(event.clone()))
+            .map_err(|_| "injector thread has stopped".into())
+    }
+
+    fn warp_cursor(&mut self, x: i32, y: i32) -> Result<(), BackendError> {
+        self.0
+            .send(InjectorCommand::Warp(x, y))
             .map_err(|_| "injector thread has stopped".into())
     }
 }

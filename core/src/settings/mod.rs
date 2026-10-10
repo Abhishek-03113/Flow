@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::control::Role;
 use crate::switch_key::{default_binding, SwitchKeyBinding};
 
 /// How fast the pointer moves relative to raw input deltas.
@@ -27,6 +28,17 @@ pub struct FlowSettings {
     pub debug_logging: bool,
     pub pointer_sensitivity: PointerSensitivity,
     pub switch_key: SwitchKeyBinding,
+    pub role: Role,
+    /// Jumps straight back to the local screen; `None` = only the switch
+    /// key cycles back.
+    pub return_home_key: Option<SwitchKeyBinding>,
+    /// Switch screens by moving the pointer through a screen edge.
+    pub edge_switching: bool,
+    /// How long the pointer must rest against an edge before it switches.
+    pub edge_switch_delay_ms: u32,
+    /// Where user keymap/remap files live. Read-only: set by the engine,
+    /// never persisted or patched.
+    pub keymap_overrides_path: String,
 }
 
 impl FlowSettings {
@@ -44,6 +56,11 @@ impl FlowSettings {
             debug_logging: false,
             pointer_sensitivity: PointerSensitivity::Normal,
             switch_key: default_binding(),
+            role: Role::Controller,
+            return_home_key: None,
+            edge_switching: true,
+            edge_switch_delay_ms: 0,
+            keymap_overrides_path: String::new(),
         }
     }
 
@@ -59,6 +76,10 @@ impl FlowSettings {
             debug_logging,
             pointer_sensitivity,
             switch_key,
+            role,
+            return_home_key,
+            edge_switching,
+            edge_switch_delay_ms,
         } = patch;
 
         if let Some(v) = launch_at_login {
@@ -88,6 +109,18 @@ impl FlowSettings {
         if let Some(v) = switch_key {
             self.switch_key = v;
         }
+        if let Some(v) = role {
+            self.role = v;
+        }
+        if let Some(v) = return_home_key {
+            self.return_home_key = v;
+        }
+        if let Some(v) = edge_switching {
+            self.edge_switching = v;
+        }
+        if let Some(v) = edge_switch_delay_ms {
+            self.edge_switch_delay_ms = v;
+        }
     }
 }
 
@@ -115,6 +148,29 @@ pub struct SettingsPatch {
     pub pointer_sensitivity: Option<PointerSensitivity>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch_key: Option<SwitchKeyBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    /// `Some(None)` (JSON `null`) clears the binding; absent leaves it.
+    #[serde(
+        default,
+        deserialize_with = "present_or_null",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub return_home_key: Option<Option<SwitchKeyBinding>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_switching: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub edge_switch_delay_ms: Option<u32>,
+}
+
+/// Distinguishes an absent field (`None`) from an explicit `null`
+/// (`Some(None)`), which `Option<Option<T>>` alone can't.
+fn present_or_null<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 #[cfg(test)]
@@ -133,6 +189,22 @@ mod tests {
         assert!(!d.debug_logging);
         assert_eq!(d.pointer_sensitivity, PointerSensitivity::Normal);
         assert_eq!(d.switch_key, default_binding());
+        assert_eq!(d.role, Role::Controller);
+        assert_eq!(d.return_home_key, None);
+        assert!(d.edge_switching);
+        assert_eq!(d.edge_switch_delay_ms, 0);
+    }
+
+    #[test]
+    fn a_null_return_home_key_clears_it_and_an_absent_one_leaves_it() {
+        let mut settings = FlowSettings::defaults();
+        settings.return_home_key = Some(default_binding());
+
+        settings.apply_patch(serde_json::from_str("{}").unwrap());
+        assert!(settings.return_home_key.is_some());
+
+        settings.apply_patch(serde_json::from_str(r#"{"return_home_key": null}"#).unwrap());
+        assert_eq!(settings.return_home_key, None);
     }
 
     #[test]

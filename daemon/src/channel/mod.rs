@@ -7,6 +7,7 @@
 pub mod bluetooth;
 pub mod gate;
 pub mod handshake;
+pub mod memory;
 pub mod negotiate;
 pub mod noise;
 pub mod reconnect;

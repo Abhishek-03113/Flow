@@ -165,6 +165,7 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new_seeded_for_test(storage.clone()).await;
         let _logger = spawn(&service, storage.clone());
+        let _link = service.connect_peer_for_test("d2").await;
 
         service
             .switch_active_device("d2")

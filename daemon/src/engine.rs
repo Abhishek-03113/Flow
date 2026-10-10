@@ -5,7 +5,6 @@
 //! the engine through [`Engine::start`]; several engines can run isolated
 //! in one process by giving each its own data dir and ports.
 
-use std::collections::HashSet;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -13,25 +12,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use flow_core::channel::Channel;
+use flow_core::control::Role;
 use flow_core::device::DeviceId;
-use flow_core::input::InputInjector;
-use flow_core::link::DaemonLinkState;
-use flow_core::protocol::{InputEvent, InputRole};
 use thiserror::Error;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{watch, Mutex};
+use tokio::sync::watch;
 
 use crate::channel::tcp::TcpChannel;
 use crate::devmode::SecurityMode;
 use crate::discovery::tcp::DiscoveryService;
 use crate::discovery::DiscoveredPeer;
 use crate::ipc::{auth, server::handle_connection};
+use crate::link::{run_link, LinkEnv, LinkTiming};
 use crate::logging::LoggingHandle;
-use crate::platform_backend::{BackendError, Injector, PlatformBackend};
+use crate::platform_backend::{CaptureGuard, PlatformBackend};
 use crate::security::Security;
 use crate::service::{ConnectionPrecedence, DaemonService, IncomingPeerConnection, ServiceOptions};
 use crate::storage::{history_logger, Storage};
-use crate::{hotkey, pipeline};
 
 /// Loopback WebSocket control server (`docs/contracts/daemon-ipc.md`).
 #[derive(Debug, Clone)]
@@ -65,6 +62,9 @@ pub struct EngineConfig {
     pub discovery: Option<DiscoveryConfig>,
     pub security: SecurityMode,
     pub backend: Arc<dyn PlatformBackend>,
+    /// Where the user's keymap and remap files live; `None` = built-in
+    /// defaults only.
+    pub keymap_dir: Option<PathBuf>,
     /// Enables the `debug_inject_input` command.
     pub test_hooks: bool,
     /// Seeds the mock-parity fixture instead of real state. Test fixture only.
@@ -85,6 +85,7 @@ impl EngineConfig {
             discovery: None,
             security: SecurityMode::Secure,
             backend,
+            keymap_dir: None,
             test_hooks: false,
             seed_mock_parity: false,
             logging: None,
@@ -130,6 +131,8 @@ impl Engine {
                     security,
                     device_name: config.device_name.clone(),
                     host_os: config.backend.host_os(),
+                    screen: config.backend.screen_size(),
+                    keymap_dir: config.keymap_dir.clone(),
                 },
             )
             .await
@@ -158,16 +161,17 @@ impl Engine {
                 &service, logging,
             ));
         }
-        if let Some(runner) = hotkey::runner::spawn(&service, config.backend.as_ref()) {
-            tasks.spawn(async move {
-                let _ = runner.await;
-            });
-        }
+        tasks.spawn(manage_capture(
+            Arc::clone(&service),
+            Arc::clone(&config.backend),
+        ));
 
         let runtime = Runtime {
-            service: Arc::clone(&service),
-            backend: Arc::clone(&config.backend),
-            connected_peers: Arc::new(Mutex::new(HashSet::new())),
+            link: LinkEnv {
+                service: Arc::clone(&service),
+                backend: Arc::clone(&config.backend),
+                timing: LinkTiming::default(),
+            },
             tasks: tasks.clone(),
         };
 
@@ -256,17 +260,37 @@ impl Tasks {
     }
 }
 
-/// Devices this engine has a live, authenticated connection to — keyed by
-/// the peer's proven identity, shared by the outbound (discovery redial)
-/// and inbound (listener) paths so a peer is never connected twice.
-type ConnectedPeers = Arc<Mutex<HashSet<DeviceId>>>;
-
 #[derive(Clone)]
 struct Runtime {
-    service: Arc<DaemonService>,
-    backend: Arc<dyn PlatformBackend>,
-    connected_peers: ConnectedPeers,
+    link: LinkEnv,
     tasks: Tasks,
+}
+
+/// Captures physical input while, and only while, this device is a
+/// controller: a controlled device never captures for forwarding. The
+/// router is the capture sink, so one capture serves hotkeys,
+/// suppression and routing.
+async fn manage_capture(service: Arc<DaemonService>, backend: Arc<dyn PlatformBackend>) {
+    let mut settings = service.watch_settings();
+    let mut capture: Option<CaptureGuard> = None;
+    loop {
+        let controller = settings.borrow_and_update().role == Role::Controller;
+        if controller && capture.is_none() {
+            let sink = Arc::clone(service.router()) as Arc<dyn flow_core::input::CaptureSink>;
+            match backend.start_capture(sink) {
+                Ok(guard) => capture = Some(guard),
+                Err(err) => crate::logging::product::error(
+                    "input capture would not start; this device cannot share its keyboard and mouse",
+                    &err,
+                ),
+            }
+        } else if !controller {
+            capture = None;
+        }
+        if settings.changed().await.is_err() {
+            return;
+        }
+    }
 }
 
 impl Runtime {
@@ -288,7 +312,7 @@ impl Runtime {
             config.token_path.display()
         );
 
-        let service = Arc::clone(&self.service);
+        let service = Arc::clone(&self.link.service);
         let tasks = self.tasks.clone();
         self.tasks.spawn(async move {
             loop {
@@ -352,13 +376,13 @@ impl Runtime {
         config: &DiscoveryConfig,
         channel_port: u16,
     ) -> Option<(u16, Arc<std::sync::Mutex<Vec<SocketAddr>>>)> {
-        let (name, os) = self.service.local_device_identity().await;
+        let (name, os) = self.link.service.local_device_identity().await;
         let discovery = match DiscoveryService::bind(
             config.port,
             name,
             os,
             channel_port,
-            self.service.local_instance_id(),
+            self.link.service.local_instance_id(),
         )
         .await
         {
@@ -431,12 +455,12 @@ impl Runtime {
             address = ?peer.address,
             "discovery announce parsed for a peer"
         );
-        self.service.note_discovered_peer(peer.clone()).await;
+        self.link.service.note_discovered_peer(peer.clone()).await;
 
         let runtime = self.clone();
         self.tasks.spawn(async move {
             let Some((channel, device_id, precedence)) =
-                runtime.service.dial_if_trusted(peer.address).await
+                runtime.link.service.dial_if_trusted(peer.address).await
             else {
                 return;
             };
@@ -456,6 +480,7 @@ impl Runtime {
             }
         };
         match self
+            .link
             .service
             .accept_incoming_peer_channel(channel, peer_addr)
             .await
@@ -470,7 +495,7 @@ impl Runtime {
 
     /// Resolves this connection against any competing one to the same peer
     /// (both ends compute the same verdict, so exactly one survives) and
-    /// runs the pipeline if it wins.
+    /// runs the link if it wins.
     async fn claim_and_run(
         &self,
         mut channel: Box<dyn Channel>,
@@ -484,9 +509,7 @@ impl Runtime {
             precedence = ?precedence,
             "resolving this connection against any competing one to the same peer"
         );
-        if precedence == ConnectionPrecedence::Redundant
-            || !self.connected_peers.lock().await.insert(device_id.clone())
-        {
+        if precedence == ConnectionPrecedence::Redundant {
             let _ = channel.close().await;
             crate::hop_note!(
                 stage = "claim_dropped",
@@ -496,163 +519,6 @@ impl Runtime {
             );
             return;
         }
-        self.run_peer_pipeline(channel, device_id).await;
-    }
-
-    /// Runs the input-streaming pipeline over an authenticated connection.
-    /// Releases the peer's claim however it ends, so a later reconnect
-    /// isn't blocked.
-    async fn run_peer_pipeline(&self, channel: Box<dyn Channel>, device_id: DeviceId) {
-        let service = &self.service;
-        crate::hop_note!(
-            stage = "pipeline_up",
-            role = "local",
-            peer = %device_id.0,
-            "input-streaming pipeline starting for a paired peer"
-        );
-        let devices_rx = service.watch_devices();
-        let peer_name = devices_rx
-            .borrow()
-            .iter()
-            .find(|device| device.id == device_id)
-            .map(|device| device.name.clone())
-            .unwrap_or_else(|| device_id.0.clone());
-
-        let (capture_tx, capture_rx) = std::sync::mpsc::channel();
-        let mut capture = match self.backend.start_capture(capture_tx) {
-            Ok(capture) => capture,
-            Err(err) => {
-                crate::logging::product::error(
-                    &format!(
-                        "input capture would not start; pipeline for peer {peer_name} not running"
-                    ),
-                    &err,
-                );
-                self.connected_peers.lock().await.remove(&device_id);
-                return;
-            }
-        };
-
-        let (bridge_tx, bridge_rx) = tokio::sync::mpsc::unbounded_channel();
-        let capture_bridge_tx = bridge_tx.clone();
-        std::thread::spawn(move || {
-            for event in capture_rx {
-                if capture_bridge_tx.send(event).is_err() {
-                    break;
-                }
-            }
-        });
-
-        // Synthetic events from `debug_inject_input` (test hooks) join the
-        // very same stream, so they are gated, sequenced and injected
-        // exactly like real ones.
-        let debug_bridge_tx = bridge_tx.clone();
-        let mut debug_rx = service.subscribe_debug_injections();
-        tokio::spawn(async move {
-            loop {
-                match debug_rx.recv().await {
-                    Ok(event) => {
-                        if debug_bridge_tx.send(event).is_err() {
-                            break;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                        tracing::warn!("debug injection lagged, dropped {n} synthetic events");
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-            }
-        });
-        drop(bridge_tx);
-
-        let injector = match self.backend.new_injector() {
-            Ok(injector) => injector,
-            Err(err) => {
-                crate::logging::product::error(
-                    &format!(
-                        "input injector would not start; pipeline for peer {peer_name} not running"
-                    ),
-                    &err,
-                );
-                capture.stop();
-                self.connected_peers.lock().await.remove(&device_id);
-                return;
-            }
-        };
-
-        let _switch_authority = service.enter_peer_pipeline();
-        let pipeline_input =
-            hotkey::runner::spawn_pipeline_switch_filter((**service).clone(), bridge_rx);
-
-        let suppress_peer_name = peer_name.clone();
-        let suppress_local = move |suppress: bool| {
-            if let Err(err) = capture.set_suppress_local(suppress) {
-                let action = if suppress { "suppress" } else { "restore" };
-                crate::logging::product::error(
-                    &format!(
-                        "could not {action} local input for peer {suppress_peer_name} \
-                         (input will also reach this machine's own applications)"
-                    ),
-                    &err,
-                );
-            }
-        };
-
-        let ownership_service = Arc::clone(service);
-        let ownership_peer = device_id.clone();
-        let on_peer_ownership = move |role: InputRole| {
-            let service = Arc::clone(&ownership_service);
-            let peer = ownership_peer.clone();
-            tokio::spawn(async move { service.apply_peer_ownership(&peer, role).await });
-        };
-
-        service.set_link_state(DaemonLinkState::Connected);
-        crate::logging::product::peer_connected(&peer_name);
-        pipeline::run_paired_connection(
-            channel,
-            pipeline_input,
-            devices_rx,
-            BoxedInjector(injector),
-            device_id.clone(),
-            suppress_local,
-            on_peer_ownership,
-            service.ownership_handle(),
-        )
-        .await;
-        crate::logging::product::peer_disconnected(&peer_name);
-        crate::hop_note!(
-            stage = "pipeline_down",
-            role = "local",
-            peer = %device_id.0,
-            "input-streaming pipeline ended for this peer"
-        );
-
-        let no_peers_left = {
-            let mut connected = self.connected_peers.lock().await;
-            connected.remove(&device_id);
-            connected.is_empty()
-        };
-        // Only downgrade link health once nothing else is still streaming.
-        // `Reconnecting` while auto-reconnect is on, because discovery
-        // keeps announcing and will redial on its own.
-        if no_peers_left {
-            let auto_reconnect = service.watch_settings().borrow().auto_reconnect;
-            service.set_link_state(if auto_reconnect {
-                DaemonLinkState::Reconnecting
-            } else {
-                DaemonLinkState::Disconnected
-            });
-        }
-    }
-}
-
-/// Adapts a backend [`Injector`] to the pipeline's `InputInjector` bound.
-struct BoxedInjector(Box<dyn Injector>);
-
-impl InputInjector for BoxedInjector {
-    type Error = BackendError;
-
-    fn inject(&mut self, event: &InputEvent) -> Result<(), Self::Error> {
-        self.0.inject(event)
+        run_link(&self.link, channel, device_id).await;
     }
 }

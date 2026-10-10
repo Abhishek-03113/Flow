@@ -8,6 +8,7 @@
 //! this maps to.
 
 pub mod channel;
+pub mod control;
 pub mod device;
 pub mod error;
 pub mod input;

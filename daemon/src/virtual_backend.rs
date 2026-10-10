@@ -1,21 +1,28 @@
 //! A [`PlatformBackend`] with no operating system behind it, so the engine
 //! can run — several instances per process — in tests and the harness. It
 //! can pretend to be any OS, lets the caller type on a virtual keyboard
-//! and records what the engine injected.
+//! and records both what local applications received and what the engine
+//! injected.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use flow_core::device::{HostOs, ScreenSize};
+use flow_core::input::{CaptureSink, Disposition};
 use flow_core::protocol::InputEvent;
 
-use crate::platform_backend::{BackendError, CaptureControl, Injector, PlatformBackend};
+use crate::platform_backend::{BackendError, CaptureGuard, Injector, PlatformBackend};
 
 #[derive(Default)]
 struct Shared {
-    capture: Mutex<Option<mpsc::Sender<InputEvent>>>,
-    suppressed: AtomicBool,
+    sink: Mutex<Option<Arc<dyn CaptureSink>>>,
+    delivered_locally: Mutex<Vec<InputEvent>>,
     injected: Mutex<Vec<InputEvent>>,
+    warps: Mutex<Vec<(i32, i32)>>,
+    cursor: Mutex<Option<(i32, i32)>>,
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 pub struct VirtualBackend {
@@ -33,32 +40,49 @@ impl VirtualBackend {
         }
     }
 
-    /// A physical input event, as the OS would hand it to the capture hook.
-    /// Returns whether a capture is running to receive it.
-    pub fn feed(&self, event: InputEvent) -> bool {
-        match &*self
-            .shared
-            .capture
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-        {
-            Some(sender) => sender.send(event).is_ok(),
-            None => false,
+    /// A physical input event, as the OS would hand it to the capture
+    /// hook. Whatever the engine lets through counts as delivered to local
+    /// applications. `None` when no capture is running (the OS delivers it
+    /// locally, unobserved).
+    pub fn feed(&self, event: InputEvent) -> Option<Disposition> {
+        let sink = lock(&self.shared.sink).clone()?;
+        let disposition = sink.on_event(&event);
+        if disposition == Disposition::Pass {
+            lock(&self.shared.delivered_locally).push(event);
         }
+        Some(disposition)
+    }
+
+    /// Moves the virtual pointer, for backends driving edge detection.
+    pub fn set_cursor(&self, position: Option<(i32, i32)>) {
+        *lock(&self.shared.cursor) = position;
+    }
+
+    /// Whether a capture is running.
+    pub fn is_capturing(&self) -> bool {
+        lock(&self.shared.sink).is_some()
     }
 
     /// Whether the engine currently hides physical input from local apps.
     pub fn is_suppressed(&self) -> bool {
-        self.shared.suppressed.load(Ordering::SeqCst)
+        lock(&self.shared.sink)
+            .as_ref()
+            .is_some_and(|sink| sink.suppressing())
+    }
+
+    /// Physical events local applications received.
+    pub fn delivered_locally(&self) -> Vec<InputEvent> {
+        lock(&self.shared.delivered_locally).clone()
     }
 
     /// Everything the engine injected into this virtual machine so far.
     pub fn injected(&self) -> Vec<InputEvent> {
-        self.shared
-            .injected
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()
+        lock(&self.shared.injected).clone()
+    }
+
+    /// Cursor warps the engine asked for, in order.
+    pub fn warps(&self) -> Vec<(i32, i32)> {
+        lock(&self.shared.warps).clone()
     }
 }
 
@@ -71,16 +95,16 @@ impl PlatformBackend for VirtualBackend {
         self.screen
     }
 
-    fn start_capture(
-        &self,
-        events: mpsc::Sender<InputEvent>,
-    ) -> Result<Box<dyn CaptureControl>, BackendError> {
-        *self
-            .shared
-            .capture
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = Some(events);
-        Ok(Box::new(VirtualCapture(Arc::clone(&self.shared))))
+    fn cursor_position(&self) -> Option<(i32, i32)> {
+        *lock(&self.shared.cursor)
+    }
+
+    fn start_capture(&self, sink: Arc<dyn CaptureSink>) -> Result<CaptureGuard, BackendError> {
+        *lock(&self.shared.sink) = Some(sink);
+        let shared = Arc::clone(&self.shared);
+        Ok(CaptureGuard::new(move || {
+            *lock(&shared.sink) = None;
+        }))
     }
 
     fn new_injector(&self) -> Result<Box<dyn Injector>, BackendError> {
@@ -88,28 +112,16 @@ impl PlatformBackend for VirtualBackend {
     }
 }
 
-struct VirtualCapture(Arc<Shared>);
-
-impl CaptureControl for VirtualCapture {
-    fn set_suppress_local(&mut self, suppress: bool) -> Result<(), BackendError> {
-        self.0.suppressed.store(suppress, Ordering::SeqCst);
-        Ok(())
-    }
-
-    fn stop(&mut self) {
-        *self.0.capture.lock().unwrap_or_else(|e| e.into_inner()) = None;
-    }
-}
-
 struct VirtualInjector(Arc<Shared>);
 
 impl Injector for VirtualInjector {
     fn inject(&mut self, event: &InputEvent) -> Result<(), BackendError> {
-        self.0
-            .injected
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(event.clone());
+        lock(&self.0.injected).push(event.clone());
+        Ok(())
+    }
+
+    fn warp_cursor(&mut self, x: i32, y: i32) -> Result<(), BackendError> {
+        lock(&self.0.warps).push((x, y));
         Ok(())
     }
 }

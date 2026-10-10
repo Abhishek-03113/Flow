@@ -153,6 +153,9 @@ fn row_to_record(row: &Row) -> rusqlite::Result<DeviceRecord> {
             // connection re-establishes the real state.
             state: DeviceState::Disconnected,
             last_seen: parse_rfc3339(&last_seen),
+            role: None,
+            screen: None,
+            link_error: None,
         },
         public_key: row.get(4)?,
         removable: row.get(5)?,
@@ -192,6 +195,9 @@ mod tests {
                 last_seen: DateTime::parse_from_rfc3339("2026-08-25T06:58:00Z")
                     .unwrap()
                     .with_timezone(&Utc),
+                role: None,
+                screen: None,
+                link_error: None,
             },
             public_key,
             removable: true,

@@ -24,6 +24,9 @@ fn device_matches_data_model_example() {
         os: HostOs::Windows,
         state: DeviceState::Inactive,
         last_seen: Utc.with_ymd_and_hms(2026, 8, 25, 6, 58, 0).unwrap(),
+        role: None,
+        screen: None,
+        link_error: None,
     };
 
     assert_eq!(
@@ -33,7 +36,11 @@ fn device_matches_data_model_example() {
             "name": "Work Laptop",
             "os": "windows",
             "state": "inactive",
-            "last_seen": "2026-08-25T06:58:00Z"
+            "last_seen": "2026-08-25T06:58:00Z",
+            "last_seen_ms": 1787641080000i64,
+            "role": null,
+            "screen": null,
+            "link_error": null
         })
     );
 }
@@ -88,7 +95,12 @@ fn flow_settings_defaults_match_data_model_example() {
             "share_mouse": true,
             "debug_logging": false,
             "pointer_sensitivity": "normal",
-            "switch_key": { "label": "Scroll Lock", "keys": ["ScrollLock"] }
+            "switch_key": { "label": "Scroll Lock", "keys": ["ScrollLock"] },
+            "role": "controller",
+            "return_home_key": null,
+            "edge_switching": true,
+            "edge_switch_delay_ms": 0,
+            "keymap_overrides_path": ""
         })
     );
 }
