@@ -32,12 +32,7 @@ export function Section({
 }
 
 export type IconTone =
-  | "neutral"
-  | "accent"
-  | "green"
-  | "orange"
-  | "red"
-  | "gray";
+  "neutral" | "accent" | "green" | "orange" | "red" | "gray";
 
 export interface RowProps {
   icon?: ReactNode;
