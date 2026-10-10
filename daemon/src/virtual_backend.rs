@@ -48,6 +48,18 @@ impl VirtualBackend {
         let sink = lock(&self.shared.sink).clone()?;
         let disposition = sink.on_event(&event);
         if disposition == Disposition::Pass {
+            // Like a real OS: motion that reaches it moves its own pointer
+            // (clamped to the screen), which is what edge switching watches.
+            if let InputEvent::Mouse(flow_core::protocol::MouseEvent::Move { dx, dy, .. }) = &event
+            {
+                let mut cursor = lock(&self.shared.cursor);
+                if let Some((x, y)) = *cursor {
+                    *cursor = Some((
+                        (x + dx).clamp(0, self.screen.width as i32 - 1),
+                        (y + dy).clamp(0, self.screen.height as i32 - 1),
+                    ));
+                }
+            }
             lock(&self.shared.delivered_locally).push(event);
         }
         Some(disposition)
