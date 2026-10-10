@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
+use flow_core::channel::ScreenRect;
 use flow_core::channel::{Channel, ChannelAddress, ChannelError};
-use flow_core::control::layout::ScreenLayout;
+use flow_core::control::layout::{Placement, ScreenLayout};
 use flow_core::control::{ActiveScreen, ControlState, Diagnostics, Role};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
@@ -47,7 +48,7 @@ use crate::security::Security;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
 use crate::storage::layout_repo::LayoutRepo;
 use crate::storage::settings_repo::SettingsRepo;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageError};
 use crate::trust::TrustGate;
 
 /// Outcome of [`DaemonService::accept_incoming_peer_channel`]: either the
@@ -194,16 +195,19 @@ impl ServiceState {
     /// `main.rs`'s `run_peer_pipeline` is the only place that later calls
     /// `DaemonService::set_link_state(Connected)`, once a real handshake
     /// actually completes.
-    pub async fn from_storage(storage: &Storage, options: &ServiceOptions) -> Self {
+    pub async fn from_storage(
+        storage: &Storage,
+        options: &ServiceOptions,
+    ) -> Result<Self, StorageError> {
         let settings_repo = SettingsRepo::new(storage.clone());
         let device_repo = DeviceRepo::new(storage.clone());
 
-        let settings = settings_repo.load().await;
+        let settings = settings_repo.load().await?;
 
-        let existing = device_repo.list().await;
+        let existing = device_repo.list().await?;
         let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
             let local = real_local_device_record(options);
-            device_repo.upsert(local.clone()).await;
+            device_repo.upsert(local.clone()).await?;
             HashMap::from([(local.device.id.clone(), local.device)])
         } else {
             existing
@@ -225,12 +229,12 @@ impl ServiceState {
                         public_key: None,
                         removable: false,
                     })
-                    .await;
+                    .await?;
             }
         }
         restore_local_device_active(&mut devices);
 
-        Self {
+        Ok(Self {
             devices,
             link_state: DaemonLinkState::Disconnected,
             pairing_session: PairingSession::idle(),
@@ -239,7 +243,7 @@ impl ServiceState {
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
             incoming_request: None,
-        }
+        })
     }
 
     /// Test-only fixture: the exact mock-parity 3-device/2-candidate seed
@@ -263,13 +267,16 @@ impl ServiceState {
         let settings_repo = SettingsRepo::new(storage.clone());
         let device_repo = DeviceRepo::new(storage.clone());
 
-        let settings = settings_repo.load().await;
+        let settings = settings_repo.load().await.expect("seed test settings");
 
-        let existing = device_repo.list().await;
+        let existing = device_repo.list().await.expect("list test devices");
         let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
             let seed = mock_parity_device_records();
             for record in &seed {
-                device_repo.upsert(record.clone()).await;
+                device_repo
+                    .upsert(record.clone())
+                    .await
+                    .expect("seed test device");
             }
             seed.into_iter()
                 .map(|record| (record.device.id.clone(), record.device))
@@ -430,13 +437,16 @@ impl DaemonService {
     /// Production entry point — `main.rs`'s only constructor call. Real
     /// device/settings state via [`ServiceState::from_storage`]; no
     /// seeded mock data.
-    pub async fn new(storage: Storage) -> Self {
+    pub async fn new(storage: Storage) -> Result<Self, StorageError> {
         Self::new_with_options(storage, ServiceOptions::default()).await
     }
 
     /// Production entry point with an explicit security profile — the
     /// insecure dev profile, selected by `FLOW_SECURITY`.
-    pub async fn new_with_security(storage: Storage, security: Security) -> Self {
+    pub async fn new_with_security(
+        storage: Storage,
+        security: Security,
+    ) -> Result<Self, StorageError> {
         Self::new_with_options(
             storage,
             ServiceOptions {
@@ -448,8 +458,11 @@ impl DaemonService {
     }
 
     /// The engine's constructor: real state, host described by `options`.
-    pub async fn new_with_options(storage: Storage, options: ServiceOptions) -> Self {
-        let state = ServiceState::from_storage(&storage, &options).await;
+    pub async fn new_with_options(
+        storage: Storage,
+        options: ServiceOptions,
+    ) -> Result<Self, StorageError> {
+        let state = ServiceState::from_storage(&storage, &options).await?;
         Self::from_state(storage, state, options).await
     }
 
@@ -461,7 +474,9 @@ impl DaemonService {
     #[doc(hidden)]
     pub async fn new_seeded_for_test(storage: Storage) -> Self {
         let state = ServiceState::seeded_for_test(&storage).await;
-        Self::from_state(storage, state, ServiceOptions::default()).await
+        Self::from_state(storage, state, ServiceOptions::default())
+            .await
+            .expect("test fixture identity")
     }
 
     /// Shared tail of the constructors above: wraps an already-loaded
@@ -470,8 +485,8 @@ impl DaemonService {
         storage: Storage,
         mut state: ServiceState,
         options: ServiceOptions,
-    ) -> Self {
-        let identity = DeviceIdentity::load_or_generate(storage.clone()).await;
+    ) -> Result<Self, StorageError> {
+        let identity = DeviceIdentity::load_or_generate(storage.clone()).await?;
         state.settings.keymap_overrides_path = options
             .keymap_dir
             .as_ref()
@@ -482,7 +497,14 @@ impl DaemonService {
             flow_platform::keymap::load(options.host_os, options.keymap_dir.as_deref()).remap_rules;
         let router = Arc::new(InputRouter::new(&state.settings, remap_rules.clone()));
         let (remap_rules_tx, _) = watch::channel(remap_rules);
-        let layout = match LayoutRepo::new(storage.clone()).load().await {
+        let stored_layout = LayoutRepo::new(storage.clone())
+            .load()
+            .await
+            .unwrap_or_else(|err| {
+                tracing::warn!(%err, "could not load the saved screen layout; using the default");
+                None
+            });
+        let layout = match stored_layout {
             Some(layout) if layout.validate().is_ok() => layout,
             _ => ScreenLayout::local_only(options.screen),
         };
@@ -533,7 +555,7 @@ impl DaemonService {
         };
         service.spawn_active_screen_follower();
         service.spawn_diagnostics_ticker();
-        service
+        Ok(service)
     }
 
     /// Enables the `debug_inject_input` IPC command on this service.
@@ -851,6 +873,21 @@ impl DaemonService {
         Ok(())
     }
 
+    /// Runtime paths keep going on a storage failure: the live state is
+    /// authoritative, so a full disk or locked database only costs
+    /// durability, and is logged.
+    async fn persist_device(&self, record: DeviceRecord) {
+        if let Err(err) = DeviceRepo::new(self.storage.clone()).upsert(record).await {
+            tracing::warn!(%err, "could not persist the paired device");
+        }
+    }
+
+    async fn persist_settings(&self, settings: FlowSettings) {
+        if let Err(err) = SettingsRepo::new(self.storage.clone()).save(settings).await {
+            tracing::warn!(%err, "could not persist settings");
+        }
+    }
+
     /// Applies `change` to the layout and, if it changed anything,
     /// persists it, hands it to the router and announces it.
     async fn mutate_layout(&self, change: impl FnOnce(&mut ScreenLayout)) {
@@ -859,9 +896,84 @@ impl DaemonService {
         if layout == *self.layout_tx.borrow() {
             return;
         }
-        LayoutRepo::new(self.storage.clone()).save(&layout).await;
+        if let Err(err) = LayoutRepo::new(self.storage.clone()).save(&layout).await {
+            tracing::warn!(%err, "could not persist the screen layout");
+        }
         self.router.set_layout(layout.clone());
         self.layout_tx.send_replace(layout);
+        self.send_arrangements(None);
+    }
+
+    /// Controller side: tells the controlled peers (only `only`, when set)
+    /// where their screen and this one sit in the current arrangement.
+    fn send_arrangements(&self, only: Option<&DeviceId>) {
+        if self.local_role() != Role::Controller {
+            return;
+        }
+        let layout = self.layout_tx.borrow().clone();
+        let rect = |p: &flow_core::control::layout::Placement| ScreenRect {
+            x: p.x,
+            y: p.y,
+            width: p.width,
+            height: p.height,
+        };
+        let Some(controller) = layout
+            .placement(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .map(rect)
+        else {
+            return;
+        };
+        let links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, link) in links.iter() {
+            if link.peer_role != Some(Role::Controlled) || only.is_some_and(|o| o != id) {
+                continue;
+            }
+            if let Some(controlled) = layout.placement(id).map(rect) {
+                let _ = link.outbox.send(LinkOut::Arrangement {
+                    controller,
+                    controlled,
+                });
+            }
+        }
+    }
+
+    /// Controlled side: the controller reported where the two screens sit.
+    /// Kept in memory only (the arrangement belongs to the controller) and
+    /// announced as `screen_layout_changed`. An unusable report is ignored.
+    pub fn controller_arrangement_changed(
+        &self,
+        controller_id: &DeviceId,
+        controller: ScreenRect,
+        controlled: ScreenRect,
+    ) {
+        let placement = |device_id: DeviceId, r: ScreenRect| Placement {
+            device_id,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
+        let layout = ScreenLayout {
+            screens: vec![
+                placement(DeviceId(LOCAL_DEVICE_ID.to_string()), controlled),
+                placement(controller_id.clone(), controller),
+            ],
+        };
+        if layout.validate().is_ok() {
+            self.layout_tx.send_replace(layout);
+        }
+    }
+
+    /// The layout this device owns: the saved one, else just its own screen.
+    async fn own_layout(&self) -> ScreenLayout {
+        match LayoutRepo::new(self.storage.clone()).load().await {
+            Ok(Some(layout)) if layout.validate().is_ok() => layout,
+            Ok(_) => ScreenLayout::local_only(self.local_screen),
+            Err(err) => {
+                tracing::warn!("could not load the screen layout: {err}");
+                ScreenLayout::local_only(self.local_screen)
+            }
+        }
     }
 
     pub fn watch_control_state(&self) -> watch::Receiver<ControlState> {
@@ -989,6 +1101,7 @@ impl DaemonService {
                 screen: peer.screen,
                 outbox,
             });
+            self.send_arrangements(Some(device_id));
         } else {
             self.control_tx.send_modify(|control| {
                 control.controller_device_id = Some(device_id.clone());
@@ -1025,12 +1138,20 @@ impl DaemonService {
     /// A link ended. `error` is why, when it ended abnormally.
     pub async fn link_down(&self, device_id: &DeviceId, error: Option<&str>) {
         self.router.peer_disconnected(device_id);
-        self.control_tx.send_modify(|control| {
+        let was_controller = self.control_tx.send_if_modified(|control| {
             if control.controller_device_id.as_ref() == Some(device_id) {
                 control.controller_device_id = None;
                 control.entered = false;
+                true
+            } else {
+                false
             }
         });
+        if was_controller {
+            // The controller's arrangement is only valid while it is linked.
+            let own = self.own_layout().await;
+            self.layout_tx.send_replace(own);
+        }
         self.links
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -1050,6 +1171,25 @@ impl DaemonService {
             .get(device_id)
             .and_then(|d| d.role);
         let same_role = peer_role == Some(self.local_role());
+        // A redial that drops before its Hello (lost, timed out, or closed as a
+        // duplicate connection) says nothing about the peer: while the roles
+        // still conflict, keep the refusal the device is already showing.
+        let standing_refusal = !refused
+            && same_role
+            && self
+                .state
+                .read()
+                .await
+                .devices
+                .get(device_id)
+                .and_then(|d| d.link_error.as_deref())
+                == Some(link_error::ROLE_CONFLICT);
+        let refused = refused || standing_refusal;
+        let error = if standing_refusal {
+            Some(link_error::ROLE_CONFLICT)
+        } else {
+            error
+        };
         if (refused && same_role) || error == Some(link_error::PROTOCOL_MISMATCH) {
             self.refused_peers
                 .lock()
@@ -1177,7 +1317,10 @@ impl DaemonService {
 
         // Removal is durable: a removed device must not reappear from a
         // stale devices-table row after a restart.
-        DeviceRepo::new(self.storage.clone())
+        // A failure here is reported to the caller only after the live
+        // state is brought in line, so the UI never shows a device the
+        // user was told is gone.
+        let persisted = DeviceRepo::new(self.storage.clone())
             .remove(target_id.clone())
             .await;
 
@@ -1196,7 +1339,7 @@ impl DaemonService {
             self.set_link_state(DaemonLinkState::Disconnected);
         }
 
-        Ok(())
+        persisted.map_err(FlowError::from)
     }
 
     /// Begins searching for pairing candidates. Errors if a pairing
@@ -1382,13 +1525,12 @@ impl DaemonService {
             device
         };
 
-        DeviceRepo::new(self.storage.clone())
-            .upsert(DeviceRecord {
-                device: new_device,
-                public_key: None,
-                removable: true,
-            })
-            .await;
+        self.persist_device(DeviceRecord {
+            device: new_device,
+            public_key: None,
+            removable: true,
+        })
+        .await;
 
         self.take_pairing_timer().await;
         self.emit_devices().await;
@@ -1442,13 +1584,12 @@ impl DaemonService {
                     device
                 };
 
-                DeviceRepo::new(self.storage.clone())
-                    .upsert(DeviceRecord {
-                        device: new_device,
-                        public_key: Some(peer_public_key),
-                        removable: true,
-                    })
-                    .await;
+                self.persist_device(DeviceRecord {
+                    device: new_device,
+                    public_key: Some(peer_public_key),
+                    removable: true,
+                })
+                .await;
 
                 self.take_pairing_timer().await;
                 self.emit_devices().await;
@@ -1678,13 +1819,12 @@ impl DaemonService {
             let mut state = self.state.write().await;
             state.devices.insert(device_id, device.clone());
         }
-        DeviceRepo::new(self.storage.clone())
-            .upsert(DeviceRecord {
-                device,
-                public_key: Some(peer_public_key),
-                removable: true,
-            })
-            .await;
+        self.persist_device(DeviceRecord {
+            device,
+            public_key: Some(peer_public_key),
+            removable: true,
+        })
+        .await;
         self.emit_devices().await;
         Ok(())
     }
@@ -2038,9 +2178,7 @@ impl DaemonService {
             state.settings = defaults.clone();
             defaults
         };
-        SettingsRepo::new(self.storage.clone())
-            .save(defaults.clone())
-            .await;
+        self.persist_settings(defaults.clone()).await;
         self.router.apply_settings(&defaults);
         self.settings_tx.send_replace(defaults);
         Ok(())
@@ -2052,9 +2190,7 @@ impl DaemonService {
             state.settings.apply_patch(patch);
             state.settings.clone()
         };
-        SettingsRepo::new(self.storage.clone())
-            .save(settings.clone())
-            .await;
+        self.persist_settings(settings.clone()).await;
         self.router.apply_settings(&settings);
         self.settings_tx.send_replace(settings);
     }
@@ -2286,7 +2422,7 @@ mod tests {
     #[tokio::test]
     async fn a_linked_peer_is_recognised_by_its_announced_instance_id() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new(storage).await.expect("service");
         assert!(!service.has_link_to_instance("abc123"));
         let registration = service
             .register_link(&DeviceId("pk:abc123".to_string()))
@@ -2317,6 +2453,7 @@ mod tests {
         let local_record = device_repo
             .find_by_id(DeviceId(LOCAL_DEVICE_ID.to_string()))
             .await
+            .expect("repo")
             .expect("local device persisted");
         assert!(!local_record.removable);
 
@@ -2345,12 +2482,15 @@ mod tests {
                 public_key: None,
                 removable: true,
             })
-            .await;
+            .await
+            .expect("repo");
 
         // The real (production) loader — proves the anti-reseed guarantee
         // that actually matters: a non-empty database is never seeded
         // over, mock or real.
-        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default())
+            .await
+            .expect("state");
 
         assert_eq!(state.devices.len(), 1);
         assert!(state
@@ -2372,7 +2512,9 @@ mod tests {
     #[tokio::test]
     async fn fresh_real_state_has_only_the_local_device_no_fake_remotes() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default())
+            .await
+            .expect("state");
 
         assert_eq!(
             state.devices.len(),
@@ -2392,6 +2534,7 @@ mod tests {
         let local_record = device_repo
             .find_by_id(DeviceId(LOCAL_DEVICE_ID.to_string()))
             .await
+            .expect("repo")
             .expect("local device persisted");
         assert!(!local_record.removable);
     }
@@ -2399,7 +2542,9 @@ mod tests {
     #[tokio::test]
     async fn fresh_real_state_starts_disconnected_with_no_seeded_candidates() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default())
+            .await
+            .expect("state");
 
         assert_eq!(
             state.link_state,
@@ -2418,7 +2563,7 @@ mod tests {
     #[tokio::test]
     async fn starting_pairing_on_a_real_daemon_finds_no_candidates_without_real_discovery() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new(storage).await.expect("service");
         let mut sessions = service.watch_pairing_session();
         let _ = sessions.borrow_and_update();
 
@@ -2440,7 +2585,7 @@ mod tests {
     #[tokio::test]
     async fn a_real_discovered_peer_is_the_only_pairing_candidate_offered() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new(storage).await.expect("service");
         let mut sessions = service.watch_pairing_session();
         let _ = sessions.borrow_and_update();
 
@@ -2469,7 +2614,7 @@ mod tests {
     #[tokio::test]
     async fn a_real_paired_device_survives_a_restart() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new(storage.clone()).await.expect("service");
 
         let device_repo = DeviceRepo::new(storage.clone());
         device_repo
@@ -2487,12 +2632,15 @@ mod tests {
                 public_key: Some(vec![7; 32]),
                 removable: true,
             })
-            .await;
+            .await
+            .expect("repo");
 
         // Simulate a restart against the same database — the real
         // production path, not the mock fixture.
         drop(service);
-        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
+        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default())
+            .await
+            .expect("state");
 
         assert_eq!(
             reloaded.devices.len(),
@@ -2507,7 +2655,7 @@ mod tests {
     #[tokio::test]
     async fn removing_a_real_device_persists_across_a_restart() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new(storage.clone()).await.expect("service");
 
         let device_repo = DeviceRepo::new(storage.clone());
         device_repo
@@ -2525,11 +2673,12 @@ mod tests {
                 public_key: Some(vec![9; 32]),
                 removable: true,
             })
-            .await;
+            .await
+            .expect("repo");
         // Reload so the service's in-memory state actually sees the device
         // just inserted directly through the repo above.
         drop(service);
-        let service = DaemonService::new(storage.clone()).await;
+        let service = DaemonService::new(storage.clone()).await.expect("service");
 
         service
             .remove_device("pk:removable-peer")
@@ -2537,7 +2686,9 @@ mod tests {
             .expect("remove the real peer");
 
         drop(service);
-        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
+        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default())
+            .await
+            .expect("state");
         assert!(
             !reloaded
                 .devices
@@ -2564,8 +2715,9 @@ mod tests {
                 public_key: Some(vec![7; 32]),
                 removable: true,
             })
-            .await;
-        let service = DaemonService::new(storage).await;
+            .await
+            .expect("repo");
+        let service = DaemonService::new(storage).await.expect("service");
         // Simulate the peer pipeline having marked the link healthy.
         service.set_link_state(DaemonLinkState::Connected);
 
@@ -2584,7 +2736,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_state_permission_matches_this_platform() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new(storage).await.expect("service");
         let permission = service.watch_permission().borrow().clone();
 
         // macOS is the only platform whose input capture the UI can
@@ -2614,7 +2766,7 @@ mod tests {
     #[tokio::test]
     async fn production_init_never_seeds_mock_parity_data() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new(storage).await;
+        let service = DaemonService::new(storage).await.expect("service");
 
         let devices = service.watch_devices().borrow().clone();
         assert_eq!(
@@ -2677,6 +2829,17 @@ mod tests {
     }
 
     /// Brings a controlled peer's link up the way a real link does.
+    /// Takes the arrangement(s) a controller sends as soon as a controlled
+    /// peer links up, so a test can wait for the message it is about.
+    fn skip_arrangement(registration: &mut LinkRegistration) {
+        while let Ok(message) = registration.inbox.try_recv() {
+            assert!(
+                matches!(message, LinkOut::Arrangement { .. }),
+                "{message:?}"
+            );
+        }
+    }
+
     async fn connect_peer(service: &DaemonService, id: &str, role: Role) -> LinkRegistration {
         // (`connect_peer_for_test` is the controlled-peer shorthand.)
         let id = DeviceId(id.to_string());
@@ -2740,6 +2903,7 @@ mod tests {
     async fn switching_makes_exactly_the_active_screens_device_active() {
         let service = seeded().await;
         let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
+        skip_arrangement(&mut registration);
         let mut watch = service.watch_devices();
 
         service.switch_to("d2").await.expect("switch to d2");
@@ -2843,6 +3007,7 @@ mod tests {
     async fn changing_role_closes_live_links_and_is_persisted() {
         let service = seeded().await;
         let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
+        skip_arrangement(&mut registration);
 
         service.set_role(Role::Controlled).await.expect("set role");
 
@@ -2857,7 +3022,10 @@ mod tests {
             service.watch_control_state().borrow().role,
             Role::Controlled
         );
-        let stored = SettingsRepo::new(service.storage.clone()).load().await;
+        let stored = SettingsRepo::new(service.storage.clone())
+            .load()
+            .await
+            .expect("repo");
         assert_eq!(stored.role, Role::Controlled);
     }
 
@@ -2947,7 +3115,10 @@ mod tests {
             .expect("valid layout");
 
         assert_eq!(*service.watch_screen_layout().borrow(), stack);
-        assert_eq!(LayoutRepo::new(storage).load().await, Some(stack.clone()));
+        assert_eq!(
+            LayoutRepo::new(storage).load().await.expect("repo"),
+            Some(stack.clone())
+        );
 
         let mut overlapping = stack.clone();
         overlapping.screens[1].y = 0;
@@ -2962,6 +3133,86 @@ mod tests {
             Err(FlowError::InvalidLayout(_))
         ));
         assert_eq!(*service.watch_screen_layout().borrow(), stack);
+    }
+
+    #[tokio::test]
+    async fn the_controller_sends_its_arrangement_when_a_peer_links_up_and_when_it_changes() {
+        let service = seeded().await;
+        let mut link = connect_peer(&service, "d2", Role::Controlled).await;
+        let first = std::iter::from_fn(|| link.inbox.try_recv().ok()).last();
+        assert!(matches!(
+            first,
+            Some(LinkOut::Arrangement { controller, controlled })
+                if controller.x == 0 && controlled.x == controller.width as i32
+        ));
+
+        let local = DeviceId(LOCAL_DEVICE_ID.to_string());
+        let below = ScreenLayout {
+            screens: vec![
+                Placement {
+                    device_id: DeviceId("d2".to_string()),
+                    x: 0,
+                    y: 1080,
+                    width: 1000,
+                    height: 800,
+                },
+                Placement {
+                    device_id: local,
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+            ],
+        };
+        service.set_screen_layout(below).await.expect("valid");
+        let sent = std::iter::from_fn(|| link.inbox.try_recv().ok()).last();
+        assert!(matches!(
+            sent,
+            Some(LinkOut::Arrangement { controller, controlled })
+                if controller.y == 0 && controlled.y == 1080 && controlled.x == 0
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_controlled_device_shows_the_controllers_arrangement_until_the_link_ends() {
+        let service = seeded().await;
+        service.set_role(Role::Controlled).await.unwrap();
+        let _link = connect_peer(&service, "d2", Role::Controller).await;
+        let rect = |x, y, width, height| ScreenRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let controller = DeviceId("d2".to_string());
+
+        service.controller_arrangement_changed(
+            &controller,
+            rect(0, 0, 1000, 800),
+            rect(0, 800, 1920, 1080),
+        );
+        let layout = service.watch_screen_layout().borrow().clone();
+        let me = layout
+            .placement(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .unwrap();
+        let them = layout.placement(&controller).unwrap();
+        assert_eq!((me.x, me.y, them.x, them.y), (0, 800, 0, 0));
+
+        // An overlapping report is ignored; the last good one stays.
+        service.controller_arrangement_changed(
+            &controller,
+            rect(0, 0, 1000, 800),
+            rect(10, 10, 1920, 1080),
+        );
+        assert_eq!(*service.watch_screen_layout().borrow(), layout);
+
+        service.link_down(&controller, None).await;
+        assert!(service
+            .watch_screen_layout()
+            .borrow()
+            .placement(&controller)
+            .is_none());
     }
 
     #[tokio::test]
@@ -2994,7 +3245,8 @@ mod tests {
                 ..ServiceOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("service");
         let swap = RemapRule {
             from: "Ctrl".to_string(),
             to: "Meta".to_string(),
@@ -3031,7 +3283,8 @@ mod tests {
                 ..ServiceOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("service");
         let embedded = service.keymap_for(HostOs::Macos);
         assert_eq!(embedded["os"], "macos");
         assert!(!embedded["keys"].as_array().unwrap().is_empty());
@@ -3288,7 +3541,7 @@ mod tests {
             .await
             .expect("update settings");
 
-        let reloaded = SettingsRepo::new(storage).load().await;
+        let reloaded = SettingsRepo::new(storage).load().await.expect("repo");
         assert!(reloaded.debug_logging);
     }
 
@@ -3418,7 +3671,9 @@ mod tests {
 
         let initiator_identity_storage =
             Storage::open_in_memory().await.expect("open initiator db");
-        let initiator_identity = DeviceIdentity::load_or_generate(initiator_identity_storage).await;
+        let initiator_identity = DeviceIdentity::load_or_generate(initiator_identity_storage)
+            .await
+            .expect("identity");
         let name = device_name.to_string();
         let initiator = tokio::spawn(async move {
             let tcp = TcpChannel::connect(addr).await.expect("connect");
@@ -3689,7 +3944,9 @@ mod tests {
         let service = DaemonService::new_seeded_for_test(storage.clone()).await;
 
         let peer_identity_storage = Storage::open_in_memory().await.expect("open peer db");
-        let peer_identity = DeviceIdentity::load_or_generate(peer_identity_storage).await;
+        let peer_identity = DeviceIdentity::load_or_generate(peer_identity_storage)
+            .await
+            .expect("identity");
         let peer_public_key = peer_identity.public_key_bytes().to_vec();
         DeviceRepo::new(storage.clone())
             .upsert(DeviceRecord {
@@ -3706,7 +3963,8 @@ mod tests {
                 public_key: Some(peer_public_key.clone()),
                 removable: true,
             })
-            .await;
+            .await
+            .expect("repo");
 
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
@@ -3748,7 +4006,9 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let responder_identity_storage = Storage::open_in_memory().await.expect("open db");
-        let responder_identity = DeviceIdentity::load_or_generate(responder_identity_storage).await;
+        let responder_identity = DeviceIdentity::load_or_generate(responder_identity_storage)
+            .await
+            .expect("identity");
         tokio::spawn(async move {
             let (stream, _peer) = listener.accept().await.expect("accept");
             let tcp = TcpChannel::accept(stream).await.expect("accept ws");

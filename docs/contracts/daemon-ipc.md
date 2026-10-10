@@ -1,6 +1,6 @@
 # Daemon IPC Contract
 
-Contract version: **0.2.3** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands; 0.2.2 refused links and withdrawn pairing requests; 0.2.3 a closed `link_error` vocabulary.
+Contract version: **0.2.4** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands; 0.2.2 refused links and withdrawn pairing requests; 0.2.3 a closed `link_error` vocabulary; 0.2.4 the controller's arrangement on controlled devices.
 
 **Three transports, one contract** (see `README.md`): the desktop app calls the engine in-process (Tauri `flow_command(command, payload)` → result or `{code, message}` error; state arrives as `flow://event` events `{event, payload}`), `flow-daemon` serves the same over a loopback WebSocket, and the UI's mock implements both shapes in memory. The rest of this document uses the WebSocket envelope; the Tauri bridge carries the identical command names, payloads, results, errors and events.
 
@@ -48,7 +48,7 @@ Why events-out / commands-in: device state, link health and settings change beca
 | `switch_active_device` | `{ device_id }` | As `switch_to` (`d1` means `local`). | Alias of `switch_to`, kept for 0.1 clients. |
 | `release_control` | — | This device is controlled (`not_controlled`) with a linked controller (`no_controller`). | Asks the controller for this machine back; the controller decides and returns to its own screen. |
 | `set_role` | `{ role }` | — | Persists the role, closes live links so peers renegotiate. Emits `settings_changed`, `control_state_changed`. |
-| `set_screen_layout` | `{ layout: ScreenLayout }` | Controller; layout includes `d1`, no overlaps/duplicates/empty screens, every other screen is a known device (`invalid_layout`). | Persisted; adjacency for edge switching derives from touching edges. Emits `screen_layout_changed`. |
+| `set_screen_layout` | `{ layout: ScreenLayout }` | Controller; layout includes `d1`, no overlaps/duplicates/empty screens, every other screen is a known device (`invalid_layout`). | Persisted; adjacency for edge switching derives from touching edges. Emits `screen_layout_changed`. The controller also sends it to each linked controlled device. |
 | `set_remap_rules` | `{ rules: RemapRule[] }` | Every rule valid (`invalid_remap_rule`). | Saved to `<keymap dir>/remap.toml`, applied to forwarding immediately. Emits `remap_rules_changed`. |
 | `get_keymap` | `{ os }` | — | Answers with the effective keymap for `os` (embedded defaults merged with the user's override file) as `{ id, ok: true, result }`. |
 | `remove_device` | `{ device_id }` | Device exists and isn't the local device ("This device" is never removable). | Device dropped from the list. Emits `devices_changed`. |
@@ -107,6 +107,7 @@ controlled:  idle --Enter--> entered --Leave / disconnect / heartbeat timeout-->
 ```
 
 - Hotkey: the switch key cycles `local -> d1 -> d2 -> ... -> local` over controlled peers with a live link; the optional return-home key jumps to `local`. Both work while the controller's input is hidden from its own OS.
+- `screen_layout_changed` is *this computer's own* arrangement on a controller (editable). On a controlled device it is the *controller's* arrangement, as the controller last sent it: read-only, in memory only, `d1` plus the controller's device id; just `d1` while none has arrived.
 - Edges: with a `ScreenLayout`, pushing the pointer through an edge that has a neighbour switches to it (`edge_switching`, `edge_switch_delay_ms`).
 - A link between two controllers or two controlled devices is refused: the device gets `link_error: "role_conflict"` (`"protocol_mismatch"` for a v1 peer). The device's `role`/`os` show what the peer announced, the link state becomes `error`, and the engine does not redial that peer until a role changes (the side that changes dials the other).
 - Link loss while a peer is active returns the controller to `local`.

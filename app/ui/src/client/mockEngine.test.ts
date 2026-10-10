@@ -58,6 +58,15 @@ describe('MockEngine', () => {
     await expect(b.client.switchTo('d2')).rejects.toMatchObject({ code: 'not_controller' });
   });
 
+  it("the controlled scenario carries the controller's own arrangement", async () => {
+    const { client } = setup('controlled');
+    await flush();
+    const screens = client.getSnapshot().screenLayout.screens;
+    const mine = screens.find((r) => r.deviceId === 'd1')!;
+    const theirs = screens.find((r) => r.deviceId === 'd2')!;
+    expect(theirs.y + theirs.height).toBe(mine.y);
+  });
+
   it('release_control hands the screen back to the controller; only valid when controlled', async () => {
     const { client } = setup('controlled');
     await flush();

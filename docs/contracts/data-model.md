@@ -162,7 +162,7 @@ Surfaced during onboarding, in the permission sheet and in Diagnostics.
 ] }
 ```
 
-Screens are rectangles in one shared virtual space (`d1` is this computer); two screens are neighbours where their edges touch. Persisted on the controller. Default: each controlled screen is placed to the right of everything already placed, in connection order.
+Screens are rectangles in one shared virtual space (`d1` is this computer); two screens are neighbours where their edges touch. Persisted on the controller. On a controlled device it is instead the controller's arrangement (read-only, not persisted): `d1` and the controller, as the controller placed them. Default: each controlled screen is placed to the right of everything already placed, in connection order.
 
 ## `Diagnostics` (0.2.0)
 

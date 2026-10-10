@@ -17,7 +17,7 @@
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
 
 use crate::storage::identity_repo::IdentityRepo;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageError};
 
 /// This daemon's own persisted device identity — an ed25519 keypair.
 /// `H2`'s trust gate compares a peer's [`Self::public_key_bytes`]
@@ -32,15 +32,15 @@ impl DeviceIdentity {
     /// Loads this daemon's persisted identity, generating one (via
     /// `P6`'s `IdentityRepo`) on first run. Every later call against the
     /// same `storage` returns the identical keypair.
-    pub async fn load_or_generate(storage: Storage) -> Self {
-        let bytes = IdentityRepo::new(storage).load_or_generate().await;
+    pub async fn load_or_generate(storage: Storage) -> Result<Self, StorageError> {
+        let bytes = IdentityRepo::new(storage).load_or_generate().await?;
         let seed: [u8; 32] = bytes
             .private_key
             .try_into()
             .expect("identity_repo always persists a 32-byte private key");
-        Self {
+        Ok(Self {
             signing_key: SigningKey::from_bytes(&seed),
-        }
+        })
     }
 
     /// This identity's public key.
@@ -82,7 +82,9 @@ mod tests {
     #[tokio::test]
     async fn first_run_generates_a_real_verifiable_ed25519_keypair() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let identity = DeviceIdentity::load_or_generate(storage).await;
+        let identity = DeviceIdentity::load_or_generate(storage)
+            .await
+            .expect("identity");
 
         let message = b"flow device identity";
         let signature = identity.sign(message);
@@ -92,8 +94,12 @@ mod tests {
     #[tokio::test]
     async fn a_second_load_on_the_same_storage_returns_the_identical_identity() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let first = DeviceIdentity::load_or_generate(storage.clone()).await;
-        let second = DeviceIdentity::load_or_generate(storage).await;
+        let first = DeviceIdentity::load_or_generate(storage.clone())
+            .await
+            .expect("identity");
+        let second = DeviceIdentity::load_or_generate(storage)
+            .await
+            .expect("identity");
         assert_eq!(first.public_key_bytes(), second.public_key_bytes());
     }
 
@@ -102,8 +108,12 @@ mod tests {
         let storage_a = Storage::open_in_memory().await.expect("open db a");
         let storage_b = Storage::open_in_memory().await.expect("open db b");
 
-        let identity_a = DeviceIdentity::load_or_generate(storage_a).await;
-        let identity_b = DeviceIdentity::load_or_generate(storage_b).await;
+        let identity_a = DeviceIdentity::load_or_generate(storage_a)
+            .await
+            .expect("identity");
+        let identity_b = DeviceIdentity::load_or_generate(storage_b)
+            .await
+            .expect("identity");
 
         assert_ne!(identity_a.public_key_bytes(), identity_b.public_key_bytes());
     }
@@ -113,8 +123,12 @@ mod tests {
         let storage_a = Storage::open_in_memory().await.expect("open db a");
         let storage_b = Storage::open_in_memory().await.expect("open db b");
 
-        let identity_a = DeviceIdentity::load_or_generate(storage_a).await;
-        let identity_b = DeviceIdentity::load_or_generate(storage_b).await;
+        let identity_a = DeviceIdentity::load_or_generate(storage_a)
+            .await
+            .expect("identity");
+        let identity_b = DeviceIdentity::load_or_generate(storage_b)
+            .await
+            .expect("identity");
 
         let message = b"flow device identity";
         let signature = identity_a.sign(message);

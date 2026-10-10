@@ -54,7 +54,7 @@ jobs:
       - name: Install UI dependencies
         working-directory: app/ui
         run: npm ci
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # ---- Signing / notarization: all OPTIONAL. Unsigned builds still work. ----
