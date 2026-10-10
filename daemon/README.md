@@ -53,7 +53,9 @@ cargo run -p flow-daemon
 - `FLOW_IPC_TOKEN_PATH` — the IPC auth token file (default `~/.flow/ipc.token`). Pass the same path to the Flutter client with `--dart-define=FLOW_IPC_TOKEN_PATH`.
 - `FLOW_DEVICE_NAME` — overrides the local device's display name (default: the machine hostname), so two instances on one box aren't both called the same thing in the UI.
 
-The UDP discovery port (`47824`) is deliberately *not* overridable — both instances bind it with `SO_REUSEADDR` so they still hear each other's broadcast announces. None of these variables have any effect on a normal single-instance deployment when left unset.
+By default both instances bind the UDP discovery port (`47824`) with `SO_REUSEADDR` and hear each other's broadcasts. To isolate instances fully, `FLOW_DISCOVERY_PORT` moves the discovery port, `FLOW_DISCOVERY_TARGETS` (comma-separated `host:port`) replaces LAN broadcast with explicit announce targets, and `FLOW_PEER_PORT` pins the peer listener (default: ephemeral). None of these variables have any effect on a normal single-instance deployment when left unset.
+
+The same wiring is available as a library: `flow_daemon::engine::Engine::start(EngineConfig)` (see `daemon/src/engine.rs`), which `main.rs` is a thin wrapper around.
 
 ## Testing and linting
 

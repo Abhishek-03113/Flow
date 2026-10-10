@@ -10,14 +10,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Instant;
 
-use flow_core::input::InputCapture;
 use flow_core::protocol::{InputEvent, KeyboardEvent};
-use flow_platform::DefaultInputCapture;
 use tokio::sync::mpsc as tokio_mpsc;
 use tokio::task::JoinHandle;
 
 use super::debounce::{SwitchDebouncer, SWITCH_DEBOUNCE_WINDOW};
 use super::SwitchKeyMatcher;
+use crate::platform_backend::PlatformBackend;
 use crate::service::DaemonService;
 
 /// Starts the platform's real input capture and spawns the task that
@@ -32,13 +31,15 @@ use crate::service::DaemonService;
 /// `/dev/uinput` (`daemon/README.md`'s "Platform adapters" table) and
 /// must still be able to run `flow-daemon` for every other manual/
 /// automated verification recipe already documented there.
-pub fn spawn(service: &DaemonService) -> Option<JoinHandle<()>> {
+pub fn spawn(service: &DaemonService, backend: &dyn PlatformBackend) -> Option<JoinHandle<()>> {
     let (sender, receiver) = mpsc::channel();
-    let mut capture = DefaultInputCapture::new(sender);
-    if let Err(err) = capture.start() {
-        tracing::warn!("hotkey runner not started: input capture failed: {err:?}");
-        return None;
-    }
+    let capture = match backend.start_capture(sender) {
+        Ok(capture) => capture,
+        Err(err) => {
+            tracing::warn!("hotkey runner not started: input capture failed: {err}");
+            return None;
+        }
+    };
 
     // Bridges the capture thread's std::sync::mpsc onto a channel this
     // async task can await, since InputCapture's contract (shared by

@@ -91,6 +91,27 @@ const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
 /// a peer which never answers doesn't hold a caller indefinitely.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// What a service needs to know about the machine it runs on, beyond the
+/// database. Defaults describe the real host; the engine overrides them
+/// from its config (and a virtual platform pretends to be another OS).
+#[derive(Clone)]
+pub struct ServiceOptions {
+    pub security: Security,
+    /// Overrides the hostname as the local device's display name.
+    pub device_name: Option<String>,
+    pub host_os: HostOs,
+}
+
+impl Default for ServiceOptions {
+    fn default() -> Self {
+        Self {
+            security: Security::secure(),
+            device_name: None,
+            host_os: current_host_os(),
+        }
+    }
+}
+
 pub struct ServiceState {
     pub devices: HashMap<DeviceId, Device>,
     pub link_state: DaemonLinkState,
@@ -135,7 +156,7 @@ impl ServiceState {
     /// `main.rs`'s `run_peer_pipeline` is the only place that later calls
     /// `DaemonService::set_link_state(Connected)`, once a real handshake
     /// actually completes.
-    pub async fn from_storage(storage: &Storage) -> Self {
+    pub async fn from_storage(storage: &Storage, options: &ServiceOptions) -> Self {
         let settings_repo = SettingsRepo::new(storage.clone());
         let device_repo = DeviceRepo::new(storage.clone());
 
@@ -143,7 +164,7 @@ impl ServiceState {
 
         let existing = device_repo.list().await;
         let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
-            let local = real_local_device_record();
+            let local = real_local_device_record(options);
             device_repo.upsert(local.clone()).await;
             HashMap::from([(local.device.id.clone(), local.device)])
         } else {
@@ -152,6 +173,23 @@ impl ServiceState {
                 .map(|record| (record.device.id.clone(), record.device))
                 .collect()
         };
+        if let Some(local) = devices.get_mut(&DeviceId(LOCAL_DEVICE_ID.to_string())) {
+            let name = options
+                .device_name
+                .clone()
+                .unwrap_or_else(|| local.name.clone());
+            if local.os != options.host_os || local.name != name {
+                local.os = options.host_os;
+                local.name = name;
+                device_repo
+                    .upsert(DeviceRecord {
+                        device: local.clone(),
+                        public_key: None,
+                        removable: false,
+                    })
+                    .await;
+            }
+        }
         restore_local_device_active(&mut devices);
 
         Self {
@@ -159,7 +197,7 @@ impl ServiceState {
             link_state: DaemonLinkState::Disconnected,
             pairing_session: PairingSession::idle(),
             settings,
-            permission: default_permission(),
+            permission: default_permission(options.host_os),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
             incoming_request: None,
@@ -369,16 +407,26 @@ impl DaemonService {
     /// device/settings state via [`ServiceState::from_storage`]; no
     /// seeded mock data.
     pub async fn new(storage: Storage) -> Self {
-        let state = ServiceState::from_storage(&storage).await;
-        Self::from_state(storage, state, Security::secure()).await
+        Self::new_with_options(storage, ServiceOptions::default()).await
     }
 
-    /// Production entry point with an explicit security profile —
-    /// `main.rs`'s constructor when `FLOW_SECURITY` selected the insecure
-    /// dev profile. Identical to [`Self::new`] otherwise.
+    /// Production entry point with an explicit security profile — the
+    /// insecure dev profile, selected by `FLOW_SECURITY`.
     pub async fn new_with_security(storage: Storage, security: Security) -> Self {
-        let state = ServiceState::from_storage(&storage).await;
-        Self::from_state(storage, state, security).await
+        Self::new_with_options(
+            storage,
+            ServiceOptions {
+                security,
+                ..ServiceOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// The engine's constructor: real state, host described by `options`.
+    pub async fn new_with_options(storage: Storage, options: ServiceOptions) -> Self {
+        let state = ServiceState::from_storage(&storage, &options).await;
+        Self::from_state(storage, state, options.security).await
     }
 
     /// Test-only entry point — the mock-parity fixture every daemon test
@@ -1667,15 +1715,8 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// This daemon's own OS, as compiled — the binary only ever runs on the
-/// platform it was built for, so a compile-time constant is exactly as
-/// accurate as any runtime check would be, with no extra dependency.
 fn current_host_os() -> HostOs {
-    match std::env::consts::OS {
-        "macos" => HostOs::Macos,
-        "windows" => HostOs::Windows,
-        _ => HostOs::Linux,
-    }
+    crate::platform_backend::native_host_os()
 }
 
 /// The OS input-capture permission this daemon starts with, per platform.
@@ -1688,8 +1729,8 @@ fn current_host_os() -> HostOs {
 /// process can't change) need nothing the UI could grant at runtime, so
 /// they start `granted: true` with an accurate name rather than showing
 /// the user a permission prompt that does nothing.
-fn default_permission() -> PermissionStatus {
-    match current_host_os() {
+fn default_permission(host_os: HostOs) -> PermissionStatus {
+    match host_os {
         HostOs::Macos => PermissionStatus {
             name: "Accessibility access".to_string(),
             granted: false,
@@ -1709,18 +1750,12 @@ fn default_permission() -> PermissionStatus {
 /// falls back to a generic label if the OS ever refuses to report one
 /// (rare, and not worth failing daemon startup over a display string).
 ///
-/// `FLOW_DEVICE_NAME` overrides it outright. Its only intended use is
-/// running two `flow-daemon` instances on one physical machine for local
-/// pairing tests, where both would otherwise report the identical
-/// hostname and be impossible to tell apart in the UI.
-fn local_hostname() -> String {
-    if let Some(name) = std::env::var_os("FLOW_DEVICE_NAME") {
-        if let Ok(name) = name.into_string() {
-            let trimmed = name.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
+/// An explicit override (`FLOW_DEVICE_NAME` for the binary) exists so two
+/// instances on one machine, which would otherwise report the identical
+/// hostname, can be told apart in the UI.
+fn local_hostname(name_override: Option<&str>) -> String {
+    if let Some(name) = name_override.map(str::trim).filter(|n| !n.is_empty()) {
+        return name.to_string();
     }
     hostname::get()
         .ok()
@@ -1734,12 +1769,12 @@ fn local_hostname() -> String {
 /// active, never removable — the one device every fresh install
 /// legitimately has, as opposed to the fake remote devices
 /// `mock_parity_device_records` seeds for tests.
-fn real_local_device_record() -> DeviceRecord {
+fn real_local_device_record(options: &ServiceOptions) -> DeviceRecord {
     DeviceRecord {
         device: Device {
             id: DeviceId(LOCAL_DEVICE_ID.to_string()),
-            name: local_hostname(),
-            os: current_host_os(),
+            name: local_hostname(options.device_name.as_deref()),
+            os: options.host_os,
             state: DeviceState::Active,
             last_seen: Utc::now(),
         },
@@ -1862,7 +1897,7 @@ mod tests {
         // The real (production) loader — proves the anti-reseed guarantee
         // that actually matters: a non-empty database is never seeded
         // over, mock or real.
-        let state = ServiceState::from_storage(&storage).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(state.devices.len(), 1);
         assert!(state
@@ -1884,7 +1919,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_real_state_has_only_the_local_device_no_fake_remotes() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::from_storage(&storage).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(
             state.devices.len(),
@@ -1897,7 +1932,7 @@ mod tests {
         assert_eq!(local.state, DeviceState::Active);
         // The real machine's own identity, not the mock fixture's
         // hardcoded "MacBook"/macOS.
-        assert_eq!(local.name, local_hostname());
+        assert_eq!(local.name, local_hostname(None));
         assert_eq!(local.os, current_host_os());
 
         let device_repo = DeviceRepo::new(storage);
@@ -1911,7 +1946,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_real_state_starts_disconnected_with_no_seeded_candidates() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::from_storage(&storage).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(
             state.link_state,
@@ -2001,7 +2036,7 @@ mod tests {
         // Simulate a restart against the same database — the real
         // production path, not the mock fixture.
         drop(service);
-        let reloaded = ServiceState::from_storage(&storage).await;
+        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(
             reloaded.devices.len(),
@@ -2043,7 +2078,7 @@ mod tests {
             .expect("remove the real peer");
 
         drop(service);
-        let reloaded = ServiceState::from_storage(&storage).await;
+        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
         assert!(
             !reloaded
                 .devices

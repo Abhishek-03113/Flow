@@ -310,7 +310,9 @@ fn key_name(code: CGKeyCode) -> String {
         }
         // `find` above guarantees a `punctuation_name_for` hit — every
         // non-alphanumeric char in `ANSI_KEYCODES` has one.
-        return punctuation_name_for(*ch).expect("ANSI_KEYCODES only carries known punctuation").to_string();
+        return punctuation_name_for(*ch)
+            .expect("ANSI_KEYCODES only carries known punctuation")
+            .to_string();
     }
     match code {
         KeyCode::RETURN => key_names::RETURN.to_string(),

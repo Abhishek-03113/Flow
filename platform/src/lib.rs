@@ -70,3 +70,25 @@ pub fn new_default_input_injector() -> Result<DefaultInputInjector, Box<dyn std:
         Ok(DefaultInputInjector::default())
     }
 }
+
+/// The primary display's size in pixels, or `None` where this adapter
+/// can't query it (Linux evdev has no display connection).
+pub fn screen_size() -> Option<(u32, u32)> {
+    #[cfg(target_os = "windows")]
+    return windows::screen_size();
+    #[cfg(target_os = "macos")]
+    return macos::screen_size();
+    #[cfg(target_os = "linux")]
+    return None;
+}
+
+/// The pointer's absolute position, or `None` where this adapter can't
+/// read it.
+pub fn cursor_position() -> Option<(i32, i32)> {
+    #[cfg(target_os = "windows")]
+    return windows::cursor_position();
+    #[cfg(target_os = "macos")]
+    return macos::cursor_position();
+    #[cfg(target_os = "linux")]
+    return None;
+}

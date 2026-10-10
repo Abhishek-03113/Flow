@@ -94,8 +94,8 @@ impl DiscoveryService {
     /// Kept as the fallback [`broadcast_destinations`] always includes,
     /// but not relied on alone in real use — see that function's doc
     /// comment for why.
-    pub fn broadcast_destination() -> SocketAddr {
-        SocketAddr::new(Ipv4Addr::BROADCAST.into(), DISCOVERY_PORT)
+    pub fn broadcast_destination(port: u16) -> SocketAddr {
+        SocketAddr::new(Ipv4Addr::BROADCAST.into(), port)
     }
 
     /// Every destination this daemon's periodic announce should be sent
@@ -122,7 +122,7 @@ impl DiscoveryService {
     /// finding nothing) still leaves the limited-broadcast fallback in
     /// the list, so single-NIC hosts and any environment enumeration
     /// doesn't work in are unaffected.
-    pub fn broadcast_destinations() -> Vec<SocketAddr> {
+    pub fn broadcast_destinations(port: u16) -> Vec<SocketAddr> {
         let mut destinations = Vec::new();
         if let Ok(interfaces) = if_addrs::get_if_addrs() {
             for interface in interfaces {
@@ -131,12 +131,12 @@ impl DiscoveryService {
                 }
                 if let if_addrs::IfAddr::V4(v4) = interface.addr {
                     if let Some(broadcast) = v4.broadcast {
-                        destinations.push(SocketAddr::new(broadcast.into(), DISCOVERY_PORT));
+                        destinations.push(SocketAddr::new(broadcast.into(), port));
                     }
                 }
             }
         }
-        let fallback = Self::broadcast_destination();
+        let fallback = Self::broadcast_destination(port);
         if !destinations.contains(&fallback) {
             destinations.push(fallback);
         }
@@ -236,9 +236,9 @@ mod tests {
     /// test-running machine happens to have.
     #[test]
     fn broadcast_destinations_always_includes_the_limited_broadcast_fallback() {
-        let destinations = DiscoveryService::broadcast_destinations();
+        let destinations = DiscoveryService::broadcast_destinations(DISCOVERY_PORT);
         assert!(!destinations.is_empty());
-        assert!(destinations.contains(&DiscoveryService::broadcast_destination()));
+        assert!(destinations.contains(&DiscoveryService::broadcast_destination(DISCOVERY_PORT)));
     }
 
     /// A loopback-only send target for a service bound with `bind(0, ...)`

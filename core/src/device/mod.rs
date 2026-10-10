@@ -18,6 +18,14 @@ pub enum HostOs {
     Linux,
 }
 
+/// A screen's resolution in pixels (points on macOS), as reported by the
+/// machine that owns it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ScreenSize {
+    pub width: u32,
+    pub height: u32,
+}
+
 /// Lifecycle state of a device as seen by this daemon.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

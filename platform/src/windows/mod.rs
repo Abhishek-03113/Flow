@@ -28,3 +28,19 @@ pub use injector::{WindowsInjectError, WindowsInputInjector};
 /// used here. `0x466C6F77` is ASCII `"Flow"`; real hardware events carry
 /// `0` here.
 pub(crate) const FLOW_INJECTED_MARKER: usize = 0x466C_6F77;
+
+pub(crate) fn screen_size() -> Option<(u32, u32)> {
+    use ::windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_CXSCREEN, SM_CYSCREEN};
+    // SAFETY: GetSystemMetrics has no preconditions.
+    let (w, h) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    (w > 0 && h > 0).then_some((w as u32, h as u32))
+}
+
+pub(crate) fn cursor_position() -> Option<(i32, i32)> {
+    use ::windows::Win32::Foundation::POINT;
+    use ::windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT::default();
+    // SAFETY: `point` is a valid, exclusively borrowed POINT.
+    unsafe { GetCursorPos(&mut point) }.ok()?;
+    Some((point.x, point.y))
+}

@@ -8,6 +8,7 @@
 pub mod channel;
 pub mod devmode;
 pub mod discovery;
+pub mod engine;
 pub mod hotkey;
 pub mod identity;
 pub mod ipc;
@@ -15,7 +16,9 @@ pub mod logging;
 pub mod ownership;
 pub mod pairing_fingerprint;
 pub mod pipeline;
+pub mod platform_backend;
 pub mod security;
 pub mod service;
 pub mod storage;
 pub mod trust;
+pub mod virtual_backend;
