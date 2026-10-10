@@ -44,9 +44,9 @@ export function HomeView() {
     : activeScreen === 'local'
       ? (me?.id ?? null)
       : activeScreen;
-  // A controlled computer only knows its own screen; the arrangement lives on
-  // the controller. Show the controller beside it so the picture isn't one
-  // lonely tile (read-only; where they really sit is set on the controller).
+  // A controlled computer shows the arrangement its controller sent over the
+  // link (read-only; it is set on the controller). Until one arrives, guess:
+  // the controller beside it, so the picture isn't one lonely tile.
   const controllerDevice = s.controlState?.controllerDeviceId
     ? s.devices.find((d) => d.id === s.controlState?.controllerDeviceId)
     : undefined;

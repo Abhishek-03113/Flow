@@ -15,8 +15,9 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
+use flow_core::channel::ScreenRect;
 use flow_core::channel::{Channel, ChannelAddress, ChannelError};
-use flow_core::control::layout::ScreenLayout;
+use flow_core::control::layout::{Placement, ScreenLayout};
 use flow_core::control::{ActiveScreen, ControlState, Diagnostics, Role};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
@@ -900,6 +901,79 @@ impl DaemonService {
         }
         self.router.set_layout(layout.clone());
         self.layout_tx.send_replace(layout);
+        self.send_arrangements(None);
+    }
+
+    /// Controller side: tells the controlled peers (only `only`, when set)
+    /// where their screen and this one sit in the current arrangement.
+    fn send_arrangements(&self, only: Option<&DeviceId>) {
+        if self.local_role() != Role::Controller {
+            return;
+        }
+        let layout = self.layout_tx.borrow().clone();
+        let rect = |p: &flow_core::control::layout::Placement| ScreenRect {
+            x: p.x,
+            y: p.y,
+            width: p.width,
+            height: p.height,
+        };
+        let Some(controller) = layout
+            .placement(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .map(rect)
+        else {
+            return;
+        };
+        let links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        for (id, link) in links.iter() {
+            if link.peer_role != Some(Role::Controlled) || only.is_some_and(|o| o != id) {
+                continue;
+            }
+            if let Some(controlled) = layout.placement(id).map(rect) {
+                let _ = link.outbox.send(LinkOut::Arrangement {
+                    controller,
+                    controlled,
+                });
+            }
+        }
+    }
+
+    /// Controlled side: the controller reported where the two screens sit.
+    /// Kept in memory only (the arrangement belongs to the controller) and
+    /// announced as `screen_layout_changed`. An unusable report is ignored.
+    pub fn controller_arrangement_changed(
+        &self,
+        controller_id: &DeviceId,
+        controller: ScreenRect,
+        controlled: ScreenRect,
+    ) {
+        let placement = |device_id: DeviceId, r: ScreenRect| Placement {
+            device_id,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
+        let layout = ScreenLayout {
+            screens: vec![
+                placement(DeviceId(LOCAL_DEVICE_ID.to_string()), controlled),
+                placement(controller_id.clone(), controller),
+            ],
+        };
+        if layout.validate().is_ok() {
+            self.layout_tx.send_replace(layout);
+        }
+    }
+
+    /// The layout this device owns: the saved one, else just its own screen.
+    async fn own_layout(&self) -> ScreenLayout {
+        match LayoutRepo::new(self.storage.clone()).load().await {
+            Ok(Some(layout)) if layout.validate().is_ok() => layout,
+            Ok(_) => ScreenLayout::local_only(self.local_screen),
+            Err(err) => {
+                tracing::warn!("could not load the screen layout: {err}");
+                ScreenLayout::local_only(self.local_screen)
+            }
+        }
     }
 
     pub fn watch_control_state(&self) -> watch::Receiver<ControlState> {
@@ -1027,6 +1101,7 @@ impl DaemonService {
                 screen: peer.screen,
                 outbox,
             });
+            self.send_arrangements(Some(device_id));
         } else {
             self.control_tx.send_modify(|control| {
                 control.controller_device_id = Some(device_id.clone());
@@ -1063,12 +1138,20 @@ impl DaemonService {
     /// A link ended. `error` is why, when it ended abnormally.
     pub async fn link_down(&self, device_id: &DeviceId, error: Option<&str>) {
         self.router.peer_disconnected(device_id);
-        self.control_tx.send_modify(|control| {
+        let was_controller = self.control_tx.send_if_modified(|control| {
             if control.controller_device_id.as_ref() == Some(device_id) {
                 control.controller_device_id = None;
                 control.entered = false;
+                true
+            } else {
+                false
             }
         });
+        if was_controller {
+            // The controller's arrangement is only valid while it is linked.
+            let own = self.own_layout().await;
+            self.layout_tx.send_replace(own);
+        }
         self.links
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -2746,6 +2829,17 @@ mod tests {
     }
 
     /// Brings a controlled peer's link up the way a real link does.
+    /// Takes the arrangement(s) a controller sends as soon as a controlled
+    /// peer links up, so a test can wait for the message it is about.
+    fn skip_arrangement(registration: &mut LinkRegistration) {
+        while let Ok(message) = registration.inbox.try_recv() {
+            assert!(
+                matches!(message, LinkOut::Arrangement { .. }),
+                "{message:?}"
+            );
+        }
+    }
+
     async fn connect_peer(service: &DaemonService, id: &str, role: Role) -> LinkRegistration {
         // (`connect_peer_for_test` is the controlled-peer shorthand.)
         let id = DeviceId(id.to_string());
@@ -2809,6 +2903,7 @@ mod tests {
     async fn switching_makes_exactly_the_active_screens_device_active() {
         let service = seeded().await;
         let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
+        skip_arrangement(&mut registration);
         let mut watch = service.watch_devices();
 
         service.switch_to("d2").await.expect("switch to d2");
@@ -2912,6 +3007,7 @@ mod tests {
     async fn changing_role_closes_live_links_and_is_persisted() {
         let service = seeded().await;
         let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
+        skip_arrangement(&mut registration);
 
         service.set_role(Role::Controlled).await.expect("set role");
 
@@ -3037,6 +3133,86 @@ mod tests {
             Err(FlowError::InvalidLayout(_))
         ));
         assert_eq!(*service.watch_screen_layout().borrow(), stack);
+    }
+
+    #[tokio::test]
+    async fn the_controller_sends_its_arrangement_when_a_peer_links_up_and_when_it_changes() {
+        let service = seeded().await;
+        let mut link = connect_peer(&service, "d2", Role::Controlled).await;
+        let first = std::iter::from_fn(|| link.inbox.try_recv().ok()).last();
+        assert!(matches!(
+            first,
+            Some(LinkOut::Arrangement { controller, controlled })
+                if controller.x == 0 && controlled.x == controller.width as i32
+        ));
+
+        let local = DeviceId(LOCAL_DEVICE_ID.to_string());
+        let below = ScreenLayout {
+            screens: vec![
+                Placement {
+                    device_id: DeviceId("d2".to_string()),
+                    x: 0,
+                    y: 1080,
+                    width: 1000,
+                    height: 800,
+                },
+                Placement {
+                    device_id: local,
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+            ],
+        };
+        service.set_screen_layout(below).await.expect("valid");
+        let sent = std::iter::from_fn(|| link.inbox.try_recv().ok()).last();
+        assert!(matches!(
+            sent,
+            Some(LinkOut::Arrangement { controller, controlled })
+                if controller.y == 0 && controlled.y == 1080 && controlled.x == 0
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_controlled_device_shows_the_controllers_arrangement_until_the_link_ends() {
+        let service = seeded().await;
+        service.set_role(Role::Controlled).await.unwrap();
+        let _link = connect_peer(&service, "d2", Role::Controller).await;
+        let rect = |x, y, width, height| ScreenRect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let controller = DeviceId("d2".to_string());
+
+        service.controller_arrangement_changed(
+            &controller,
+            rect(0, 0, 1000, 800),
+            rect(0, 800, 1920, 1080),
+        );
+        let layout = service.watch_screen_layout().borrow().clone();
+        let me = layout
+            .placement(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .unwrap();
+        let them = layout.placement(&controller).unwrap();
+        assert_eq!((me.x, me.y, them.x, them.y), (0, 800, 0, 0));
+
+        // An overlapping report is ignored; the last good one stays.
+        service.controller_arrangement_changed(
+            &controller,
+            rect(0, 0, 1000, 800),
+            rect(10, 10, 1920, 1080),
+        );
+        assert_eq!(*service.watch_screen_layout().borrow(), layout);
+
+        service.link_down(&controller, None).await;
+        assert!(service
+            .watch_screen_layout()
+            .borrow()
+            .placement(&controller)
+            .is_none());
     }
 
     #[tokio::test]
