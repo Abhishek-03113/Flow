@@ -6,6 +6,10 @@ use std::time::Instant;
 use serde::Serialize;
 use tokio::sync::Semaphore;
 
+/// Worlds running at once across the whole process (every test in a
+/// `cargo test` run shares it), so a loaded machine is not swamped.
+static WORLDS: Semaphore = Semaphore::const_new(12);
+
 use crate::runner::{run_case, CaseResult};
 use crate::scenario::Scenario;
 
@@ -65,6 +69,7 @@ pub async fn run_matrix(
             count += 1;
             tokio::spawn(async move {
                 let _permit = limit.acquire_owned().await;
+                let _world = WORLDS.acquire().await;
                 let case = run_case(&scenario, &combo).await;
                 let _ = tx.send((si, slot, case));
             });

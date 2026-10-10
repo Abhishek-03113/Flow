@@ -71,6 +71,8 @@ pub struct WorldOptions {
     pub setup_timeout: Duration,
     pub ipc: IpcMode,
     pub test_hooks: bool,
+    /// Attach a pretend UI that accepts every incoming pairing request.
+    pub auto_consent: bool,
 }
 
 impl Default for WorldOptions {
@@ -83,6 +85,7 @@ impl Default for WorldOptions {
             setup_timeout: Duration::from_secs(40),
             ipc: IpcMode::Off,
             test_hooks: false,
+            auto_consent: true,
         }
     }
 }
@@ -276,8 +279,11 @@ impl World {
             .map_err(|e| format!("{}: engine start: {e}", device.spec.name))?;
         let service = Arc::clone(engine.service());
         service.router().set_debounce_window(self.opts.debounce);
-        device.ui_guard = Some(service.register_ipc_client());
-        device.consent = Some(tokio::spawn(accept_every_pairing_request(service)));
+        service.attach_virtual_backend(Arc::clone(&device.backend));
+        if self.opts.auto_consent {
+            device.ui_guard = Some(service.register_ipc_client());
+            device.consent = Some(tokio::spawn(accept_every_pairing_request(service)));
+        }
         device.engine = Some(engine);
         Ok(())
     }
@@ -335,6 +341,27 @@ impl World {
             }
         }
         Ok(())
+    }
+
+    /// Makes every pair of devices announce to each other, so each shows up
+    /// as a pairing candidate on the others.
+    pub fn connect_all_discovery(&self) -> Result<(), String> {
+        for a in 0..self.devices.len() {
+            for b in a + 1..self.devices.len() {
+                self.connect_discovery(a, b)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Detaches the pretend UI: pairing requests now wait for a real one.
+    pub fn release_consent(&mut self) {
+        for device in &mut self.devices {
+            if let Some(task) = device.consent.take() {
+                task.abort();
+            }
+            device.ui_guard = None;
+        }
     }
 
     /// Stops every engine (also what dropping the world does).
