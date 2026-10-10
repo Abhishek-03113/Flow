@@ -52,7 +52,7 @@ test('6. two controllers: both rows explain the conflict, nothing is forwarded, 
   ]);
 
   // No forwarding: Home offers no switch, the hotkey and switch_to go nowhere, keys stay local.
-  await macPage.getByRole('button', { name: 'Home' }).click();
+  await macPage.getByRole('button', { name: 'Home', exact: true }).click();
   await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
   await expect(macPage.getByRole('button', { name: 'Switch to PC' })).toHaveCount(0);
   await mac.clearIo();
