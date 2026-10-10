@@ -64,7 +64,9 @@ mod tests {
 
     async fn an_identity() -> DeviceIdentity {
         let storage = Storage::open_in_memory().await.expect("open db");
-        DeviceIdentity::load_or_generate(storage).await
+        DeviceIdentity::load_or_generate(storage)
+            .await
+            .expect("identity")
     }
 
     #[tokio::test]
@@ -89,7 +91,8 @@ mod tests {
                 public_key: Some(identity_a.public_key_bytes().to_vec()),
                 removable: true,
             })
-            .await;
+            .await
+            .expect("repo");
         let trust = TrustGate::new(trust_storage);
 
         tokio::spawn(async move {
