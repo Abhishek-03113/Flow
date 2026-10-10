@@ -8,16 +8,27 @@ import type { usePairingFlow } from './usePairingFlow';
 type Flow = ReturnType<typeof usePairingFlow>;
 
 /** The pairing stages as one reusable body (sheet in Devices, page in onboarding). */
-export function PairingPanel({ flow, myRole }: { flow: Flow; myRole: Role }) {
+export function PairingPanel({
+  flow,
+  myRole,
+  connectedTo,
+}: {
+  flow: Flow;
+  myRole: Role;
+  /** Set when this computer got paired the other way round (it accepted a request). */
+  connectedTo?: string;
+}) {
   const { display } = flow;
 
-  if (display?.stage === 'paired') {
+  if (display?.stage === 'paired' || (connectedTo && display?.stage !== 'requesting')) {
     return (
       <div className="fl-center" data-testid="pairing-paired">
         <div className="fl-glyph-circle fl-glyph-circle--green">
           <Check size={28} strokeWidth={1.8} aria-hidden />
         </div>
-        <h3 className="t-title3">Connected to {display.targetName}</h3>
+        <h3 className="t-title3">
+          Connected to {display?.stage === 'paired' ? display.targetName : connectedTo}
+        </h3>
         <p className="t-callout t-secondary">You can now switch between your computers.</p>
       </div>
     );
