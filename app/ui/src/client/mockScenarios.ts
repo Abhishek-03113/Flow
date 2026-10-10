@@ -60,7 +60,7 @@ export const defaultSettings = (): FlowSettings => ({
   returnHomeKey: null,
   edgeSwitching: true,
   edgeSwitchDelayMs: 0,
-  keymapOverridesPath: '~/.flow/keymaps',
+  keymapOverridesPath: '~/.config/flow-daemon/keymaps',
 });
 
 const NOW = Date.now();

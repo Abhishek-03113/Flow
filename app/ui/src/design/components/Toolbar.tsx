@@ -13,7 +13,7 @@ export function Toolbar({
   return (
     <header className="fl-toolbar" data-tauri-drag-region>
       <div className="fl-toolbar__title" data-tauri-drag-region>
-        <h1>{title}</h1>
+        <h1 id="page-title">{title}</h1>
         {subtitle && <p className="t-callout t-secondary">{subtitle}</p>}
       </div>
       {trailing}
