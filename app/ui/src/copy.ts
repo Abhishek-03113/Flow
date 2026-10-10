@@ -2,7 +2,7 @@ import { isFlowCommandError } from './client/errors';
 import type { Device, HostOs, LinkErrorCode, Role } from './client/types';
 
 /** Friendly copy for stable engine error codes. Raw `message` strings never reach the user. */
-const ERRORS: Record<string, string> = {
+export const ERRORS: Record<string, string> = {
   device_not_found: "That computer isn't available any more.",
   device_not_switchable: "Flow can't reach that computer right now.",
   device_not_removable: "This computer can't be removed.",
@@ -15,6 +15,9 @@ const ERRORS: Record<string, string> = {
   link_not_recoverable: 'Flow is already connected.',
   pairing_request_not_found: 'That request has expired.',
   not_controller: 'Only the computer that shares its keyboard and mouse can switch screens.',
+  no_controller: 'No computer is sharing its keyboard and mouse yet.',
+  permission_not_found: "Flow doesn't need that permission.",
+  not_reconnecting: 'That computer is not trying to reconnect.',
   not_controlled: 'Nothing is controlling this computer right now.',
   invalid_layout: "Screens can't overlap. Try placing it next to another screen.",
   invalid_remap_rule: 'A key can only become another key, and a modifier another modifier.',
