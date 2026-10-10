@@ -124,3 +124,40 @@ pub fn publish(manifest: &[ManifestEntry], file: Option<&PathBuf>) -> Result<(),
     }
     Ok(())
 }
+
+/// Lines read from stdin on a plain thread (stdin is blocking); the channel
+/// closes at end of input, which leaves the devices running.
+pub fn stdin_commands() -> tokio::sync::mpsc::UnboundedReceiver<String> {
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    rx
+}
+
+/// Runs one stdin control line and answers with a JSON line on stdout:
+/// `disconnect NAME` kills that engine abruptly (its peers see the link
+/// drop), `reconnect NAME` restarts it on the same data and control port.
+pub async fn control(world: &mut World, line: &str) {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let result = match words[..] {
+        [] => return,
+        ["disconnect", name] => world.disconnect(name).await,
+        ["reconnect", name] => world.restart(name).await,
+        _ => Err(format!(
+            "unknown control line {line:?}: use `disconnect NAME` or `reconnect NAME`"
+        )),
+    };
+    let reply = match result {
+        Ok(()) => serde_json::json!({ "ok": true, "control": line.trim() }),
+        Err(error) => serde_json::json!({ "ok": false, "control": line.trim(), "error": error }),
+    };
+    let mut stdout = std::io::stdout().lock();
+    let _ = writeln!(stdout, "{reply}");
+    let _ = stdout.flush();
+}

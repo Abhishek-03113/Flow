@@ -1,5 +1,7 @@
 //! `flow-harness run [--scenario GLOB] [--pairs all|win-mac,...] [--report-dir DIR]`
 //! `flow-harness up --devices "Mac:macos:controller,PC:windows:controlled" [--paired] ...`
+//! In `up` mode, stdin takes `disconnect NAME` / `reconnect NAME` lines;
+//! `--stop-on-eof` also stops when stdin closes (its parent died).
 //! Bare flags run the matrix (CI calls `flow-harness --report-dir DIR`).
 
 use std::path::PathBuf;
@@ -13,7 +15,7 @@ use flow_harness::up::{self, UpOptions};
 
 const USAGE: &str = "usage:
   flow-harness [run] [--scenario GLOB] [--pairs all|win-mac,...] [--report-dir DIR] [--jobs N] [--scenarios-dir DIR]
-  flow-harness up --devices Name:os:role,... [--paired] [--base-port N] [--manifest FILE] [--security secure|insecure]";
+  flow-harness up --devices Name:os:role,... [--paired] [--base-port N] [--manifest FILE] [--security secure|insecure] [--stop-on-eof]";
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
@@ -127,6 +129,7 @@ async fn run_up(args: Vec<String>) -> Result<ExitCode, String> {
     let mut flags = Flags(args);
     let devices = flags.value("--devices")?.ok_or("--devices is required")?;
     let paired = flags.switch("--paired");
+    let stop_on_eof = flags.switch("--stop-on-eof");
     let base_port = flags
         .value("--base-port")?
         .map(|p| {
@@ -149,10 +152,22 @@ async fn run_up(args: Vec<String>) -> Result<ExitCode, String> {
         manifest: manifest.clone(),
         security,
     };
-    let (world, entries) = up::start(&options).await?;
+    let (mut world, entries) = up::start(&options).await?;
     up::publish(&entries, manifest.as_ref())?;
     eprintln!("devices are up; Ctrl-C to stop");
-    let _ = tokio::signal::ctrl_c().await;
+    let mut commands = up::stdin_commands();
+    let mut stdin_open = true;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => break,
+            line = commands.recv(), if stdin_open => match line {
+                Some(line) => up::control(&mut world, &line).await,
+                // The parent (a test runner) went away: do not outlive it.
+                None if stop_on_eof => break,
+                None => stdin_open = false,
+            },
+        }
+    }
     world.shutdown();
     std::process::exit(0);
 }

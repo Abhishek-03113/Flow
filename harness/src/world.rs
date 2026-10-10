@@ -109,6 +109,9 @@ pub struct VirtualDevice {
     /// Where its pointer starts (the screen centre).
     pointer: (i32, i32),
     fed: Vec<Fed>,
+    /// The control port it got first; a restarted engine serves on it again,
+    /// so connected clients (the UI) find it where it was.
+    ipc_port: Option<u16>,
 }
 
 impl VirtualDevice {
@@ -194,6 +197,7 @@ impl World {
                     held_modifiers: BTreeSet::new(),
                     pointer: centre,
                     fed: Vec::new(),
+                    ipc_port: None,
                     spec,
                 })
             })
@@ -261,6 +265,7 @@ impl World {
             IpcMode::Base(base) => Some(base + i as u16),
         };
         let device = &mut self.devices[i];
+        let ipc = device.ipc_port.or(ipc);
         let mut config = EngineConfig::new(device.dir.path().join("data"), device.backend.clone());
         config.device_name = Some(device.spec.name.clone());
         config.security = self.opts.security;
@@ -284,6 +289,7 @@ impl World {
             device.ui_guard = Some(service.register_ipc_client());
             device.consent = Some(tokio::spawn(accept_every_pairing_request(service)));
         }
+        device.ipc_port = engine.ipc_addr().map(|addr| addr.port());
         device.engine = Some(engine);
         Ok(())
     }
@@ -343,6 +349,32 @@ impl World {
         Ok(())
     }
 
+    /// Restarts a disconnected device on its old data and control port and
+    /// lets it rediscover every online device; links to paired computers
+    /// come back on their own (`up` mode, where pairing is the UI's business).
+    pub async fn restart(&mut self, name: &str) -> Result<(), String> {
+        let i = self.index(name)?;
+        if self.devices[i].engine.is_some() {
+            return Err(format!("{name} is still online"));
+        }
+        // The old control socket may take a moment to be released.
+        let deadline = tokio::time::Instant::now() + self.opts.setup_timeout;
+        loop {
+            match self.start_engine(i).await {
+                Ok(()) => break,
+                Err(e) if tokio::time::Instant::now() >= deadline => return Err(e),
+                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+            }
+        }
+        self.await_capture(i).await?;
+        for other in 0..self.devices.len() {
+            if other != i && self.devices[other].engine.is_some() {
+                self.connect_discovery(i, other)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Makes every pair of devices announce to each other, so each shows up
     /// as a pairing candidate on the others.
     pub fn connect_all_discovery(&self) -> Result<(), String> {
@@ -356,6 +388,7 @@ impl World {
 
     /// Detaches the pretend UI: pairing requests now wait for a real one.
     pub fn release_consent(&mut self) {
+        self.opts.auto_consent = false;
         for device in &mut self.devices {
             if let Some(task) = device.consent.take() {
                 task.abort();
