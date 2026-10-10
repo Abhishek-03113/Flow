@@ -150,3 +150,13 @@ pub fn all() -> Vec<String> {
     names.extend((1..=20).map(function_key));
     names
 }
+
+/// Whether `name` is part of the shared vocabulary ([`all`]). Keymap files
+/// are validated against this so a typo can't silently drop a key.
+pub fn is_known(name: &str) -> bool {
+    static KNOWN: std::sync::OnceLock<std::collections::HashSet<String>> =
+        std::sync::OnceLock::new();
+    KNOWN
+        .get_or_init(|| all().into_iter().collect())
+        .contains(name)
+}

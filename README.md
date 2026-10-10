@@ -69,6 +69,9 @@ core/       flow-core — protocol, device, pairing, transport, state, and
 daemon/     flow-daemon — the daemon binary; wires core + platform together
 platform/   flow-platform — per-OS input adapters (macos/, windows/, linux/),
             each implementing the traits from core
+config/     keymaps/ — default per-OS key tables and remap rules (TOML, embedded
+            at build time; users override without rebuilding, see
+            config/keymaps/README.md)
 flutter/    Flutter control-plane app (devices, onboarding, settings, tray,
             services); see flutter/README.md
 ```
