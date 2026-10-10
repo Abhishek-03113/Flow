@@ -1,7 +1,7 @@
 //! End-to-end driver for two locally-running `flow-daemon` instances
 //! (`docs/testing/ui-test-branch-plan.md`). Connects to both over their
-//! local IPC WebSocket, pairs A↔B, switches the active device, injects a
-//! hardcoded key sequence and mouse path each direction via the
+//! local IPC WebSocket, makes B controlled, pairs A↔B, switches A to B and
+//! injects a hardcoded key sequence and mouse path via the
 //! `debug_inject_input` test hook, exercises a graceful control switch,
 //! and prints a PASS/FAIL matrix.
 //!
@@ -81,8 +81,12 @@ async fn run() -> Res<Vec<(String, bool, String)>> {
 
     let mut matrix: Vec<(String, bool, String)> = Vec::new();
 
+    // A shares its keyboard and mouse; B is driven by it.
+    b.command("set_role", json!({ "role": "controlled" }))
+        .await?;
+
     // ── 1. Pair A → B ────────────────────────────────────────────────
-    println!("\n[1] pairing A ↔ B");
+    println!("\n[1] pairing A ↔ B (A controller, B controlled)");
     a.command("start_pairing", Value::Null).await?;
     a.wait_until(
         "B appears as a candidate on A",
@@ -160,11 +164,6 @@ async fn run() -> Res<Vec<(String, bool, String)>> {
         ok,
         format!("B injections unchanged at {before}"),
     ));
-
-    // ── 4. Control B → A ─────────────────────────────────────────────
-    println!("\n[4] control B → A  (make A active on B, inject on B)");
-    let (ok, detail) = drive_direction(&b, &a_id, a_log.as_deref(), "B→A").await?;
-    matrix.push(("keys+mouse B→A".into(), ok, detail));
 
     Ok(matrix)
 }

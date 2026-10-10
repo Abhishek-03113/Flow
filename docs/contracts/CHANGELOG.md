@@ -1,5 +1,19 @@
 # Contract Changelog
 
+## 0.2.0 — controller/controlled model (breaking for switching, additive elsewhere)
+
+Implements [ADR 0001](../adr/0001-controller-controlled-input-model.md). The symmetric "ownership baton" is gone; control has a static **role** per device and the active screen lives only on the controller.
+
+- **Settings**: `role` (`controller` | `controlled`, default `controller`), `return_home_key` (`SwitchKeyBinding | null`; a patch sets it, an explicit `null` clears it), `edge_switching` (default `true`), `edge_switch_delay_ms` (default `0`), `keymap_overrides_path` (read-only, set by the engine, never patched or persisted). `share_keyboard`, `share_mouse` and `pointer_sensitivity` (low 0.6 / normal 1.0 / high 1.6) are now honoured by the router.
+- **`Device`** gains `role`, `screen {width,height}` (both `null` until the peer said hello), `link_error` (e.g. `role_conflict`, `protocol_mismatch`) and `last_seen_ms` (epoch ms, derived from `last_seen`, which stays). Exactly the active screen's device is `active`; a peer with a live link is `inactive`, one without `disconnected`, one whose link was refused `error`.
+- **New types**: `ControlState {role, active_screen: "local" | DeviceId, controller_device_id, entered}` (`entered` is true on a controlled device while the controller drives it), `ScreenLayout {screens: [{device_id, x, y, width, height}]}` (this computer is `d1`), `Diagnostics {switch_latency_ms_p50, switch_latency_ms_p95, events_forwarded, events_dropped, uptime_s}`, `RemapRule {from, to, when_target_os}`.
+- **New commands**: `switch_to {target: "local" | DeviceId}` (controller; `switch_active_device` stays as an alias and treats `d1` as `local`), `release_control` (controlled), `set_role {role}`, `set_screen_layout {layout}` (controller), `set_remap_rules {rules}`, `get_keymap {os}`. `get_keymap` is the first command with an answer: its response is `{ "id", "ok": true, "result": <keymap file> }` (`IpcResponse::Data`).
+- **New events**, sent on connect after the original six: `control_state_changed`, `remap_rules_changed`, `screen_layout_changed`, `diagnostics_changed` (then every ~2s).
+- **New error codes**: `not_controller`, `not_controlled`, `no_controller`, `invalid_remap_rule`, `invalid_layout`, `internal_error`.
+- **Changed**: `switch_to` / `switch_active_device` no longer wait 400ms and require a *live link* to the target (`device_not_switchable` otherwise), not merely an `inactive`/`connected` state.
+- **Daemon-to-daemon protocol** (not part of this contract, listed for reference) is now `PROTOCOL_VERSION = 2`; v1 peers are refused.
+- Not done: `reveal_config_dir` and `export_diagnostics` from the plan are not implemented by the engine.
+
 ## 0.1.3 — incoming pairing prompt (non-breaking)
 
 Adds a sixth `watch*` stream, `watchIncomingPairingRequest()` (event

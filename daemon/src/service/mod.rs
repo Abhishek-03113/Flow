@@ -693,7 +693,8 @@ impl DaemonService {
         let started = self.started;
         let tx = self.diagnostics_tx.clone();
         tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(2));
+            let period = Duration::from_secs(2);
+            let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
             loop {
                 tick.tick().await;
                 let Some(router) = router.upgrade() else {
