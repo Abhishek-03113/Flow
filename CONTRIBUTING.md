@@ -79,6 +79,9 @@ Use `!` or a `BREAKING CHANGE:` footer for incompatible protocol or settings cha
 - [ ] No new `unwrap()`/`dbg!`/`todo!` in non-test code
 - [ ] Conventional commit titles; PR is focused on one concern
 
+New crates must add `[lints]\nworkspace = true` to their `Cargo.toml` to inherit the shared lint policy
+(`[workspace.lints]` in the root `Cargo.toml`).
+
 ## Testing
 
 - **Unit/integration:** `cargo test --workspace`; UI unit tests with `npm test` in `app/ui` (Vitest).
