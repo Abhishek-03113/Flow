@@ -56,8 +56,7 @@ cmd_lint() {
   cargo fmt --all --check
   step "cargo clippy -D warnings"
   cargo clippy --workspace --all-targets -- -D warnings
-  step "ui: lint"; ui_run lint
-  step "ui: format:check"; ui_run format:check
+  step "ui: lint (eslint + prettier --check)"; ui_run lint
   step "ui: typecheck"; ui_run typecheck
 }
 
@@ -81,12 +80,13 @@ cmd_harness() {
 
 cmd_dev() {
   has_tauri || { echo "app/src-tauri not present yet" >&2; exit 1; }
-  (cd "$UI_DIR" && npx tauri dev "$@")
+  # The Tauri CLI must run from app/ (it looks for src-tauri below the cwd).
+  (cd app && npm --prefix ui exec -- tauri dev "$@")
 }
 
 cmd_build() {
   has_tauri || { echo "app/src-tauri not present yet" >&2; exit 1; }
-  (cd "$UI_DIR" && npx tauri build "$@")
+  (cd app && npm --prefix ui exec -- tauri build "$@")
 }
 
 cmd_daemon() { cargo run -p flow-daemon --bin flow-daemon -- "$@"; }
