@@ -39,7 +39,7 @@ type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 const TOKEN_HEADER: &str = "sec-websocket-protocol";
 
 /// Handles one client connection end to end: an authenticated WebSocket
-/// handshake, the six initial state-push events, then forwarding
+/// handshake, the initial state-push events, then forwarding
 /// further watch-channel updates as events while dispatching incoming
 /// commands — until the client disconnects. Never panics on a client
 /// error; a bad frame or a dropped socket just ends this task, leaving
@@ -119,6 +119,10 @@ pub async fn handle_connection(
     let mut settings_rx = service.watch_settings();
     let mut permission_rx = service.watch_permission();
     let mut incoming_request_rx = service.watch_incoming_request();
+    let mut control_state_rx = service.watch_control_state();
+    let mut remap_rules_rx = service.watch_remap_rules();
+    let mut layout_rx = service.watch_screen_layout();
+    let mut diagnostics_rx = service.watch_diagnostics();
 
     // "Connecting to the channel and subscribing IS the initial fetch"
     // (daemon-ipc.md) — one Event per watch* stream's current value,
@@ -174,8 +178,75 @@ pub async fn handle_connection(
         return;
     }
 
+    let control_state = control_state_rx.borrow_and_update().clone();
+    if send_event(&mut sink, "control_state_changed", &control_state)
+        .await
+        .is_err()
+    {
+        return;
+    }
+    let remap_rules = remap_rules_rx.borrow_and_update().clone();
+    if send_event(&mut sink, "remap_rules_changed", &remap_rules)
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let layout = layout_rx.borrow_and_update().clone();
+    if send_event(&mut sink, "screen_layout_changed", &layout)
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    diagnostics_rx.borrow_and_update();
+    if send_event(&mut sink, "diagnostics_changed", &service.diagnostics())
+        .await
+        .is_err()
+    {
+        return;
+    }
+
     loop {
         tokio::select! {
+            changed = diagnostics_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let value = diagnostics_rx.borrow_and_update().clone();
+                if send_event(&mut sink, "diagnostics_changed", &value).await.is_err() {
+                    break;
+                }
+            }
+            changed = layout_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let value = layout_rx.borrow_and_update().clone();
+                if send_event(&mut sink, "screen_layout_changed", &value).await.is_err() {
+                    break;
+                }
+            }
+            changed = control_state_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let value = control_state_rx.borrow_and_update().clone();
+                if send_event(&mut sink, "control_state_changed", &value).await.is_err() {
+                    break;
+                }
+            }
+            changed = remap_rules_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let value = remap_rules_rx.borrow_and_update().clone();
+                if send_event(&mut sink, "remap_rules_changed", &value).await.is_err() {
+                    break;
+                }
+            }
             changed = devices_rx.changed() => {
                 if changed.is_err() {
                     break;
@@ -281,6 +352,7 @@ mod tests {
     async fn spawn_test_server() -> std::net::SocketAddr {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = Arc::new(DaemonService::new_seeded_for_test(storage).await);
+        std::mem::forget(service.connect_peer_for_test("d2").await);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let token: Arc<str> = Arc::from(TEST_TOKEN);
@@ -360,8 +432,8 @@ mod tests {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
 
-        // Drain the 6 initial events.
-        for _ in 0..6 {
+        // Drain the 10 initial events.
+        for _ in 0..10 {
             ws.next().await.expect("frame").expect("ok frame");
         }
 
@@ -376,7 +448,7 @@ mod tests {
 
         let mut saw_ack = false;
         let mut saw_devices_changed = false;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let msg = ws.next().await.expect("frame").expect("ok frame");
             let value: serde_json::Value =
                 serde_json::from_str(&msg.into_text().expect("text frame")).expect("valid json");
@@ -498,7 +570,7 @@ mod tests {
     async fn an_oversized_frame_ends_the_connection_instead_of_being_processed() {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
-        for _ in 0..6 {
+        for _ in 0..10 {
             ws.next().await.expect("frame").expect("initial event");
         }
 

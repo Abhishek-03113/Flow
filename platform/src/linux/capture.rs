@@ -7,14 +7,12 @@
 
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use evdev::Device;
-use flow_core::input::InputCapture;
-use flow_core::protocol::InputEvent;
+use flow_core::input::{CaptureSink, Disposition, InputCapture};
 
 use super::discovery::discover_devices;
 use super::translate::EventTranslator;
@@ -23,30 +21,25 @@ use super::translate::EventTranslator;
 /// nothing to read, before polling again.
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Captures keyboard/mouse input via evdev and forwards it as
-/// [`InputEvent`]s on the channel given at construction.
+/// Captures keyboard/mouse input via evdev and hands each translated
+/// event to the [`CaptureSink`].
 ///
-/// The `InputCapture` trait only has `start()`/`stop()` — no way to hand
-/// back captured events — so the channel is supplied up front instead of
-/// returned from `start()`.
+/// evdev delivers events to every reader at once, so a per-event decision
+/// can't hide an event that has already been read; instead the devices are
+/// grabbed exclusively (`EVIOCGRAB`) while the sink says input is hidden.
+/// The first event of a switch can therefore still reach local
+/// applications.
 pub struct LinuxInputCapture {
-    sender: Sender<InputEvent>,
+    sink: Arc<dyn CaptureSink>,
     stop_flag: Arc<AtomicBool>,
-    /// Whether the read loop should hold an exclusive `EVIOCGRAB` on
-    /// every device it reads (`InputCapture::set_suppress_local`). Read
-    /// by the loop rather than applied directly here: the `Device`
-    /// handles are owned by the read thread, so this flag is the only
-    /// way to reach them once `start()` has moved them across.
-    suppress_flag: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 
 impl LinuxInputCapture {
-    pub fn new(sender: Sender<InputEvent>) -> Self {
+    pub fn new(sink: Arc<dyn CaptureSink>) -> Self {
         Self {
-            sender,
+            sink,
             stop_flag: Arc::new(AtomicBool::new(false)),
-            suppress_flag: Arc::new(AtomicBool::new(false)),
             worker: None,
         }
     }
@@ -73,10 +66,9 @@ impl InputCapture for LinuxInputCapture {
 
         self.stop_flag.store(false, Ordering::SeqCst);
         let stop_flag = self.stop_flag.clone();
-        let suppress_flag = self.suppress_flag.clone();
-        let sender = self.sender.clone();
+        let sink = self.sink.clone();
         self.worker = Some(thread::spawn(move || {
-            run_capture_loop(devices, &stop_flag, &suppress_flag, &sender)
+            run_capture_loop(devices, &stop_flag, sink.as_ref())
         }));
         Ok(())
     }
@@ -90,70 +82,40 @@ impl InputCapture for LinuxInputCapture {
         }
         Ok(())
     }
-
-    /// Publishes the request; the read loop applies the actual
-    /// `EVIOCGRAB`/`EVIOCGRAB(0)` on its next pass (within
-    /// [`IDLE_POLL_INTERVAL`] when idle, sooner when events are
-    /// flowing). Deliberately doesn't block on that: an ioctl failing on
-    /// one device shouldn't leave the caller's switch half-applied, and
-    /// the loop already logs-and-continues per device the same way it
-    /// does for a node erroring mid-run.
-    fn set_suppress_local(&mut self, suppress: bool) -> Result<(), Self::Error> {
-        if self.worker.is_none() {
-            return Err(io::Error::new(
-                io::ErrorKind::NotConnected,
-                "input capture is not running",
-            ));
-        }
-        self.suppress_flag.store(suppress, Ordering::SeqCst);
-        Ok(())
-    }
 }
 
-fn run_capture_loop(
-    mut devices: Vec<Device>,
-    stop_flag: &AtomicBool,
-    suppress_flag: &AtomicBool,
-    sender: &Sender<InputEvent>,
-) {
+fn run_capture_loop(mut devices: Vec<Device>, stop_flag: &AtomicBool, sink: &dyn CaptureSink) {
     let mut translator = EventTranslator::new();
-    // Tracks what's actually been applied, so grab/ungrab runs only on a
-    // real transition rather than re-issuing the ioctl every pass.
+    // What is actually applied, so the ioctl runs only on a transition.
     let mut grabbed = false;
-    while !stop_flag.load(Ordering::SeqCst) {
-        let want_grabbed = suppress_flag.load(Ordering::SeqCst);
-        if want_grabbed != grabbed {
-            apply_grab(&mut devices, want_grabbed);
-            grabbed = want_grabbed;
+    let sync_grab = |devices: &mut Vec<Device>, grabbed: &mut bool| {
+        let want = sink.suppressing();
+        if want != *grabbed {
+            apply_grab(devices, want);
+            *grabbed = want;
         }
+    };
+    while !stop_flag.load(Ordering::SeqCst) {
+        sync_grab(&mut devices, &mut grabbed);
 
         let mut read_any = false;
-        let mut receiver_gone = false;
-        for device in &mut devices {
-            match device.fetch_events() {
-                Ok(events) => {
-                    for raw_event in events {
-                        read_any = true;
-                        if let Some(event) = translator.translate(raw_event) {
-                            if sender.send(event).is_err() {
-                                // Receiver dropped: nothing left to forward to.
-                                receiver_gone = true;
-                                break;
-                            }
-                        }
+        for index in 0..devices.len() {
+            let events = match devices[index].fetch_events() {
+                Ok(events) => events.collect::<Vec<_>>(),
+                Err(err) if err.kind() == io::ErrorKind::WouldBlock => continue,
+                // A node erroring (unplugged mid-run) must not stop the others.
+                Err(_) => continue,
+            };
+            for raw_event in events {
+                read_any = true;
+                if let Some(event) = translator.translate(raw_event) {
+                    // Grab as soon as the sink starts hiding input, not on
+                    // the next poll.
+                    if sink.on_event(&event) == Disposition::Swallow || grabbed {
+                        sync_grab(&mut devices, &mut grabbed);
                     }
                 }
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {}
-                // A device node erroring (e.g. unplugged mid-run) shouldn't
-                // take down capture from the others.
-                Err(_) => {}
             }
-            if receiver_gone {
-                break;
-            }
-        }
-        if receiver_gone {
-            break;
         }
         if !read_any {
             thread::sleep(IDLE_POLL_INTERVAL);

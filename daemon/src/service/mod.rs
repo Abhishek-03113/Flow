@@ -10,20 +10,24 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use chrono::{Duration as ChronoDuration, Utc};
 use flow_core::channel::{Channel, ChannelAddress, ChannelError};
-use flow_core::device::{Device, DeviceId, DeviceState, HostOs};
+use flow_core::control::layout::ScreenLayout;
+use flow_core::control::{ActiveScreen, ControlState, Diagnostics, Role};
+use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
+use flow_core::keymap::remap::RemapRule;
 use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{
     IncomingPairingRequest, PairingCandidate, PairingDecision, PairingRequest, PairingSession,
     PairingStage,
 };
 use flow_core::permission::PermissionStatus;
-use flow_core::protocol::{InputEvent, InputRole};
+use flow_core::protocol::InputEvent;
 use flow_core::settings::{FlowSettings, SettingsPatch};
 use flow_core::switch_key::SwitchKeyBinding;
 use tokio::sync::{oneshot, watch, Mutex, RwLock};
@@ -35,10 +39,11 @@ use crate::channel::noise::NoiseChannel;
 use crate::channel::{handshake, negotiate};
 use crate::discovery::DiscoveredPeer;
 use crate::identity::DeviceIdentity;
-use crate::ownership::OwnershipHandle;
 use crate::pairing_fingerprint::key_fingerprint;
+use crate::router::{InputRouter, LinkOut, PeerSlot};
 use crate::security::Security;
 use crate::storage::device_repo::{DeviceRecord, DeviceRepo};
+use crate::storage::layout_repo::LayoutRepo;
 use crate::storage::settings_repo::SettingsRepo;
 use crate::storage::Storage;
 use crate::trust::TrustGate;
@@ -65,14 +70,7 @@ pub enum ConnectionPrecedence {
     Redundant,
 }
 
-/// "This device" — the machine `flow-daemon` itself is running on. Never
-/// removable, never offered as a pairing candidate; matches
-/// `MockDaemonRepository._localDeviceId`.
-pub const LOCAL_DEVICE_ID: &str = "d1";
-
-/// Delay before a `switch_active_device` command takes effect, matching
-/// `MockDaemonRepository._switchDebounce`.
-const SWITCH_DEBOUNCE: Duration = Duration::from_millis(400);
+pub use flow_core::device::LOCAL_DEVICE_ID;
 
 /// `sharedContractConstants.mockParityTimings.pairingSearchToFoundMs`.
 const PAIRING_SEARCH_TO_FOUND: Duration = Duration::from_millis(1200);
@@ -90,6 +88,36 @@ const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
 /// enough for a slow LAN and a Noise `XX` round trip, short enough that
 /// a peer which never answers doesn't hold a caller indefinitely.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// What a service needs to know about the machine it runs on, beyond the
+/// database. Defaults describe the real host; the engine overrides them
+/// from its config (and a virtual platform pretends to be another OS).
+#[derive(Clone)]
+pub struct ServiceOptions {
+    pub security: Security,
+    /// Overrides the hostname as the local device's display name.
+    pub device_name: Option<String>,
+    pub host_os: HostOs,
+    /// The local screen, announced to peers.
+    pub screen: ScreenSize,
+    /// Where the user's keymap and remap files live; `None` = defaults only.
+    pub keymap_dir: Option<PathBuf>,
+}
+
+impl Default for ServiceOptions {
+    fn default() -> Self {
+        Self {
+            security: Security::secure(),
+            device_name: None,
+            host_os: current_host_os(),
+            screen: ScreenSize {
+                width: 1920,
+                height: 1080,
+            },
+            keymap_dir: None,
+        }
+    }
+}
 
 pub struct ServiceState {
     pub devices: HashMap<DeviceId, Device>,
@@ -135,7 +163,7 @@ impl ServiceState {
     /// `main.rs`'s `run_peer_pipeline` is the only place that later calls
     /// `DaemonService::set_link_state(Connected)`, once a real handshake
     /// actually completes.
-    pub async fn from_storage(storage: &Storage) -> Self {
+    pub async fn from_storage(storage: &Storage, options: &ServiceOptions) -> Self {
         let settings_repo = SettingsRepo::new(storage.clone());
         let device_repo = DeviceRepo::new(storage.clone());
 
@@ -143,7 +171,7 @@ impl ServiceState {
 
         let existing = device_repo.list().await;
         let mut devices: HashMap<DeviceId, Device> = if existing.is_empty() {
-            let local = real_local_device_record();
+            let local = real_local_device_record(options);
             device_repo.upsert(local.clone()).await;
             HashMap::from([(local.device.id.clone(), local.device)])
         } else {
@@ -152,6 +180,23 @@ impl ServiceState {
                 .map(|record| (record.device.id.clone(), record.device))
                 .collect()
         };
+        if let Some(local) = devices.get_mut(&DeviceId(LOCAL_DEVICE_ID.to_string())) {
+            let name = options
+                .device_name
+                .clone()
+                .unwrap_or_else(|| local.name.clone());
+            if local.os != options.host_os || local.name != name {
+                local.os = options.host_os;
+                local.name = name;
+                device_repo
+                    .upsert(DeviceRecord {
+                        device: local.clone(),
+                        public_key: None,
+                        removable: false,
+                    })
+                    .await;
+            }
+        }
         restore_local_device_active(&mut devices);
 
         Self {
@@ -159,7 +204,7 @@ impl ServiceState {
             link_state: DaemonLinkState::Disconnected,
             pairing_session: PairingSession::idle(),
             settings,
-            permission: default_permission(),
+            permission: default_permission(options.host_os),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
             incoming_request: None,
@@ -257,47 +302,6 @@ fn devices_list(state: &ServiceState) -> Vec<Device> {
     list
 }
 
-/// Resolves a device id to its display name for a product log line,
-/// falling back to the raw id when it isn't among `devices`.
-fn device_display_name(devices: &[Device], id: &str) -> String {
-    devices
-        .iter()
-        .find(|device| device.id.0 == id)
-        .map(|device| device.name.clone())
-        .unwrap_or_else(|| id.to_string())
-}
-
-/// The device a local hotkey trigger should switch to: the first
-/// `Inactive`/`Connected` device in id order starting just after the
-/// currently active one, wrapping around — `None` if nothing else is
-/// switchable. `Disconnected` devices are skipped, matching
-/// `switch_active_device`'s own eligibility rule.
-fn next_switchable_device(state: &ServiceState) -> Option<DeviceId> {
-    let mut ids: Vec<&DeviceId> = state.devices.keys().collect();
-    ids.sort_by(|a, b| a.0.cmp(&b.0));
-
-    let is_switchable = |id: &DeviceId| {
-        matches!(
-            state.devices[id].state,
-            DeviceState::Inactive | DeviceState::Connected
-        )
-    };
-
-    let active_index = state
-        .devices
-        .values()
-        .find(|device| device.state == DeviceState::Active)
-        .and_then(|active| ids.iter().position(|id| **id == active.id));
-    let start = active_index.map_or(0, |index| index + 1);
-
-    ids.iter()
-        .cycle()
-        .skip(start)
-        .take(ids.len())
-        .find(|id| is_switchable(id))
-        .map(|id| (*id).clone())
-}
-
 /// Wraps [`ServiceState`] in a `tokio::sync::watch` channel per slice.
 /// `watch::Sender`/`Receiver` natively replay the latest value to a newly
 /// subscribing receiver, which is exactly the "connecting... is the
@@ -337,31 +341,37 @@ pub struct DaemonService {
     /// `None` when nothing is pending) to subscribed UIs.
     incoming_request_tx: watch::Sender<Option<IncomingPairingRequest>>,
     /// `FLOW_TEST_HOOKS` — enables the `debug_inject_input` IPC command.
-    /// `false` in production; nothing reads [`Self::debug_inject_tx`]
-    /// unless this is set.
     test_hooks: bool,
-    /// Fan-out of synthetic `InputEvent`s pushed by the
-    /// `debug_inject_input` IPC command (test hooks only). Every live
-    /// peer pipeline subscribes and merges these into its own capture
-    /// stream, so a driver-injected event travels the exact same
-    /// gate → sequence → channel → peer → inject path as a real keypress.
-    debug_inject_tx: tokio::sync::broadcast::Sender<InputEvent>,
-    /// How many peer input-streaming pipelines are currently running.
-    /// While this is non-zero a pipeline owns switch-key authority (its
-    /// own capture stream still sees the switch key even while local
-    /// suppression withholds it from the OS), so the standalone
-    /// `hotkey::runner` stands down to avoid a double switch. Maintained
-    /// through [`Self::enter_peer_pipeline`]'s RAII guard.
-    active_peer_pipelines: Arc<AtomicUsize>,
-    /// This daemon's own input-ownership role + ownership generation
-    /// counter (`daemon::ownership::OwnershipHandle`) — the single
-    /// source of truth [`Self::is_local_primary`] and friends read, and
-    /// what `pipeline::run_paired_connection` and
-    /// `hotkey::runner::spawn_pipeline_switch_filter` both share (not
-    /// copy) via [`Self::ownership_handle`]. Independent of `devices`:
-    /// see the module doc on `daemon::ownership` for why the `Active`
-    /// flag alone can't stand in for this.
-    ownership: OwnershipHandle,
+    /// The controller's single capture sink and screen state machine.
+    router: Arc<InputRouter>,
+    control_tx: watch::Sender<ControlState>,
+    remap_rules_tx: watch::Sender<Vec<RemapRule>>,
+    layout_tx: watch::Sender<ScreenLayout>,
+    diagnostics_tx: watch::Sender<Diagnostics>,
+    started: std::time::Instant,
+    /// Input dropped on the controlled side (outside `Enter`..`Leave`,
+    /// replays), added to the router's own count.
+    dropped_remote: Arc<AtomicU64>,
+    /// Live peer links, keyed by the peer's proven identity.
+    links: Arc<std::sync::Mutex<HashMap<DeviceId, LinkEntry>>>,
+    local_screen: ScreenSize,
+    /// Where user keymap/remap files live, if anywhere.
+    keymap_dir: Option<PathBuf>,
+}
+
+/// What this daemon knows about one live link.
+struct LinkEntry {
+    outbox: tokio::sync::mpsc::UnboundedSender<LinkOut>,
+    /// Set once the peer's `Hello` was accepted.
+    peer_role: Option<Role>,
+}
+
+/// What a peer announced in its `Hello`.
+#[derive(Debug, Clone)]
+pub struct PeerInfo {
+    pub role: Role,
+    pub os: HostOs,
+    pub screen: ScreenSize,
 }
 
 impl DaemonService {
@@ -369,16 +379,26 @@ impl DaemonService {
     /// device/settings state via [`ServiceState::from_storage`]; no
     /// seeded mock data.
     pub async fn new(storage: Storage) -> Self {
-        let state = ServiceState::from_storage(&storage).await;
-        Self::from_state(storage, state, Security::secure()).await
+        Self::new_with_options(storage, ServiceOptions::default()).await
     }
 
-    /// Production entry point with an explicit security profile —
-    /// `main.rs`'s constructor when `FLOW_SECURITY` selected the insecure
-    /// dev profile. Identical to [`Self::new`] otherwise.
+    /// Production entry point with an explicit security profile — the
+    /// insecure dev profile, selected by `FLOW_SECURITY`.
     pub async fn new_with_security(storage: Storage, security: Security) -> Self {
-        let state = ServiceState::from_storage(&storage).await;
-        Self::from_state(storage, state, security).await
+        Self::new_with_options(
+            storage,
+            ServiceOptions {
+                security,
+                ..ServiceOptions::default()
+            },
+        )
+        .await
+    }
+
+    /// The engine's constructor: real state, host described by `options`.
+    pub async fn new_with_options(storage: Storage, options: ServiceOptions) -> Self {
+        let state = ServiceState::from_storage(&storage, &options).await;
+        Self::from_state(storage, state, options).await
     }
 
     /// Test-only entry point — the mock-parity fixture every daemon test
@@ -389,13 +409,35 @@ impl DaemonService {
     #[doc(hidden)]
     pub async fn new_seeded_for_test(storage: Storage) -> Self {
         let state = ServiceState::seeded_for_test(&storage).await;
-        Self::from_state(storage, state, Security::secure()).await
+        Self::from_state(storage, state, ServiceOptions::default()).await
     }
 
     /// Shared tail of the constructors above: wraps an already-loaded
     /// [`ServiceState`] in its watch channels.
-    async fn from_state(storage: Storage, state: ServiceState, security: Security) -> Self {
+    async fn from_state(
+        storage: Storage,
+        mut state: ServiceState,
+        options: ServiceOptions,
+    ) -> Self {
         let identity = DeviceIdentity::load_or_generate(storage.clone()).await;
+        state.settings.keymap_overrides_path = options
+            .keymap_dir
+            .as_ref()
+            .map(|dir| dir.display().to_string())
+            .unwrap_or_default();
+
+        let remap_rules =
+            flow_platform::keymap::load(options.host_os, options.keymap_dir.as_deref()).remap_rules;
+        let router = Arc::new(InputRouter::new(&state.settings, remap_rules.clone()));
+        let (remap_rules_tx, _) = watch::channel(remap_rules);
+        let layout = match LayoutRepo::new(storage.clone()).load().await {
+            Some(layout) if layout.validate().is_ok() => layout,
+            _ => ScreenLayout::local_only(options.screen),
+        };
+        router.set_local_screen(options.screen);
+        router.set_layout(layout.clone());
+        let (layout_tx, _) = watch::channel(layout);
+        let (diagnostics_tx, _) = watch::channel(Diagnostics::from_samples(vec![], 0, 0, 0));
 
         let (devices_tx, _) = watch::channel(devices_list(&state));
         let (link_state_tx, _) = watch::channel(state.link_state);
@@ -403,16 +445,13 @@ impl DaemonService {
         let (settings_tx, _) = watch::channel(state.settings.clone());
         let (permission_tx, _) = watch::channel(state.permission.clone());
         let (incoming_request_tx, _) = watch::channel(None);
-        // 256 is comfortably above any burst a driver script sends (a
-        // key sequence + a mouse path); a slow pipeline that lags is
-        // told via `RecvError::Lagged` and just skips ahead.
-        let (debug_inject_tx, _) = tokio::sync::broadcast::channel(256);
+        let (control_tx, _) = watch::channel(ControlState::idle(state.settings.role));
 
-        Self {
+        let service = Self {
             state: Arc::new(RwLock::new(state)),
             storage,
             identity,
-            security,
+            security: options.security,
             devices_tx,
             link_state_tx,
             pairing_session_tx,
@@ -422,64 +461,24 @@ impl DaemonService {
             connected_clients: Arc::new(AtomicUsize::new(0)),
             incoming_request_tx,
             test_hooks: false,
-            debug_inject_tx,
-            active_peer_pipelines: Arc::new(AtomicUsize::new(0)),
-            ownership: OwnershipHandle::new(),
-        }
-    }
-
-    /// Marks a peer input-streaming pipeline as running for as long as
-    /// the returned guard is held. While at least one is alive,
-    /// [`Self::peer_pipeline_active`] reports `true` and the standalone
-    /// `hotkey::runner` yields switch-key authority to the pipeline (see
-    /// `active_peer_pipelines`). Dropping the guard — on any exit path,
-    /// including a panic — decrements the count.
-    pub fn enter_peer_pipeline(&self) -> PeerPipelineGuard {
-        self.active_peer_pipelines.fetch_add(1, Ordering::SeqCst);
-        PeerPipelineGuard {
-            counter: Arc::clone(&self.active_peer_pipelines),
-        }
-    }
-
-    /// Whether any peer input-streaming pipeline is currently running.
-    pub fn peer_pipeline_active(&self) -> bool {
-        self.active_peer_pipelines.load(Ordering::SeqCst) > 0
-    }
-
-    /// A clone of this daemon's [`OwnershipHandle`] — shares the same
-    /// underlying role + generation atomics, not a snapshot. `main.rs`
-    /// hands this to `pipeline::run_paired_connection`;
-    /// `hotkey::runner::spawn_pipeline_switch_filter` reads it (via
-    /// [`Self::is_local_primary`]) to gate Scroll Lock ("Complete Flow
-    /// V1" task §6: only the current Primary may initiate a switch).
-    pub fn ownership_handle(&self) -> OwnershipHandle {
-        self.ownership.clone()
-    }
-
-    /// This daemon's own role in the paired session right now. See the
-    /// `daemon::ownership` module doc for why this is tracked
-    /// explicitly rather than derived from `devices`.
-    pub fn local_role(&self) -> InputRole {
-        self.ownership.role()
-    }
-
-    pub fn is_local_primary(&self) -> bool {
-        self.ownership.is_primary()
-    }
-
-    pub fn is_local_secondary(&self) -> bool {
-        self.ownership.is_secondary()
-    }
-
-    /// In the V1 exactly-two-device model, the peer's role is always
-    /// this side's opposite.
-    pub fn peer_is_primary(&self) -> bool {
-        self.ownership.peer_is_primary()
+            router,
+            control_tx,
+            remap_rules_tx,
+            layout_tx,
+            diagnostics_tx,
+            started: std::time::Instant::now(),
+            dropped_remote: Arc::new(AtomicU64::new(0)),
+            links: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            local_screen: options.screen,
+            keymap_dir: options.keymap_dir,
+        };
+        service.spawn_active_screen_follower();
+        service.spawn_diagnostics_ticker();
+        service
     }
 
     /// Enables the `debug_inject_input` IPC command on this service.
-    /// Consuming builder used by `main.rs` when `FLOW_TEST_HOOKS` is set;
-    /// off for every other construction path.
+    /// Consuming builder used when test hooks are on; off otherwise.
     pub fn with_test_hooks(mut self, enabled: bool) -> Self {
         self.test_hooks = enabled;
         self
@@ -490,29 +489,23 @@ impl DaemonService {
         self.test_hooks
     }
 
-    /// A receiver for synthetic events pushed via [`Self::debug_inject`].
-    /// Each live peer pipeline holds one and merges it into its capture
-    /// stream (test hooks only).
-    pub fn subscribe_debug_injections(&self) -> tokio::sync::broadcast::Receiver<InputEvent> {
-        self.debug_inject_tx.subscribe()
+    /// The controller's router: the capture sink the engine attaches to
+    /// the platform while this device is a controller.
+    pub fn router(&self) -> &Arc<InputRouter> {
+        &self.router
     }
 
-    /// Pushes one synthetic `InputEvent` into every live peer pipeline's
-    /// capture stream. Returns how many pipelines received it (0 when no
-    /// peer connection is currently streaming — a signal to the driver
-    /// that it needs to switch/connect first). Test hooks only; the
-    /// dispatch layer rejects the command unless
-    /// [`Self::test_hooks_enabled`].
-    pub fn debug_inject(&self, event: InputEvent) -> usize {
-        let receivers = self.debug_inject_tx.send(event.clone()).unwrap_or(0);
+    /// Feeds one synthetic event into the router exactly as a physical
+    /// one would be (test hooks only; the dispatcher gates the command).
+    pub fn debug_inject(&self, event: InputEvent) {
+        use flow_core::input::CaptureSink;
         crate::hop_note!(
             stage = "debug_inject",
             role = "owner",
-            kind = crate::pipeline::event_kind(&event),
-            pipelines = receivers,
-            "debug_inject_input pushed a synthetic event into {receivers} live pipeline(s)"
+            kind = crate::router::event_kind(&event),
+            "debug_inject_input fed a synthetic event to the router"
         );
-        receivers
+        self.router.on_event(&event);
     }
 
     /// How many IPC clients are connected right now.
@@ -572,175 +565,416 @@ impl DaemonService {
         self.incoming_request_tx.subscribe()
     }
 
-    /// Makes `device_id` the active device, moving whichever device was
-    /// previously active back to inactive. Matches
-    /// `MockDaemonRepository.switchActiveDevice`, including its debounce
-    /// delay (`SWITCH_DEBOUNCE` — not part of
-    /// `sharedContractConstants.mockParityTimings`, but present in the
-    /// Dart mock it mirrors; see this module's `buildNote` in
-    /// `docs/tasks/daemon-todos.json`).
+    /// Makes `target` (`"local"` or a device id) the active screen.
+    /// Controller only; a peer must have a live link.
     #[tracing::instrument(skip(self))]
-    pub async fn switch_active_device(&self, device_id: &str) -> Result<(), FlowError> {
-        let target_id = DeviceId(device_id.to_string());
-        {
-            let state = self.state.read().await;
-            let target = state
-                .devices
-                .get(&target_id)
-                .ok_or_else(|| FlowError::DeviceNotFound(target_id.clone()))?;
-            if target.state != DeviceState::Inactive && target.state != DeviceState::Connected {
-                return Err(FlowError::DeviceNotSwitchable(target_id));
-            }
+    pub async fn switch_to(&self, target: &str) -> Result<(), FlowError> {
+        if self.settings_tx.borrow().role != Role::Controller {
+            return Err(FlowError::NotController);
         }
-
-        tokio::time::sleep(SWITCH_DEBOUNCE).await;
-
-        let (devices, previous_active) = {
-            let mut state = self.state.write().await;
-            let mut previous_active = None;
-            for (id, device) in state.devices.iter_mut() {
-                if *id == target_id {
-                    device.state = DeviceState::Active;
-                    device.last_seen = Utc::now();
-                } else if device.state == DeviceState::Active {
-                    device.state = DeviceState::Inactive;
-                    previous_active = Some(id.0.clone());
-                }
+        let screen = if target == "local" || target == LOCAL_DEVICE_ID {
+            ActiveScreen::Local
+        } else {
+            let id = DeviceId(target.to_string());
+            if !self.state.read().await.devices.contains_key(&id) {
+                return Err(FlowError::DeviceNotFound(id));
             }
-            (devices_list(&state), previous_active)
+            ActiveScreen::Remote(id)
         };
+        self.router.switch_to(screen).map_err(|err| match err {
+            crate::router::SwitchError::NotConnected(id) => FlowError::DeviceNotSwitchable(id),
+        })
+    }
 
-        let to_name = device_display_name(&devices, &target_id.0);
-        let from_name = previous_active
-            .as_deref()
-            .map(|id| device_display_name(&devices, id))
-            .unwrap_or_else(|| "(none)".to_string());
-        self.devices_tx.send_replace(devices);
-        crate::hop_note!(
-            stage = "switch",
-            role = "local",
-            from = previous_active.as_deref().unwrap_or("none"),
-            to = %target_id.0,
-            trigger = "ipc",
-            "active device switched — input now flows toward this device"
-        );
-        crate::logging::product::switch(&from_name, &to_name);
+    /// Compatibility alias of [`Self::switch_to`] for the 0.1 command.
+    pub async fn switch_active_device(&self, device_id: &str) -> Result<(), FlowError> {
+        self.switch_to(device_id).await
+    }
+
+    /// Controlled side: asks the linked controller to take control back.
+    /// The controller decides; it answers by returning to its own screen.
+    #[tracing::instrument(skip(self))]
+    pub async fn release_control(&self) -> Result<(), FlowError> {
+        if self.settings_tx.borrow().role != Role::Controlled {
+            return Err(FlowError::NotControlled);
+        }
+        let links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        let controller = links
+            .values()
+            .find(|link| link.peer_role == Some(Role::Controller))
+            .ok_or(FlowError::NoController)?;
+        controller
+            .outbox
+            .send(LinkOut::ReleaseRequest)
+            .map_err(|_| FlowError::NoController)
+    }
+
+    /// Changes this device's role. Live links are closed so every peer
+    /// renegotiates with the new role (a stale pairing of roles would be a
+    /// `role_conflict`), and a controller that becomes controlled returns
+    /// to its own screen first.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_role(&self, role: Role) -> Result<(), FlowError> {
+        if self.settings_tx.borrow().role == role {
+            return Ok(());
+        }
+        let _ = self.router.switch_to(ActiveScreen::Local);
+        self.apply_settings_patch(SettingsPatch {
+            role: Some(role),
+            ..Default::default()
+        })
+        .await;
+        self.control_tx.send_modify(|control| {
+            *control = ControlState::idle(role);
+        });
+        for link in self
+            .links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
+            let _ = link.outbox.send(LinkOut::Close {
+                reason: "role_changed".to_string(),
+            });
+        }
         Ok(())
     }
 
-    /// Advances to the next switchable device for the local hotkey
-    /// trigger path (`docs/tasks/daemon-todos.json` F2) — unlike
-    /// `switch_active_device`, there's no requester to reject with an
-    /// error and no target device id (a physical key press names no
-    /// device), so a press with nothing else switchable simply does
-    /// nothing observable. Cycles in device-id order starting just after
-    /// whichever device is currently active, generalizing vision.md's
-    /// two-device Scroll Lock toggle example to any number of devices.
-    /// No debounce here — that's F3's job, one layer up in the runner
-    /// that actually reads raw (and possibly repeating) key events.
-    pub async fn switch_active_device_local(&self) {
-        let target_id = {
-            let state = self.state.read().await;
-            next_switchable_device(&state)
-        };
-        let Some(target_id) = target_id else {
-            return;
-        };
-
-        let (devices, previous_active) = {
-            let mut state = self.state.write().await;
-            let mut previous_active = None;
-            for (id, device) in state.devices.iter_mut() {
-                if *id == target_id {
-                    device.state = DeviceState::Active;
-                    device.last_seen = Utc::now();
-                } else if device.state == DeviceState::Active {
-                    device.state = DeviceState::Inactive;
-                    previous_active = Some(id.0.clone());
-                }
-            }
-            (devices_list(&state), previous_active)
-        };
-
-        let to_name = device_display_name(&devices, &target_id.0);
-        let from_name = previous_active
-            .as_deref()
-            .map(|id| device_display_name(&devices, id))
-            .unwrap_or_else(|| "(none)".to_string());
-        self.devices_tx.send_replace(devices);
-        crate::hop_note!(
-            stage = "switch",
-            role = "local",
-            from = previous_active.as_deref().unwrap_or("none"),
-            to = %target_id.0,
-            trigger = "hotkey",
-            "active device switched by the local switch key"
-        );
-        crate::logging::product::switch(&from_name, &to_name);
+    pub fn watch_remap_rules(&self) -> watch::Receiver<Vec<RemapRule>> {
+        self.remap_rules_tx.subscribe()
     }
 
-    /// Applies an ownership change the peer just told us about over the
-    /// live connection (`ChannelMessage::OwnershipChanged`) — the receiving
-    /// half of the switch the task's V1 model hands across without a
-    /// reconnect.
-    ///
-    /// `role` is *this* daemon's role after the change:
-    /// - [`InputRole::Primary`] ⇒ `peer_id` becomes the sole `Active`
-    ///   device (this machine now captures + forwards to it);
-    /// - [`InputRole::Secondary`] ⇒ [`LOCAL_DEVICE_ID`] becomes the sole
-    ///   `Active` device (this machine goes back to keeping its own input).
-    ///
-    /// No debounce and no switchability check: the peer has already
-    /// decided, and a `Connected`-but-not-`Inactive` peer is still a valid
-    /// target here (unlike the user-driven `switch_active_device`). Idempotent.
-    pub async fn apply_peer_ownership(&self, peer_id: &DeviceId, role: InputRole) {
-        let target_id = match role {
-            InputRole::Primary => peer_id.clone(),
-            InputRole::Secondary => DeviceId(LOCAL_DEVICE_ID.to_string()),
-        };
+    /// The effective keymap for `os` (embedded defaults merged with the
+    /// user's override file), in its serialisable file form.
+    pub fn keymap_for(&self, os: HostOs) -> serde_json::Value {
+        let loaded = flow_platform::keymap::load(os, self.keymap_dir.as_deref());
+        serde_json::to_value(loaded.keymap.file()).expect("a keymap file serializes")
+    }
 
-        let (devices, previous_active, changed) = {
-            let mut state = self.state.write().await;
-            if !state.devices.contains_key(&target_id) {
-                return;
-            }
-            let already = state
-                .devices
-                .get(&target_id)
-                .is_some_and(|d| d.state == DeviceState::Active);
-            let mut previous_active = None;
-            for (id, device) in state.devices.iter_mut() {
-                if *id == target_id {
-                    device.state = DeviceState::Active;
-                    device.last_seen = Utc::now();
-                } else if device.state == DeviceState::Active {
-                    device.state = DeviceState::Inactive;
-                    previous_active = Some(id.0.clone());
-                }
-            }
-            (devices_list(&state), previous_active, !already)
-        };
+    /// Replaces the remap rules: validated, persisted to `remap.toml` in
+    /// the keymap directory (when there is one) and applied to forwarding
+    /// immediately.
+    #[tracing::instrument(skip(self))]
+    pub async fn set_remap_rules(&self, rules: Vec<RemapRule>) -> Result<(), FlowError> {
+        for rule in &rules {
+            rule.validate()
+                .map_err(|err| FlowError::InvalidRemapRule(err.to_string()))?;
+        }
+        if let Some(dir) = &self.keymap_dir {
+            let text = flow_core::keymap::remap::rules_to_toml(&rules);
+            let path = dir.join("remap.toml");
+            let write = std::fs::create_dir_all(dir).and_then(|()| std::fs::write(&path, text));
+            write.map_err(|err| FlowError::Internal(format!("{}: {err}", path.display())))?;
+        }
+        self.router.set_remap_rules(rules.clone());
+        self.remap_rules_tx.send_replace(rules);
+        Ok(())
+    }
 
-        if !changed {
+    pub fn watch_diagnostics(&self) -> watch::Receiver<Diagnostics> {
+        self.diagnostics_tx.subscribe()
+    }
+
+    /// Counts input the controlled side refused to inject.
+    pub fn note_dropped(&self, count: u64) {
+        self.dropped_remote.fetch_add(count, Ordering::Relaxed);
+    }
+
+    /// Current diagnostics, computed now.
+    pub fn diagnostics(&self) -> Diagnostics {
+        diagnostics_of(&self.router, &self.dropped_remote, self.started)
+    }
+
+    /// Publishes fresh diagnostics every couple of seconds while the
+    /// service lives.
+    fn spawn_diagnostics_ticker(&self) {
+        let router = Arc::downgrade(&self.router);
+        let dropped = Arc::clone(&self.dropped_remote);
+        let started = self.started;
+        let tx = self.diagnostics_tx.clone();
+        tokio::spawn(async move {
+            let period = Duration::from_secs(2);
+            let mut tick = tokio::time::interval_at(tokio::time::Instant::now() + period, period);
+            loop {
+                tick.tick().await;
+                let Some(router) = router.upgrade() else {
+                    return;
+                };
+                tx.send_replace(diagnostics_of(&router, &dropped, started));
+            }
+        });
+    }
+
+    pub fn watch_screen_layout(&self) -> watch::Receiver<ScreenLayout> {
+        self.layout_tx.subscribe()
+    }
+
+    /// Replaces the screen arrangement (controller only). Every screen
+    /// but this computer must be a known device.
+    #[tracing::instrument(skip(self, layout))]
+    pub async fn set_screen_layout(&self, layout: ScreenLayout) -> Result<(), FlowError> {
+        if self.local_role() != Role::Controller {
+            return Err(FlowError::NotController);
+        }
+        layout
+            .validate()
+            .map_err(|err| FlowError::InvalidLayout(err.to_string()))?;
+        {
+            let state = self.state.read().await;
+            if let Some(unknown) = layout
+                .screens
+                .iter()
+                .find(|s| !state.devices.contains_key(&s.device_id))
+            {
+                return Err(FlowError::InvalidLayout(format!(
+                    "unknown device {:?}",
+                    unknown.device_id.0
+                )));
+            }
+        }
+        self.mutate_layout(|current| *current = layout).await;
+        Ok(())
+    }
+
+    /// Applies `change` to the layout and, if it changed anything,
+    /// persists it, hands it to the router and announces it.
+    async fn mutate_layout(&self, change: impl FnOnce(&mut ScreenLayout)) {
+        let mut layout = self.layout_tx.borrow().clone();
+        change(&mut layout);
+        if layout == *self.layout_tx.borrow() {
             return;
         }
+        LayoutRepo::new(self.storage.clone()).save(&layout).await;
+        self.router.set_layout(layout.clone());
+        self.layout_tx.send_replace(layout);
+    }
 
-        let to_name = device_display_name(&devices, &target_id.0);
-        let from_name = previous_active
-            .as_deref()
-            .map(|id| device_display_name(&devices, id))
-            .unwrap_or_else(|| "(none)".to_string());
-        self.devices_tx.send_replace(devices);
-        crate::hop_note!(
-            stage = "input_role_changed",
-            role = "local",
-            from = previous_active.as_deref().unwrap_or("none"),
-            to = %target_id.0,
-            trigger = "peer",
-            new_role = ?role,
-            "peer handed the ownership baton over the live connection"
+    pub fn watch_control_state(&self) -> watch::Receiver<ControlState> {
+        self.control_tx.subscribe()
+    }
+
+    /// This device's current role.
+    pub fn local_role(&self) -> Role {
+        self.settings_tx.borrow().role
+    }
+
+    /// What this device announces in its `Hello`.
+    pub async fn local_hello(&self) -> (String, HostOs, ScreenSize, Role) {
+        let (name, os) = self.local_device_identity().await;
+        (name, os, self.local_screen, self.local_role())
+    }
+
+    // ---- live links ----------------------------------------------------
+
+    /// Claims the link slot for `device_id`. `None` when a link to that
+    /// peer already exists, so a peer is never connected twice. The slot
+    /// is released when the returned registration is dropped.
+    pub fn register_link(&self, device_id: &DeviceId) -> Option<LinkRegistration> {
+        let mut links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+        if links.contains_key(device_id) {
+            return None;
+        }
+        let (outbox, inbox) = tokio::sync::mpsc::unbounded_channel();
+        links.insert(
+            device_id.clone(),
+            LinkEntry {
+                outbox: outbox.clone(),
+                peer_role: None,
+            },
         );
-        crate::logging::product::switch(&from_name, &to_name);
+        Some(LinkRegistration {
+            outbox,
+            inbox,
+            device_id: device_id.clone(),
+            links: Arc::clone(&self.links),
+        })
+    }
+
+    /// Test fixture: a live controlled-peer link to an already-listed
+    /// device, without any network. Keep the registration alive for as
+    /// long as the link should be.
+    #[doc(hidden)]
+    pub async fn connect_peer_for_test(&self, id: &str) -> LinkRegistration {
+        let id = DeviceId(id.to_string());
+        let registration = self.register_link(&id).expect("link slot is free");
+        let peer = PeerInfo {
+            role: Role::Controlled,
+            os: HostOs::Windows,
+            screen: ScreenSize {
+                width: 1920,
+                height: 1080,
+            },
+        };
+        self.link_up(&id, &peer, registration.outbox.clone()).await;
+        registration
+    }
+
+    /// Whether `peer` may link with this device. A reason on refusal is the
+    /// `Goodbye` reason and the device's `link_error`.
+    pub fn check_peer(&self, device_id: &DeviceId, peer: &PeerInfo) -> Result<(), &'static str> {
+        let local = self.local_role();
+        if peer.role == local {
+            return Err("role_conflict");
+        }
+        if local == Role::Controlled {
+            // A controlled device accepts exactly one controller.
+            let links = self.links.lock().unwrap_or_else(|e| e.into_inner());
+            let other_controller = links
+                .iter()
+                .any(|(id, link)| id != device_id && link.peer_role == Some(Role::Controller));
+            if other_controller {
+                return Err("role_conflict");
+            }
+        }
+        Ok(())
+    }
+
+    /// A link completed its `Hello` exchange and is carrying input.
+    pub async fn link_up(
+        &self,
+        device_id: &DeviceId,
+        peer: &PeerInfo,
+        outbox: tokio::sync::mpsc::UnboundedSender<LinkOut>,
+    ) {
+        if let Some(link) = self
+            .links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(device_id)
+        {
+            link.peer_role = Some(peer.role);
+        }
+        if self.local_role() == Role::Controller {
+            self.mutate_layout(|layout| layout.add_to_the_right(device_id, peer.screen))
+                .await;
+            self.router.peer_connected(PeerSlot {
+                id: device_id.clone(),
+                os: peer.os,
+                screen: peer.screen,
+                outbox,
+            });
+        } else {
+            self.control_tx.send_modify(|control| {
+                control.controller_device_id = Some(device_id.clone());
+            });
+        }
+        self.update_device(device_id, |device| {
+            device.state = DeviceState::Inactive;
+            device.os = peer.os;
+            device.role = Some(peer.role);
+            device.screen = Some(peer.screen);
+            device.link_error = None;
+            device.last_seen = Utc::now();
+        })
+        .await;
+        self.set_link_state(DaemonLinkState::Connected);
+    }
+
+    /// A link ended. `error` is why, when it ended abnormally.
+    pub async fn link_down(&self, device_id: &DeviceId, error: Option<&str>) {
+        self.router.peer_disconnected(device_id);
+        self.control_tx.send_modify(|control| {
+            if control.controller_device_id.as_ref() == Some(device_id) {
+                control.controller_device_id = None;
+                control.entered = false;
+            }
+        });
+        self.links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(device_id);
+        self.update_device(device_id, |device| {
+            device.state = if error.is_some() {
+                DeviceState::Error
+            } else {
+                DeviceState::Disconnected
+            };
+            device.link_error = error.map(str::to_string);
+            device.last_seen = Utc::now();
+        })
+        .await;
+        let any_live = self
+            .links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .any(|link| link.peer_role.is_some());
+        if !any_live {
+            // Discovery keeps announcing and will redial on its own, so
+            // `Reconnecting` while auto-reconnect is on.
+            let auto_reconnect = self.settings_tx.borrow().auto_reconnect;
+            self.set_link_state(if auto_reconnect {
+                DaemonLinkState::Reconnecting
+            } else {
+                DaemonLinkState::Disconnected
+            });
+        }
+    }
+
+    /// Controlled side: the controller entered or left this machine.
+    pub fn set_entered(&self, entered: bool) {
+        self.control_tx
+            .send_modify(|control| control.entered = entered);
+    }
+
+    /// Controlled side: the controller reported a new screen size; keeps
+    /// the router's picture of the peer current.
+    pub async fn peer_screen_changed(&self, device_id: &DeviceId, screen: ScreenSize) {
+        self.router.peer_screen_changed(device_id, screen);
+        self.mutate_layout(|layout| layout.resize(device_id, screen))
+            .await;
+        self.update_device(device_id, |device| device.screen = Some(screen))
+            .await;
+    }
+
+    async fn update_device(&self, device_id: &DeviceId, change: impl FnOnce(&mut Device)) {
+        {
+            let mut state = self.state.write().await;
+            let Some(device) = state.devices.get_mut(device_id) else {
+                return;
+            };
+            change(device);
+        }
+        self.emit_devices().await;
+    }
+
+    /// Keeps `devices` and `ControlState` in step with the router, which
+    /// changes screens from the capture thread (hotkey, edges) as well as
+    /// from commands: exactly the active screen's device is `active`.
+    fn spawn_active_screen_follower(&self) {
+        let mut active_rx = self.router.watch_active();
+        let state = Arc::clone(&self.state);
+        let devices_tx = self.devices_tx.clone();
+        let control_tx = self.control_tx.clone();
+        tokio::spawn(async move {
+            while active_rx.changed().await.is_ok() {
+                let active = active_rx.borrow_and_update().clone();
+                let target = match &active {
+                    ActiveScreen::Local => DeviceId(LOCAL_DEVICE_ID.to_string()),
+                    ActiveScreen::Remote(id) => id.clone(),
+                };
+                let (devices, from, to) = {
+                    let mut state = state.write().await;
+                    let mut from = None;
+                    for (id, device) in state.devices.iter_mut() {
+                        if *id == target {
+                            device.state = DeviceState::Active;
+                            device.last_seen = Utc::now();
+                        } else if device.state == DeviceState::Active {
+                            device.state = DeviceState::Inactive;
+                            from = Some(device.name.clone());
+                        }
+                    }
+                    let to = state.devices.get(&target).map(|d| d.name.clone());
+                    (devices_list(&state), from, to)
+                };
+                devices_tx.send_replace(devices);
+                control_tx.send_modify(|control| control.active_screen = active);
+                if let (Some(from), Some(to)) = (from, to) {
+                    crate::logging::product::switch(&from, &to);
+                }
+            }
+        });
     }
 
     /// Removes a paired device. "This device" (`LOCAL_DEVICE_ID`) is
@@ -766,10 +1000,11 @@ impl DaemonService {
         // Removal is durable: a removed device must not reappear from a
         // stale devices-table row after a restart.
         DeviceRepo::new(self.storage.clone())
-            .remove(target_id)
+            .remove(target_id.clone())
             .await;
 
         self.devices_tx.send_replace(devices);
+        self.mutate_layout(|layout| layout.remove(&target_id)).await;
 
         // Removing the last paired device means there is nothing left for
         // the link to legitimately be `Connected` to. `main.rs`'s peer
@@ -959,6 +1194,9 @@ impl DaemonService {
                 os: candidate.os,
                 state: DeviceState::Inactive,
                 last_seen: Utc::now(),
+                role: None,
+                screen: None,
+                link_error: None,
             };
             state.devices.insert(device.id.clone(), device.clone());
             state.pairing_session.stage = PairingStage::Paired;
@@ -1016,6 +1254,9 @@ impl DaemonService {
                         os: candidate.os,
                         state: DeviceState::Inactive,
                         last_seen: Utc::now(),
+                        role: None,
+                        screen: None,
+                        link_error: None,
                     };
                     state.devices.insert(device.id.clone(), device.clone());
                     state.pairing_session.stage = PairingStage::Paired;
@@ -1225,6 +1466,9 @@ impl DaemonService {
             os: request.device_os,
             state: DeviceState::Inactive,
             last_seen: Utc::now(),
+            role: None,
+            screen: None,
+            link_error: None,
         };
         {
             let mut state = self.state.write().await;
@@ -1557,22 +1801,31 @@ impl DaemonService {
     /// Merges `patch` into the current settings (only the `Some` fields
     /// change), matching `FlowSettings::apply_patch`.
     #[tracing::instrument(skip(self))]
-    pub async fn update_settings(&self, patch: SettingsPatch) -> Result<(), FlowError> {
+    pub async fn update_settings(&self, mut patch: SettingsPatch) -> Result<(), FlowError> {
+        if let Some(role) = patch.role.take() {
+            self.set_role(role).await?;
+        }
         self.apply_settings_patch(patch).await;
         Ok(())
     }
 
-    /// Restores [`FlowSettings::defaults`] exactly.
+    /// Restores [`FlowSettings::defaults`] exactly (the read-only keymap
+    /// path stays as the engine set it).
     #[tracing::instrument(skip(self))]
     pub async fn reset_settings(&self) -> Result<(), FlowError> {
-        let defaults = FlowSettings::defaults();
-        {
+        let role = FlowSettings::defaults().role;
+        self.set_role(role).await?;
+        let defaults = {
             let mut state = self.state.write().await;
+            let mut defaults = FlowSettings::defaults();
+            defaults.keymap_overrides_path = state.settings.keymap_overrides_path.clone();
             state.settings = defaults.clone();
-        }
+            defaults
+        };
         SettingsRepo::new(self.storage.clone())
             .save(defaults.clone())
             .await;
+        self.router.apply_settings(&defaults);
         self.settings_tx.send_replace(defaults);
         Ok(())
     }
@@ -1586,6 +1839,7 @@ impl DaemonService {
         SettingsRepo::new(self.storage.clone())
             .save(settings.clone())
             .await;
+        self.router.apply_settings(&settings);
         self.settings_tx.send_replace(settings);
     }
 
@@ -1641,15 +1895,36 @@ impl Drop for IpcClientGuard {
     }
 }
 
-/// Decrements the active-peer-pipeline count when dropped —
-/// see [`DaemonService::enter_peer_pipeline`].
-pub struct PeerPipelineGuard {
-    counter: Arc<AtomicUsize>,
+fn diagnostics_of(
+    router: &InputRouter,
+    dropped_remote: &AtomicU64,
+    started: std::time::Instant,
+) -> Diagnostics {
+    let stats = router.stats();
+    Diagnostics::from_samples(
+        stats.switch_latencies_ms,
+        stats.events_forwarded,
+        stats.events_dropped + dropped_remote.load(Ordering::Relaxed),
+        started.elapsed().as_secs(),
+    )
 }
 
-impl Drop for PeerPipelineGuard {
+/// A claimed link slot (see [`DaemonService::register_link`]): the
+/// outbox the router and service write to, the inbox the link task drains,
+/// and the claim itself, released on drop.
+pub struct LinkRegistration {
+    pub outbox: tokio::sync::mpsc::UnboundedSender<LinkOut>,
+    pub inbox: tokio::sync::mpsc::UnboundedReceiver<LinkOut>,
+    device_id: DeviceId,
+    links: Arc<std::sync::Mutex<HashMap<DeviceId, LinkEntry>>>,
+}
+
+impl Drop for LinkRegistration {
     fn drop(&mut self) {
-        self.counter.fetch_sub(1, Ordering::SeqCst);
+        self.links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.device_id);
     }
 }
 
@@ -1667,15 +1942,8 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// This daemon's own OS, as compiled — the binary only ever runs on the
-/// platform it was built for, so a compile-time constant is exactly as
-/// accurate as any runtime check would be, with no extra dependency.
 fn current_host_os() -> HostOs {
-    match std::env::consts::OS {
-        "macos" => HostOs::Macos,
-        "windows" => HostOs::Windows,
-        _ => HostOs::Linux,
-    }
+    crate::platform_backend::native_host_os()
 }
 
 /// The OS input-capture permission this daemon starts with, per platform.
@@ -1688,8 +1956,8 @@ fn current_host_os() -> HostOs {
 /// process can't change) need nothing the UI could grant at runtime, so
 /// they start `granted: true` with an accurate name rather than showing
 /// the user a permission prompt that does nothing.
-fn default_permission() -> PermissionStatus {
-    match current_host_os() {
+fn default_permission(host_os: HostOs) -> PermissionStatus {
+    match host_os {
         HostOs::Macos => PermissionStatus {
             name: "Accessibility access".to_string(),
             granted: false,
@@ -1709,18 +1977,12 @@ fn default_permission() -> PermissionStatus {
 /// falls back to a generic label if the OS ever refuses to report one
 /// (rare, and not worth failing daemon startup over a display string).
 ///
-/// `FLOW_DEVICE_NAME` overrides it outright. Its only intended use is
-/// running two `flow-daemon` instances on one physical machine for local
-/// pairing tests, where both would otherwise report the identical
-/// hostname and be impossible to tell apart in the UI.
-fn local_hostname() -> String {
-    if let Some(name) = std::env::var_os("FLOW_DEVICE_NAME") {
-        if let Ok(name) = name.into_string() {
-            let trimmed = name.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
+/// An explicit override (`FLOW_DEVICE_NAME` for the binary) exists so two
+/// instances on one machine, which would otherwise report the identical
+/// hostname, can be told apart in the UI.
+fn local_hostname(name_override: Option<&str>) -> String {
+    if let Some(name) = name_override.map(str::trim).filter(|n| !n.is_empty()) {
+        return name.to_string();
     }
     hostname::get()
         .ok()
@@ -1734,14 +1996,17 @@ fn local_hostname() -> String {
 /// active, never removable — the one device every fresh install
 /// legitimately has, as opposed to the fake remote devices
 /// `mock_parity_device_records` seeds for tests.
-fn real_local_device_record() -> DeviceRecord {
+fn real_local_device_record(options: &ServiceOptions) -> DeviceRecord {
     DeviceRecord {
         device: Device {
             id: DeviceId(LOCAL_DEVICE_ID.to_string()),
-            name: local_hostname(),
-            os: current_host_os(),
+            name: local_hostname(options.device_name.as_deref()),
+            os: options.host_os,
             state: DeviceState::Active,
             last_seen: Utc::now(),
+            role: None,
+            screen: None,
+            link_error: None,
         },
         public_key: None,
         removable: false,
@@ -1761,6 +2026,9 @@ fn mock_parity_device_records() -> Vec<DeviceRecord> {
                 os: HostOs::Macos,
                 state: DeviceState::Active,
                 last_seen: now,
+                role: None,
+                screen: None,
+                link_error: None,
             },
             public_key: None,
             removable: false,
@@ -1772,6 +2040,9 @@ fn mock_parity_device_records() -> Vec<DeviceRecord> {
                 os: HostOs::Windows,
                 state: DeviceState::Inactive,
                 last_seen: now - ChronoDuration::minutes(2),
+                role: None,
+                screen: None,
+                link_error: None,
             },
             public_key: None,
             removable: true,
@@ -1783,6 +2054,9 @@ fn mock_parity_device_records() -> Vec<DeviceRecord> {
                 os: HostOs::Linux,
                 state: DeviceState::Disconnected,
                 last_seen: now - ChronoDuration::days(3),
+                role: None,
+                screen: None,
+                link_error: None,
             },
             public_key: None,
             removable: true,
@@ -1853,6 +2127,9 @@ mod tests {
                     os: HostOs::Linux,
                     state: DeviceState::Active,
                     last_seen: Utc::now(),
+                    role: None,
+                    screen: None,
+                    link_error: None,
                 },
                 public_key: None,
                 removable: true,
@@ -1862,7 +2139,7 @@ mod tests {
         // The real (production) loader — proves the anti-reseed guarantee
         // that actually matters: a non-empty database is never seeded
         // over, mock or real.
-        let state = ServiceState::from_storage(&storage).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(state.devices.len(), 1);
         assert!(state
@@ -1884,7 +2161,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_real_state_has_only_the_local_device_no_fake_remotes() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::from_storage(&storage).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(
             state.devices.len(),
@@ -1897,7 +2174,7 @@ mod tests {
         assert_eq!(local.state, DeviceState::Active);
         // The real machine's own identity, not the mock fixture's
         // hardcoded "MacBook"/macOS.
-        assert_eq!(local.name, local_hostname());
+        assert_eq!(local.name, local_hostname(None));
         assert_eq!(local.os, current_host_os());
 
         let device_repo = DeviceRepo::new(storage);
@@ -1911,7 +2188,7 @@ mod tests {
     #[tokio::test]
     async fn fresh_real_state_starts_disconnected_with_no_seeded_candidates() {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let state = ServiceState::from_storage(&storage).await;
+        let state = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(
             state.link_state,
@@ -1992,6 +2269,9 @@ mod tests {
                     os: HostOs::Windows,
                     state: DeviceState::Connected,
                     last_seen: Utc::now(),
+                    role: None,
+                    screen: None,
+                    link_error: None,
                 },
                 public_key: Some(vec![7; 32]),
                 removable: true,
@@ -2001,7 +2281,7 @@ mod tests {
         // Simulate a restart against the same database — the real
         // production path, not the mock fixture.
         drop(service);
-        let reloaded = ServiceState::from_storage(&storage).await;
+        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
 
         assert_eq!(
             reloaded.devices.len(),
@@ -2027,6 +2307,9 @@ mod tests {
                     os: HostOs::Linux,
                     state: DeviceState::Connected,
                     last_seen: Utc::now(),
+                    role: None,
+                    screen: None,
+                    link_error: None,
                 },
                 public_key: Some(vec![9; 32]),
                 removable: true,
@@ -2043,7 +2326,7 @@ mod tests {
             .expect("remove the real peer");
 
         drop(service);
-        let reloaded = ServiceState::from_storage(&storage).await;
+        let reloaded = ServiceState::from_storage(&storage, &ServiceOptions::default()).await;
         assert!(
             !reloaded
                 .devices
@@ -2063,6 +2346,9 @@ mod tests {
                     os: HostOs::Linux,
                     state: DeviceState::Connected,
                     last_seen: Utc::now(),
+                    role: None,
+                    screen: None,
+                    link_error: None,
                 },
                 public_key: Some(vec![7; 32]),
                 removable: true,
@@ -2174,159 +2460,385 @@ mod tests {
         assert_eq!(a.borrow().len(), b.borrow().len());
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn switching_to_a_missing_or_active_device_is_rejected() {
+    async fn seeded() -> DaemonService {
         let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
+        DaemonService::new_seeded_for_test(storage).await
+    }
+
+    /// Brings a controlled peer's link up the way a real link does.
+    async fn connect_peer(service: &DaemonService, id: &str, role: Role) -> LinkRegistration {
+        // (`connect_peer_for_test` is the controlled-peer shorthand.)
+        let id = DeviceId(id.to_string());
+        let registration = service.register_link(&id).expect("slot is free");
+        let peer = PeerInfo {
+            role,
+            os: HostOs::Windows,
+            screen: ScreenSize {
+                width: 1000,
+                height: 800,
+            },
+        };
+        service
+            .link_up(&id, &peer, registration.outbox.clone())
+            .await;
+        registration
+    }
+
+    async fn next_devices(
+        watch: &mut watch::Receiver<Vec<Device>>,
+        mut done: impl FnMut(&[Device]) -> bool,
+    ) -> Vec<Device> {
+        loop {
+            let current = watch.borrow_and_update().clone();
+            if done(&current) {
+                return current;
+            }
+            tokio::time::timeout(Duration::from_secs(5), watch.changed())
+                .await
+                .expect("devices should change")
+                .expect("sender alive");
+        }
+    }
+
+    fn active_ids(devices: &[Device]) -> Vec<String> {
+        devices
+            .iter()
+            .filter(|d| d.state == DeviceState::Active)
+            .map(|d| d.id.0.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn switching_to_a_missing_or_unlinked_device_is_rejected() {
+        let service = seeded().await;
 
         assert_eq!(
-            service.switch_active_device("no-such-device").await,
+            service.switch_to("no-such-device").await,
             Err(FlowError::DeviceNotFound(DeviceId(
                 "no-such-device".to_string()
             )))
         );
-        // d1 is already active in the seed data.
+        // d2 is paired but has no live link.
         assert_eq!(
-            service.switch_active_device(LOCAL_DEVICE_ID).await,
-            Err(FlowError::DeviceNotSwitchable(DeviceId(
-                LOCAL_DEVICE_ID.to_string()
-            )))
+            service.switch_to("d2").await,
+            Err(FlowError::DeviceNotSwitchable(DeviceId("d2".to_string())))
         );
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn switching_moves_exactly_one_device_active_and_the_prior_one_inactive() {
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
+    #[tokio::test]
+    async fn switching_makes_exactly_the_active_screens_device_active() {
+        let service = seeded().await;
+        let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
         let mut watch = service.watch_devices();
-        let _ = watch.borrow_and_update(); // consume the initial replay
 
-        // Time is paused; awaiting the internal SWITCH_DEBOUNCE sleep
-        // auto-advances the virtual clock since nothing else is runnable.
-        service.switch_active_device("d2").await.expect("switch d2");
-
-        assert!(watch.changed().await.is_ok());
-        let devices = watch.borrow_and_update().clone();
-        let d1 = devices.iter().find(|d| d.id.0 == "d1").unwrap();
-        let d2 = devices.iter().find(|d| d.id.0 == "d2").unwrap();
-        assert_eq!(d1.state, DeviceState::Inactive);
-        assert_eq!(d2.state, DeviceState::Active);
+        service.switch_to("d2").await.expect("switch to d2");
+        let devices = next_devices(&mut watch, |d| active_ids(d) == ["d2"]).await;
         assert_eq!(
-            devices
-                .iter()
-                .filter(|d| d.state == DeviceState::Active)
-                .count(),
-            1
+            devices.iter().find(|d| d.id.0 == "d1").unwrap().state,
+            DeviceState::Inactive
+        );
+        assert!(matches!(
+            registration.inbox.recv().await,
+            Some(LinkOut::Enter { .. })
+        ));
+        assert_eq!(
+            service.watch_control_state().borrow().active_screen,
+            ActiveScreen::Remote(DeviceId("d2".to_string()))
+        );
+
+        service.switch_to("local").await.expect("back home");
+        next_devices(&mut watch, |d| active_ids(d) == ["d1"]).await;
+        assert!(matches!(
+            registration.inbox.recv().await,
+            Some(LinkOut::Leave)
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_hotkey_cycles_local_remote_local_and_the_peer_is_marked_active() {
+        use flow_core::input::CaptureSink;
+        let service = seeded().await;
+        service
+            .router()
+            .set_debounce_window(std::time::Duration::ZERO);
+        let _registration = connect_peer(&service, "d2", Role::Controlled).await;
+        let mut watch = service.watch_devices();
+        let press = || {
+            InputEvent::Keyboard(flow_core::protocol::KeyboardEvent::KeyDown {
+                key: "SCROLLLOCK".to_string(),
+                modifiers: vec![],
+                timestamp_ms: 0,
+            })
+        };
+
+        service.router().on_event(&press());
+        next_devices(&mut watch, |d| active_ids(d) == ["d2"]).await;
+        service.router().on_event(&press());
+        next_devices(&mut watch, |d| active_ids(d) == ["d1"]).await;
+    }
+
+    #[tokio::test]
+    async fn losing_the_active_link_returns_home_and_marks_the_peer_disconnected() {
+        let service = seeded().await;
+        let _registration = connect_peer(&service, "d2", Role::Controlled).await;
+        let mut watch = service.watch_devices();
+        service.switch_to("d2").await.unwrap();
+        next_devices(&mut watch, |d| active_ids(d) == ["d2"]).await;
+
+        service.link_down(&DeviceId("d2".to_string()), None).await;
+
+        let devices = next_devices(&mut watch, |d| active_ids(d) == ["d1"]).await;
+        assert_eq!(
+            devices.iter().find(|d| d.id.0 == "d2").unwrap().state,
+            DeviceState::Disconnected
         );
     }
 
     #[tokio::test]
-    async fn switch_active_device_local_cycles_through_switchable_devices_and_back() {
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
-        // Seed: d1 active, d2 inactive, d3 disconnected.
+    async fn a_controlled_device_cannot_switch_but_can_release() {
+        let service = seeded().await;
+        service.set_role(Role::Controlled).await.expect("set role");
+        assert_eq!(
+            service.switch_to("local").await,
+            Err(FlowError::NotController)
+        );
+        assert_eq!(
+            service.release_control().await,
+            Err(FlowError::NoController)
+        );
 
-        service.switch_active_device_local().await;
-        let devices = service.watch_devices().borrow().clone();
-        let by_id =
-            |devices: &[Device], id: &str| devices.iter().find(|d| d.id.0 == id).unwrap().state;
-        assert_eq!(by_id(&devices, "d1"), DeviceState::Inactive);
-        assert_eq!(by_id(&devices, "d2"), DeviceState::Active);
-        assert_eq!(by_id(&devices, "d3"), DeviceState::Disconnected);
-
-        // d3 stays disconnected (ineligible), so a second press wraps
-        // back to d1 rather than trying d3.
-        service.switch_active_device_local().await;
-        let devices = service.watch_devices().borrow().clone();
-        assert_eq!(by_id(&devices, "d1"), DeviceState::Active);
-        assert_eq!(by_id(&devices, "d2"), DeviceState::Inactive);
+        let mut registration = connect_peer(&service, "d2", Role::Controller).await;
+        service.release_control().await.expect("release");
+        assert_eq!(
+            registration.inbox.recv().await,
+            Some(LinkOut::ReleaseRequest)
+        );
+        assert_eq!(
+            service.watch_control_state().borrow().controller_device_id,
+            Some(DeviceId("d2".to_string()))
+        );
     }
 
     #[tokio::test]
-    async fn switch_active_device_local_with_nothing_else_switchable_does_nothing() {
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
-        service.remove_device("d2").await.expect("remove d2");
-        // Only d1 (active) and d3 (disconnected) remain — nothing eligible.
-
-        let before = service.watch_devices().borrow().clone();
-        service.switch_active_device_local().await;
-        let after = service.watch_devices().borrow().clone();
-        assert_eq!(before, after);
+    async fn a_controller_cannot_release_control() {
+        let service = seeded().await;
+        assert_eq!(
+            service.release_control().await,
+            Err(FlowError::NotControlled)
+        );
     }
 
     #[tokio::test]
-    async fn apply_peer_ownership_primary_makes_the_named_peer_the_only_active_device() {
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
+    async fn changing_role_closes_live_links_and_is_persisted() {
+        let service = seeded().await;
+        let mut registration = connect_peer(&service, "d2", Role::Controlled).await;
 
-        service
-            .apply_peer_ownership(&DeviceId("d2".to_string()), InputRole::Primary)
-            .await;
+        service.set_role(Role::Controlled).await.expect("set role");
 
-        let devices = service.watch_devices().borrow().clone();
-        let active: Vec<String> = devices
-            .iter()
-            .filter(|d| d.state == DeviceState::Active)
-            .map(|d| d.id.0.clone())
-            .collect();
-        assert_eq!(active, vec!["d2".to_string()]);
+        assert_eq!(
+            registration.inbox.recv().await,
+            Some(LinkOut::Close {
+                reason: "role_changed".to_string()
+            })
+        );
+        assert_eq!(service.watch_settings().borrow().role, Role::Controlled);
+        assert_eq!(
+            service.watch_control_state().borrow().role,
+            Role::Controlled
+        );
+        let stored = SettingsRepo::new(service.storage.clone()).load().await;
+        assert_eq!(stored.role, Role::Controlled);
     }
 
     #[tokio::test]
-    async fn apply_peer_ownership_secondary_makes_the_local_device_active() {
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
+    async fn peers_with_the_same_role_or_a_second_controller_are_refused() {
+        let service = seeded().await;
+        let peer = |role| PeerInfo {
+            role,
+            os: HostOs::Macos,
+            screen: ScreenSize {
+                width: 10,
+                height: 10,
+            },
+        };
+        let d2 = DeviceId("d2".to_string());
+        // Controller meets controller.
+        assert_eq!(
+            service.check_peer(&d2, &peer(Role::Controller)),
+            Err("role_conflict")
+        );
+        assert_eq!(service.check_peer(&d2, &peer(Role::Controlled)), Ok(()));
 
-        service
-            .apply_peer_ownership(&DeviceId("d2".to_string()), InputRole::Primary)
-            .await;
-        service
-            .apply_peer_ownership(&DeviceId("d2".to_string()), InputRole::Secondary)
-            .await;
-
-        let devices = service.watch_devices().borrow().clone();
-        let active: Vec<String> = devices
-            .iter()
-            .filter(|d| d.state == DeviceState::Active)
-            .map(|d| d.id.0.clone())
-            .collect();
-        assert_eq!(active, vec![LOCAL_DEVICE_ID.to_string()]);
+        // A controlled device accepts exactly one controller.
+        service.set_role(Role::Controlled).await.unwrap();
+        let _first = connect_peer(&service, "d2", Role::Controller).await;
+        assert_eq!(
+            service.check_peer(&DeviceId("d3".to_string()), &peer(Role::Controller)),
+            Err("role_conflict")
+        );
+        assert_eq!(service.check_peer(&d2, &peer(Role::Controller)), Ok(()));
     }
 
     #[tokio::test]
-    async fn peer_pipeline_guard_tracks_a_nested_count() {
-        let storage = Storage::open_in_memory().await.expect("open db");
-        let service = DaemonService::new_seeded_for_test(storage).await;
-        assert!(!service.peer_pipeline_active());
-
-        let first = service.enter_peer_pipeline();
-        assert!(service.peer_pipeline_active());
-
-        let second = service.enter_peer_pipeline();
+    async fn only_one_link_per_peer_can_be_registered() {
+        let service = seeded().await;
+        let id = DeviceId("d2".to_string());
+        let first = service.register_link(&id).expect("first claim");
+        assert!(service.register_link(&id).is_none());
         drop(first);
-        // A second pipeline is still live, so authority stays taken.
-        assert!(service.peer_pipeline_active());
+        assert!(service.register_link(&id).is_some());
+    }
 
-        drop(second);
-        assert!(!service.peer_pipeline_active());
+    #[tokio::test]
+    async fn a_connected_peer_is_placed_to_the_right_of_this_screen_by_default() {
+        let service = seeded().await;
+        let _link = connect_peer(&service, "d2", Role::Controlled).await;
+
+        let layout = service.watch_screen_layout().borrow().clone();
+        let local = layout
+            .placement(&DeviceId(LOCAL_DEVICE_ID.to_string()))
+            .unwrap();
+        let peer = layout.placement(&DeviceId("d2".to_string())).unwrap();
+        assert_eq!(peer.x, local.x + local.width as i32);
+        assert_eq!((peer.width, peer.height), (1000, 800));
+        assert_eq!(layout.validate(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn set_screen_layout_validates_persists_and_reaches_the_router() {
+        use flow_core::control::layout::Placement;
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage.clone()).await;
+        let local = DeviceId(LOCAL_DEVICE_ID.to_string());
+        let d2 = DeviceId("d2".to_string());
+        let stack = ScreenLayout {
+            screens: vec![
+                Placement {
+                    device_id: local.clone(),
+                    x: 0,
+                    y: 0,
+                    width: 1920,
+                    height: 1080,
+                },
+                Placement {
+                    device_id: d2.clone(),
+                    x: 0,
+                    y: 1080,
+                    width: 1000,
+                    height: 800,
+                },
+            ],
+        };
+
+        service
+            .set_screen_layout(stack.clone())
+            .await
+            .expect("valid layout");
+
+        assert_eq!(*service.watch_screen_layout().borrow(), stack);
+        assert_eq!(LayoutRepo::new(storage).load().await, Some(stack.clone()));
+
+        let mut overlapping = stack.clone();
+        overlapping.screens[1].y = 0;
+        assert!(matches!(
+            service.set_screen_layout(overlapping).await,
+            Err(FlowError::InvalidLayout(_))
+        ));
+        let mut stranger = stack.clone();
+        stranger.screens[1].device_id = DeviceId("nobody".to_string());
+        assert!(matches!(
+            service.set_screen_layout(stranger).await,
+            Err(FlowError::InvalidLayout(_))
+        ));
+        assert_eq!(*service.watch_screen_layout().borrow(), stack);
+    }
+
+    #[tokio::test]
+    async fn removing_a_device_removes_its_screen_and_a_controlled_device_cannot_set_layouts() {
+        let service = seeded().await;
+        let _link = connect_peer(&service, "d2", Role::Controlled).await;
+        service.remove_device("d2").await.unwrap();
+        assert!(service
+            .watch_screen_layout()
+            .borrow()
+            .placement(&DeviceId("d2".to_string()))
+            .is_none());
+
+        service.set_role(Role::Controlled).await.unwrap();
+        let layout = service.watch_screen_layout().borrow().clone();
+        assert_eq!(
+            service.set_screen_layout(layout).await,
+            Err(FlowError::NotController)
+        );
+    }
+
+    #[tokio::test]
+    async fn remap_rules_are_validated_applied_and_persisted() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_with_options(
+            storage,
+            ServiceOptions {
+                keymap_dir: Some(dir.path().to_path_buf()),
+                ..ServiceOptions::default()
+            },
+        )
+        .await;
+        let swap = RemapRule {
+            from: "Ctrl".to_string(),
+            to: "Meta".to_string(),
+            when_target_os: Some(HostOs::Macos),
+        };
+        service.set_remap_rules(vec![swap.clone()]).await.unwrap();
+        assert_eq!(*service.watch_remap_rules().borrow(), vec![swap.clone()]);
+        let written = std::fs::read_to_string(dir.path().join("remap.toml")).unwrap();
+        assert_eq!(
+            flow_core::keymap::remap::parse_rules(&written).unwrap(),
+            vec![swap]
+        );
+
+        let bad = RemapRule {
+            from: "Ctrl".to_string(),
+            to: "NOT_A_KEY".to_string(),
+            when_target_os: None,
+        };
+        assert!(matches!(
+            service.set_remap_rules(vec![bad]).await,
+            Err(FlowError::InvalidRemapRule(_))
+        ));
+        assert_eq!(service.watch_remap_rules().borrow().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn get_keymap_merges_the_user_override_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_with_options(
+            storage,
+            ServiceOptions {
+                keymap_dir: Some(dir.path().to_path_buf()),
+                ..ServiceOptions::default()
+            },
+        )
+        .await;
+        let embedded = service.keymap_for(HostOs::Macos);
+        assert_eq!(embedded["os"], "macos");
+        assert!(!embedded["keys"].as_array().unwrap().is_empty());
+        assert_eq!(
+            service.watch_settings().borrow().keymap_overrides_path,
+            dir.path().display().to_string()
+        );
     }
 
     /// Regression: `DeviceRepo` never persists `DeviceState`, so every
     /// device — including this machine — used to come back `Disconnected`
-    /// on the second boot against the same database. With nothing in a
-    /// switchable state, `switch_active_device` rejected every target and
-    /// the hotkey became a permanent no-op; the Flutter "Controlling" card
-    /// had nothing to show either, since it reads straight off
-    /// `watch_devices`.
+    /// on the second boot against the same database, leaving nothing
+    /// active for the UI to show.
     #[tokio::test]
-    async fn a_second_boot_still_has_a_switchable_device() {
+    async fn a_second_boot_still_has_the_local_device_active() {
         let storage = Storage::open_in_memory().await.expect("open db");
-
-        // First boot seeds and persists the device list.
         let _ = DaemonService::new_seeded_for_test(storage.clone()).await;
 
-        // Second boot against the same database.
         let service = DaemonService::new_seeded_for_test(storage).await;
         let devices = service.watch_devices().borrow().clone();
         let local = devices
@@ -2334,13 +2846,6 @@ mod tests {
             .find(|d| d.id.0 == LOCAL_DEVICE_ID)
             .expect("the local device survives a reload");
         assert_eq!(local.state, DeviceState::Active);
-
-        service.switch_active_device_local().await;
-        let after = service.watch_devices().borrow().clone();
-        assert!(
-            after.iter().any(|d| d.state == DeviceState::Active),
-            "the switch key must still be able to move the active device"
-        );
     }
 
     #[tokio::test]
@@ -2968,6 +3473,9 @@ mod tests {
                     os: HostOs::Linux,
                     state: DeviceState::Inactive,
                     last_seen: Utc::now(),
+                    role: None,
+                    screen: None,
+                    link_error: None,
                 },
                 public_key: Some(peer_public_key.clone()),
                 removable: true,

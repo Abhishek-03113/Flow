@@ -44,6 +44,24 @@ pub enum FlowError {
 
     #[error("no pairing request is awaiting a decision for that id")]
     PairingRequestNotFound,
+
+    #[error("only a controller can switch screens")]
+    NotController,
+
+    #[error("only a controlled device can release control")]
+    NotControlled,
+
+    #[error("no controller is linked to this device")]
+    NoController,
+
+    #[error("invalid remap rule: {0}")]
+    InvalidRemapRule(String),
+
+    #[error("invalid screen layout: {0}")]
+    InvalidLayout(String),
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 impl FlowError {
@@ -62,6 +80,12 @@ impl FlowError {
             FlowError::PermissionAlreadyGranted => "permission_already_granted",
             FlowError::LinkNotRecoverable(_) => "link_not_recoverable",
             FlowError::PairingRequestNotFound => "pairing_request_not_found",
+            FlowError::NotController => "not_controller",
+            FlowError::NotControlled => "not_controlled",
+            FlowError::NoController => "no_controller",
+            FlowError::InvalidRemapRule(_) => "invalid_remap_rule",
+            FlowError::InvalidLayout(_) => "invalid_layout",
+            FlowError::Internal(_) => "internal_error",
         }
     }
 }
@@ -104,6 +128,17 @@ mod tests {
         assert_eq!(
             FlowError::PairingRequestNotFound.code(),
             "pairing_request_not_found"
+        );
+        assert_eq!(FlowError::NotController.code(), "not_controller");
+        assert_eq!(FlowError::NotControlled.code(), "not_controlled");
+        assert_eq!(FlowError::NoController.code(), "no_controller");
+        assert_eq!(
+            FlowError::InvalidRemapRule("x".to_string()).code(),
+            "invalid_remap_rule"
+        );
+        assert_eq!(
+            FlowError::Internal("x".to_string()).code(),
+            "internal_error"
         );
     }
 }

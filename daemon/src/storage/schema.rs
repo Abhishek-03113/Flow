@@ -7,11 +7,11 @@
 
 use rusqlite_migration::{Migrations, M};
 
-/// The single initial migration. Split into further `M::up(...)` entries
-/// (appended, never edited in place) the day the schema needs to change.
+/// Migrations are appended, never edited in place.
 pub fn migrations() -> Migrations<'static> {
-    Migrations::new(vec![M::up(
-        "
+    Migrations::new(vec![
+        M::up(
+            "
         CREATE TABLE devices (
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
@@ -51,7 +51,27 @@ pub fn migrations() -> Migrations<'static> {
             private_key  BLOB NOT NULL
         );
         ",
-    )])
+        ),
+        // Controller/controlled model (ADR 0001).
+        M::up(
+            "
+        ALTER TABLE settings ADD COLUMN role TEXT NOT NULL DEFAULT 'controller';
+        ALTER TABLE settings ADD COLUMN return_home_key_label TEXT;
+        ALTER TABLE settings ADD COLUMN return_home_key_tokens TEXT;
+        ALTER TABLE settings ADD COLUMN edge_switching INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE settings ADD COLUMN edge_switch_delay_ms INTEGER NOT NULL DEFAULT 0;
+        ",
+        ),
+        // The controller's screen arrangement, as one JSON document.
+        M::up(
+            "
+        CREATE TABLE screen_layout (
+            id      INTEGER PRIMARY KEY CHECK (id = 1),
+            layout  TEXT NOT NULL
+        );
+        ",
+        ),
+    ])
 }
 
 #[cfg(test)]
@@ -83,7 +103,13 @@ mod tests {
 
         assert_eq!(
             table_names(&conn),
-            vec!["connection_history", "devices", "identity", "settings"]
+            vec![
+                "connection_history",
+                "devices",
+                "identity",
+                "screen_layout",
+                "settings"
+            ]
         );
     }
 
@@ -95,7 +121,13 @@ mod tests {
 
         assert_eq!(
             table_names(&conn),
-            vec!["connection_history", "devices", "identity", "settings"]
+            vec![
+                "connection_history",
+                "devices",
+                "identity",
+                "screen_layout",
+                "settings"
+            ]
         );
     }
 }

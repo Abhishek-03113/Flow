@@ -13,6 +13,7 @@ pub mod connection_history_repo;
 pub mod device_repo;
 pub mod history_logger;
 pub mod identity_repo;
+pub mod layout_repo;
 mod schema;
 pub mod settings_repo;
 

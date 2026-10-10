@@ -40,6 +40,7 @@ bluer = { version = "0.17.4", features = ["rfcomm", "bluetoothd"], optional = tr
 
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
+tempfile = "3"
 
 [features]
 bluetooth = ["dep:bluer"]

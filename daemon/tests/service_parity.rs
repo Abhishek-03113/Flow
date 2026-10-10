@@ -70,16 +70,29 @@ async fn watch_link_state_defaults_to_connected() {
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test]
 async fn switch_active_device_moves_target_active_and_demotes_the_previous_active() {
     let service = service().await;
+    let _link = service.connect_peer_for_test("d2").await;
+    let mut watch = service.watch_devices();
 
     service
         .switch_active_device("d2")
         .await
         .expect("switch to d2");
 
-    let devices = service.watch_devices().borrow().clone();
+    // The router changes screens on the capture path; the device list
+    // follows asynchronously.
+    let devices = loop {
+        let current = watch.borrow_and_update().clone();
+        if current
+            .iter()
+            .any(|d| d.id.0 == "d2" && d.state == DeviceState::Active)
+        {
+            break current;
+        }
+        watch.changed().await.expect("devices keep changing");
+    };
     assert_eq!(
         devices.iter().find(|d| d.id.0 == "d2").unwrap().state,
         DeviceState::Active

@@ -70,8 +70,12 @@ fn home_dir() -> Option<PathBuf> {
 /// process or a later restart) returns the identical token until the
 /// file is deleted.
 pub fn load_or_generate_token() -> String {
-    let path = token_path();
-    if let Ok(existing) = fs::read_to_string(&path) {
+    load_or_generate_token_at(&token_path())
+}
+
+/// [`load_or_generate_token`] for an explicit location.
+pub fn load_or_generate_token_at(path: &std::path::Path) -> String {
+    if let Ok(existing) = fs::read_to_string(path) {
         let trimmed = existing.trim();
         if !trimmed.is_empty() {
             return trimmed.to_string();
@@ -80,9 +84,9 @@ pub fn load_or_generate_token() -> String {
 
     let token = generate_token();
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("failed to create ~/.flow");
+        fs::create_dir_all(parent).expect("failed to create the token directory");
     }
-    write_token_file(&path, &token).expect("failed to persist the IPC auth token");
+    write_token_file(path, &token).expect("failed to persist the IPC auth token");
     token
 }
 
@@ -104,7 +108,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// "Open decisions" territory), not something worth a Windows-specific
 /// ACL call for a token whose actual secrecy already depends on desktop
 /// account isolation either way.
-fn write_token_file(path: &PathBuf, token: &str) -> io::Result<()> {
+fn write_token_file(path: &std::path::Path, token: &str) -> io::Result<()> {
     fs::write(path, token)?;
     #[cfg(unix)]
     {

@@ -127,7 +127,7 @@ mod tests {
         let (mut client, mut server) = connected_pair().await;
 
         let sent = ChannelMessage::Input {
-            sequence: 1,
+            seq: 1,
             event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: "A".to_string(),
                 modifiers: vec![],

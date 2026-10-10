@@ -1,33 +1,28 @@
-//! [`MacosInputCapture`]: installs a global `CGEventTap` and forwards
-//! translated events over a channel.
+//! [`MacosInputCapture`]: installs a global active `CGEventTap` and hands
+//! each translated event to the [`CaptureSink`].
 //!
 //! **Requires the Accessibility permission** (System Settings > Privacy &
 //! Security > Accessibility) for the process calling `start()` —
-//! `CGEventTapCreate` fails silently (returns a null tap, surfaced here as
-//! `MacosCaptureError::TapCreationFailed`) rather than erroring loudly
-//! without it. Surfacing that to the user as an actionable prompt is
-//! track B's `request_permission` command's job once this adapter is
-//! wired into it; this module only reports the failure.
+//! `CGEventTapCreate` fails silently (a null tap, surfaced as
+//! `MacosCaptureError::TapCreationFailed`) without it.
 //!
-//! The tap is created **active** (`CGEventTapOptions::Default`), not
-//! listen-only, so that [`InputCapture::set_suppress_local`] can actually
-//! withhold an event from this machine's own applications: while the
-//! shared `suppress` flag is set, the tap callback returns a NULL
-//! `CGEventRef` for events it consumes instead of the original pointer.
-//! `core-graphics` 0.24's safe `CGEventTap` wrapper can't express that
-//! (its trampoline maps a `None` return to "pass the original through"
-//! and never returns NULL), so `run_capture_loop` calls `CGEventTapCreate`
-//! directly through a small private [`ffi`] module with its own
-//! `extern "C"` trampoline. All `unsafe` is contained in that trampoline,
-//! `run_capture_loop`, and `mod ffi`.
+//! The tap is *active*: the callback returns a NULL `CGEventRef` for events
+//! the sink swallows, so they never reach local applications.
+//! `core-graphics` 0.24's safe `CGEventTap` wrapper can't express that, so
+//! `run_capture_loop` calls `CGEventTapCreate` directly through a small
+//! private [`ffi`] module with its own `extern "C"` trampoline. All
+//! `unsafe` is contained in that trampoline, `run_capture_loop`, and
+//! `mod ffi`.
+//!
+//! While input is suppressed the cursor is also dissociated from the mouse
+//! (`CGAssociateMouseAndMouseCursorPosition`) so the local pointer stays
+//! parked; deltas keep arriving on the tap.
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashSet;
 use std::fmt;
 use std::mem::ManuallyDrop;
 use std::os::raw::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -37,12 +32,11 @@ use core_foundation::base::TCFType;
 use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
 use core_foundation::runloop::{kCFRunLoopCommonModes, CFRunLoop};
 use core_graphics::event::{
-    CGEvent, CGEventFlags, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
-    CGEventTapProxy, CGEventType, CGKeyCode, EventField, KeyCode,
+    CGEvent, CGEventMask, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
+    CGEventTapProxy, CGEventType, EventField,
 };
 use core_graphics::sys::CGEventRef;
-use flow_core::input::InputCapture;
-use flow_core::protocol::InputEvent;
+use flow_core::input::{CaptureSink, Disposition, InputCapture};
 use foreign_types::ForeignType;
 
 use super::translate::EventTranslator;
@@ -119,30 +113,19 @@ impl fmt::Display for MacosCaptureError {
 
 impl std::error::Error for MacosCaptureError {}
 
-/// Captures keyboard/mouse input via a `CGEventTap` and forwards it as
-/// [`InputEvent`]s on the channel given at construction.
-///
-/// The `InputCapture` trait only has `start()`/`stop()` — no way to hand
-/// back captured events — so the channel is supplied up front instead of
-/// returned from `start()`, matching `LinuxInputCapture`.
+/// Captures keyboard/mouse input via a `CGEventTap`.
 pub struct MacosInputCapture {
-    sender: Sender<InputEvent>,
+    sink: Arc<dyn CaptureSink>,
     run_loop: Option<CFRunLoop>,
     worker: Option<JoinHandle<()>>,
-    /// The live local-suppression flag. Cloned into the capture thread's
-    /// [`Context`] on `start()`; `set_suppress_local` flips it and every
-    /// tap callback reads it. Held here too so the flag survives (and can
-    /// be pre-set) across `stop()`/`start()`.
-    suppress: Arc<AtomicBool>,
 }
 
 impl MacosInputCapture {
-    pub fn new(sender: Sender<InputEvent>) -> Self {
+    pub fn new(sink: Arc<dyn CaptureSink>) -> Self {
         Self {
-            sender,
+            sink,
             run_loop: None,
             worker: None,
-            suppress: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -155,10 +138,9 @@ impl InputCapture for MacosInputCapture {
             return Ok(());
         }
 
-        let sender = self.sender.clone();
-        let suppress = Arc::clone(&self.suppress);
+        let sink = Arc::clone(&self.sink);
         let (ready_tx, ready_rx) = mpsc::channel::<Result<CFRunLoop, MacosCaptureError>>();
-        let worker = thread::spawn(move || run_capture_loop(sender, suppress, ready_tx));
+        let worker = thread::spawn(move || run_capture_loop(sink, ready_tx));
 
         match ready_rx.recv() {
             Ok(Ok(run_loop)) => {
@@ -167,8 +149,7 @@ impl InputCapture for MacosInputCapture {
                 Ok(())
             }
             Ok(Err(err)) => Err(err),
-            // The sender end was dropped without a message: the thread
-            // exited before reaching the point where it reports success.
+            // The thread exited before reporting success.
             Err(_) => Err(MacosCaptureError::ThreadPanicked),
         }
     }
@@ -184,25 +165,6 @@ impl InputCapture for MacosInputCapture {
         }
         Ok(())
     }
-
-    /// Flips the shared suppression flag every tap callback reads. While
-    /// it is `true`, each callback still translates and forwards its
-    /// event (so the active remote peer keeps receiving input) but then
-    /// returns a NULL `CGEventRef` instead of the original event pointer,
-    /// so the local OS never delivers it to this machine's own
-    /// applications — see [`SuppressionGate`] for the press/release
-    /// symmetry that keeps local key state consistent across a toggle.
-    /// Safe to call before `start()` or after `stop()`: the flag simply
-    /// carries over.
-    ///
-    /// **Unverified on real macOS hardware** — this needs the
-    /// Accessibility permission and a live HID event stream, neither of
-    /// which this project's CI has. See `daemon/README.md`'s "Local input
-    /// suppression" section.
-    fn set_suppress_local(&mut self, suppress: bool) -> Result<(), Self::Error> {
-        self.suppress.store(suppress, Ordering::SeqCst);
-        Ok(())
-    }
 }
 
 /// Heap state the raw event-tap trampoline reads on every callback. A
@@ -213,31 +175,26 @@ impl InputCapture for MacosInputCapture {
 /// pointer is valid for the lifetime of every callback and the box is
 /// freed on `stop()` with no manual `unsafe` free and no leak.
 struct Context {
-    sender: Sender<InputEvent>,
+    sink: Arc<dyn CaptureSink>,
     translator: RefCell<EventTranslator>,
-    gate: RefCell<SuppressionGate>,
-    /// Shared with [`MacosInputCapture`] on the caller's thread: written
-    /// by `set_suppress_local`, read by every callback.
-    suppress: Arc<AtomicBool>,
     /// The tap's mach port, stored once created so the callback can
     /// re-arm the tap after the OS disables it
-    /// (`TapDisabledByTimeout` / `TapDisabledByUserInput`). Only ever
-    /// touched on the run-loop thread — which is where every callback and
-    /// the initial store both run — so a non-atomic `Cell` is enough.
+    /// (`TapDisabledByTimeout` / `TapDisabledByUserInput`). Only touched
+    /// on the run-loop thread, so a non-atomic `Cell` is enough.
     mach_port: Cell<CFMachPortRef>,
+    /// Whether the cursor is currently dissociated from the mouse.
+    cursor_parked: Cell<bool>,
 }
 
 fn run_capture_loop(
-    sender: Sender<InputEvent>,
-    suppress: Arc<AtomicBool>,
+    sink: Arc<dyn CaptureSink>,
     ready: Sender<Result<CFRunLoop, MacosCaptureError>>,
 ) {
     let ctx = Box::new(Context {
-        sender,
+        sink,
         translator: RefCell::new(EventTranslator::new()),
-        gate: RefCell::new(SuppressionGate::default()),
-        suppress,
         mach_port: Cell::new(ptr::null_mut()),
+        cursor_parked: Cell::new(false),
     });
     let ctx_ptr: *const Context = &*ctx;
 
@@ -301,6 +258,8 @@ fn run_capture_loop(
     CFRunLoop::run_current();
     // Reached only after `stop()` called `run_loop.stop()`, so the run
     // loop has stopped servicing the tap and no further callback can run.
+    // Never leave the pointer parked on the way out.
+    set_cursor_parked(&ctx, false);
     // `ctx`, `mach_port`, and `source` drop here.
 }
 
@@ -353,27 +312,23 @@ unsafe extern "C" fn event_tap_callback(
         let borrowed = ManuallyDrop::new(unsafe { CGEvent::from_ptr(event) });
         let cg: &CGEvent = &borrowed;
 
-        // Our own injected events (see `injector.rs`) come back around an
-        // active HID tap. Recognize them by the marker and pass straight
-        // through: don't forward Flow's own output to the peer, and don't
-        // gate it.
+        // Our own injected events come back around an active HID tap;
+        // they are not physical input.
         if cg.get_integer_value_field(EventField::EVENT_SOURCE_USER_DATA) == FLOW_INJECTED_MARKER {
             return false;
         }
 
         let timestamp_ms = now_ms();
-        if let Some(input_event) = ctx
+        let swallow = match ctx
             .translator
             .borrow_mut()
             .translate(etype, cg, timestamp_ms)
         {
-            // The peer ALWAYS gets the event, exactly as before
-            // suppression existed.
-            let _ = ctx.sender.send(input_event);
-        }
-
-        let suppress = ctx.suppress.load(Ordering::SeqCst);
-        ctx.gate.borrow_mut().on_event(suppress, etype, cg)
+            Some(input_event) => ctx.sink.on_event(&input_event) == Disposition::Swallow,
+            None => ctx.sink.suppressing(),
+        };
+        set_cursor_parked(ctx, ctx.sink.suppressing());
+        swallow
     }));
 
     match outcome {
@@ -436,6 +391,20 @@ mod ffi {
         /// initially and to re-arm it from the callback after the OS
         /// disables it.
         pub fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
+
+        /// Connects (non-zero) or disconnects (zero) mouse movement from
+        /// the on-screen cursor. Returns a `CGError` (0 = success).
+        pub fn CGAssociateMouseAndMouseCursorPosition(connected: i32) -> i32;
+    }
+}
+
+/// Parks (dissociates) or releases the cursor, only when that changes.
+fn set_cursor_parked(ctx: &Context, parked: bool) {
+    if ctx.cursor_parked.replace(parked) != parked {
+        // SAFETY: a plain CoreGraphics call with no pointer arguments.
+        unsafe {
+            ffi::CGAssociateMouseAndMouseCursorPosition(i32::from(!parked));
+        }
     }
 }
 
@@ -444,353 +413,4 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
         .unwrap_or(0)
-}
-
-/// The virtual keycode carried by a keyboard or `FlagsChanged` event.
-fn keycode_of(event: &CGEvent) -> i64 {
-    event.get_integer_value_field(EventField::KEYBOARD_EVENT_KEYCODE)
-}
-
-/// The `CGEventFlags` bit a modifier keycode toggles, or `None` if `code`
-/// isn't a modifier key. Mirrors `translate::modifier_for` +
-/// `translate::flag_bit_for` so the gate reads a `FlagsChanged` press vs
-/// release exactly the way `EventTranslator` does.
-fn modifier_flag_bit(code: i64) -> Option<CGEventFlags> {
-    match code as CGKeyCode {
-        KeyCode::SHIFT | KeyCode::RIGHT_SHIFT => Some(CGEventFlags::CGEventFlagShift),
-        KeyCode::CONTROL | KeyCode::RIGHT_CONTROL => Some(CGEventFlags::CGEventFlagControl),
-        KeyCode::OPTION | KeyCode::RIGHT_OPTION => Some(CGEventFlags::CGEventFlagAlternate),
-        KeyCode::COMMAND | KeyCode::RIGHT_COMMAND => Some(CGEventFlags::CGEventFlagCommand),
-        _ => None,
-    }
-}
-
-/// A stable id for the button an `OtherMouse*` event refers to.
-/// `translate.rs` only models button number `2` (middle) — give it id `3`
-/// to line up with the Windows gate's left=1 / right=2 / middle=3; any
-/// rarer button keeps its raw number with the high bit set so it can
-/// never collide with 1/2/3.
-fn other_button_id(event: &CGEvent) -> u8 {
-    match event.get_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER) {
-        2 => 3,
-        other => (other as u8) | 0x80,
-    }
-}
-
-/// Decides, per tap callback, whether an event must be withheld from the
-/// local OS (callback returns NULL instead of the event pointer) while
-/// this machine is forwarding input to an active remote peer.
-///
-/// The rule is *press/release symmetry*, not "withhold everything while
-/// the flag is set": a release is withheld exactly when its matching
-/// press was. That keeps local key/button state consistent across a
-/// suppression toggle — a key pressed while local then held as
-/// suppression turns on still gets its release delivered locally, and the
-/// switch key's own key-up (which lands just after the daemon flips the
-/// route and turns suppression on) does not strand a phantom key-down in
-/// the local foreground app. Ported from `windows/capture.rs`'s
-/// `SuppressionGate`.
-#[derive(Default)]
-struct SuppressionGate {
-    /// Virtual keycodes whose key-down (or modifier press) this gate
-    /// withheld and whose key-up must therefore be withheld too.
-    withheld_keys: HashSet<i64>,
-    /// Mouse-button ids (see [`other_button_id`]; left=1, right=2,
-    /// middle=3) whose button-down this gate withheld.
-    withheld_buttons: HashSet<u8>,
-}
-
-impl SuppressionGate {
-    /// `suppress` is the current value of the shared local-suppression
-    /// flag; `ty`/`event` are the tap callback's event type and event.
-    fn on_event(&mut self, suppress: bool, ty: CGEventType, event: &CGEvent) -> bool {
-        match ty {
-            CGEventType::KeyDown => self.on_key(suppress, keycode_of(event), true),
-            CGEventType::KeyUp => self.on_key(suppress, keycode_of(event), false),
-            CGEventType::FlagsChanged => {
-                let code = keycode_of(event);
-                // Modifiers report a resulting flag bitmask, not a
-                // discrete down/up — derive press vs release the same way
-                // `EventTranslator::translate_flags_changed` does, then
-                // run the keycode through the identical withheld-set logic
-                // as a normal key.
-                let pressed = match modifier_flag_bit(code) {
-                    Some(bit) => event.get_flags().contains(bit),
-                    // A non-modifier `FlagsChanged` (Caps Lock, Fn) has no
-                    // flag bit the translator tracks and is dropped by
-                    // translation anyway; fall back to "already tracked =>
-                    // this is its release" so a withheld one still pairs.
-                    None => !self.withheld_keys.contains(&code),
-                };
-                self.on_key(suppress, code, pressed)
-            }
-            CGEventType::LeftMouseDown => self.on_button(suppress, 1, true),
-            CGEventType::LeftMouseUp => self.on_button(suppress, 1, false),
-            CGEventType::RightMouseDown => self.on_button(suppress, 2, true),
-            CGEventType::RightMouseUp => self.on_button(suppress, 2, false),
-            CGEventType::OtherMouseDown => self.on_button(suppress, other_button_id(event), true),
-            CGEventType::OtherMouseUp => self.on_button(suppress, other_button_id(event), false),
-            // Motion and scroll have no press to pair a release with, so
-            // they simply follow the current flag.
-            CGEventType::MouseMoved
-            | CGEventType::LeftMouseDragged
-            | CGEventType::RightMouseDragged
-            | CGEventType::OtherMouseDragged
-            | CGEventType::ScrollWheel => suppress,
-            // Anything else (tap-disabled notifications are handled before
-            // the gate is ever consulted): never withhold.
-            _ => false,
-        }
-    }
-
-    fn on_key(&mut self, suppress: bool, code: i64, pressed: bool) -> bool {
-        if pressed {
-            if suppress {
-                self.withheld_keys.insert(code);
-                true
-            } else {
-                false
-            }
-        } else {
-            // Withheld iff the matching press was. `remove` reports
-            // whether it was tracked and clears it in one step.
-            self.withheld_keys.remove(&code)
-        }
-    }
-
-    fn on_button(&mut self, suppress: bool, id: u8, pressed: bool) -> bool {
-        if pressed {
-            if suppress {
-                self.withheld_buttons.insert(id);
-                true
-            } else {
-                false
-            }
-        } else {
-            self.withheld_buttons.remove(&id)
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core_graphics::event::CGMouseButton;
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    use core_graphics::geometry::CGPoint;
-
-    fn source() -> CGEventSource {
-        CGEventSource::new(CGEventSourceStateID::HIDSystemState).expect("event source")
-    }
-
-    fn key_event(code: CGKeyCode, is_down: bool) -> CGEvent {
-        CGEvent::new_keyboard_event(source(), code, is_down).expect("keyboard event")
-    }
-
-    /// A `FlagsChanged` event for modifier `code`, with `flags` as the
-    /// resulting bitmask — built exactly like `translate.rs`'s tests.
-    fn flags_changed(code: CGKeyCode, flags: CGEventFlags) -> CGEvent {
-        let event = key_event(code, true);
-        event.set_flags(flags);
-        event
-    }
-
-    fn mouse_event(ty: CGEventType, button: CGMouseButton) -> CGEvent {
-        CGEvent::new_mouse_event(source(), ty, CGPoint::new(0.0, 0.0), button).expect("mouse event")
-    }
-
-    const VK_A: i64 = 0x00;
-    const VK_B: i64 = 0x0B;
-
-    #[test]
-    fn with_suppression_off_no_key_event_is_withheld() {
-        let mut gate = SuppressionGate::default();
-        assert!(!gate.on_event(
-            false,
-            CGEventType::KeyDown,
-            &key_event(VK_A as CGKeyCode, true)
-        ));
-        assert!(!gate.on_event(
-            false,
-            CGEventType::KeyUp,
-            &key_event(VK_A as CGKeyCode, false)
-        ));
-    }
-
-    #[test]
-    fn with_suppression_on_a_full_key_press_and_release_are_both_withheld() {
-        let mut gate = SuppressionGate::default();
-        assert!(gate.on_event(
-            true,
-            CGEventType::KeyDown,
-            &key_event(VK_A as CGKeyCode, true)
-        ));
-        assert!(gate.on_event(
-            true,
-            CGEventType::KeyUp,
-            &key_event(VK_A as CGKeyCode, false)
-        ));
-    }
-
-    #[test]
-    fn a_key_release_is_withheld_after_suppression_is_handed_back_if_its_press_was() {
-        let mut gate = SuppressionGate::default();
-        // Pressed while forwarding to the peer...
-        assert!(gate.on_event(
-            true,
-            CGEventType::KeyDown,
-            &key_event(VK_A as CGKeyCode, true)
-        ));
-        // ...released after the route flipped back to local: still
-        // withheld, so the local app never sees a dangling key-down.
-        assert!(gate.on_event(
-            false,
-            CGEventType::KeyUp,
-            &key_event(VK_A as CGKeyCode, false)
-        ));
-        // And exactly once.
-        assert!(!gate.on_event(
-            false,
-            CGEventType::KeyUp,
-            &key_event(VK_A as CGKeyCode, false)
-        ));
-    }
-
-    #[test]
-    fn a_key_release_reaches_local_when_its_press_did_even_if_suppression_turned_on_since() {
-        let mut gate = SuppressionGate::default();
-        // Pressed while local — the local app saw the key-down.
-        assert!(!gate.on_event(
-            false,
-            CGEventType::KeyDown,
-            &key_event(VK_A as CGKeyCode, true)
-        ));
-        // Suppression turns on mid-hold; the release must still reach the
-        // local app or its key stays stuck down there.
-        assert!(!gate.on_event(
-            true,
-            CGEventType::KeyUp,
-            &key_event(VK_A as CGKeyCode, false)
-        ));
-    }
-
-    #[test]
-    fn keys_are_tracked_independently() {
-        let mut gate = SuppressionGate::default();
-        assert!(gate.on_event(
-            true,
-            CGEventType::KeyDown,
-            &key_event(VK_A as CGKeyCode, true)
-        ));
-        assert!(gate.on_event(
-            true,
-            CGEventType::KeyDown,
-            &key_event(VK_B as CGKeyCode, true)
-        ));
-        // Releasing A after the flag cleared: withheld (its down was);
-        // B is still independently tracked.
-        assert!(gate.on_event(
-            false,
-            CGEventType::KeyUp,
-            &key_event(VK_A as CGKeyCode, false)
-        ));
-        assert!(gate.on_event(
-            false,
-            CGEventType::KeyUp,
-            &key_event(VK_B as CGKeyCode, false)
-        ));
-        assert!(!gate.on_event(
-            false,
-            CGEventType::KeyUp,
-            &key_event(VK_B as CGKeyCode, false)
-        ));
-    }
-
-    #[test]
-    fn a_flags_changed_press_and_release_follow_the_same_symmetry() {
-        let mut gate = SuppressionGate::default();
-        // Shift goes down (flag now set) while forwarding to the peer.
-        let down = flags_changed(KeyCode::SHIFT, CGEventFlags::CGEventFlagShift);
-        assert!(gate.on_event(true, CGEventType::FlagsChanged, &down));
-        // Shift released (flag cleared) after the route flipped back:
-        // still withheld because its press was, then not again.
-        let up = flags_changed(KeyCode::SHIFT, CGEventFlags::CGEventFlagNull);
-        assert!(gate.on_event(false, CGEventType::FlagsChanged, &up));
-        let up_again = flags_changed(KeyCode::SHIFT, CGEventFlags::CGEventFlagNull);
-        assert!(!gate.on_event(false, CGEventType::FlagsChanged, &up_again));
-    }
-
-    #[test]
-    fn a_flags_changed_release_whose_press_reached_local_is_not_withheld() {
-        let mut gate = SuppressionGate::default();
-        // Control pressed while local — local app saw it.
-        let down = flags_changed(KeyCode::CONTROL, CGEventFlags::CGEventFlagControl);
-        assert!(!gate.on_event(false, CGEventType::FlagsChanged, &down));
-        // Suppression turns on mid-hold; the release still reaches local.
-        let up = flags_changed(KeyCode::CONTROL, CGEventFlags::CGEventFlagNull);
-        assert!(!gate.on_event(true, CGEventType::FlagsChanged, &up));
-    }
-
-    #[test]
-    fn mouse_move_and_scroll_follow_the_flag() {
-        let mut gate = SuppressionGate::default();
-        let moved = mouse_event(CGEventType::MouseMoved, CGMouseButton::Left);
-        let scroll = mouse_event(CGEventType::ScrollWheel, CGMouseButton::Left);
-        assert!(gate.on_event(true, CGEventType::MouseMoved, &moved));
-        assert!(!gate.on_event(false, CGEventType::MouseMoved, &moved));
-        assert!(gate.on_event(true, CGEventType::ScrollWheel, &scroll));
-        assert!(!gate.on_event(false, CGEventType::ScrollWheel, &scroll));
-    }
-
-    #[test]
-    fn a_mouse_button_release_is_withheld_iff_its_press_was() {
-        let mut gate = SuppressionGate::default();
-        let l_down = mouse_event(CGEventType::LeftMouseDown, CGMouseButton::Left);
-        let l_up = mouse_event(CGEventType::LeftMouseUp, CGMouseButton::Left);
-        let r_down = mouse_event(CGEventType::RightMouseDown, CGMouseButton::Right);
-        let r_up = mouse_event(CGEventType::RightMouseUp, CGMouseButton::Right);
-        // Pressed while forwarding, released after the route flipped back.
-        assert!(gate.on_event(true, CGEventType::LeftMouseDown, &l_down));
-        assert!(gate.on_event(false, CGEventType::LeftMouseUp, &l_up));
-        assert!(!gate.on_event(false, CGEventType::LeftMouseUp, &l_up));
-        // Pressed while local, suppression turns on mid-hold: the release
-        // still reaches the local app.
-        assert!(!gate.on_event(false, CGEventType::RightMouseDown, &r_down));
-        assert!(!gate.on_event(true, CGEventType::RightMouseUp, &r_up));
-    }
-
-    #[test]
-    fn mouse_buttons_are_tracked_independently_including_middle() {
-        let mut gate = SuppressionGate::default();
-        let l_down = mouse_event(CGEventType::LeftMouseDown, CGMouseButton::Left);
-        let r_down = mouse_event(CGEventType::RightMouseDown, CGMouseButton::Right);
-        let m_down = mouse_event(CGEventType::OtherMouseDown, CGMouseButton::Center);
-        m_down.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, 2);
-        let l_up = mouse_event(CGEventType::LeftMouseUp, CGMouseButton::Left);
-        let r_up = mouse_event(CGEventType::RightMouseUp, CGMouseButton::Right);
-        let m_up = mouse_event(CGEventType::OtherMouseUp, CGMouseButton::Center);
-        m_up.set_integer_value_field(EventField::MOUSE_EVENT_BUTTON_NUMBER, 2);
-
-        assert!(gate.on_event(true, CGEventType::LeftMouseDown, &l_down));
-        assert!(gate.on_event(true, CGEventType::RightMouseDown, &r_down));
-        assert!(gate.on_event(true, CGEventType::OtherMouseDown, &m_down));
-        // Each release withheld once, independently.
-        assert!(gate.on_event(false, CGEventType::LeftMouseUp, &l_up));
-        assert!(gate.on_event(false, CGEventType::RightMouseUp, &r_up));
-        assert!(gate.on_event(false, CGEventType::OtherMouseUp, &m_up));
-        assert!(!gate.on_event(false, CGEventType::OtherMouseUp, &m_up));
-    }
-
-    #[test]
-    fn event_mask_covers_the_real_types_and_skips_the_tap_disabled_sentinels() {
-        let mask = event_mask();
-        let key_down = 1u64 << CGEventType::KeyDown as u32;
-        let scroll = 1u64 << CGEventType::ScrollWheel as u32;
-        assert_eq!(mask & key_down, key_down);
-        assert_eq!(mask & scroll, scroll);
-        // 0xFFFF_FFFE / 0xFFFF_FFFF can't be represented as a shift and
-        // must not have been folded in (that would have panicked or
-        // wrapped); the mask stays a small bitset.
-        assert_eq!(mask >> 28, 0);
-    }
 }

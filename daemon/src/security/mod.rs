@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(claimed_b, id_b_key, "A learns B's claimed key");
 
         let event = ChannelMessage::Input {
-            sequence: 1,
+            seq: 1,
             event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: "H".to_string(),
                 modifiers: vec![],

@@ -16,9 +16,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::device::DeviceId;
+use crate::control::Role;
+use crate::device::{HostOs, ScreenSize};
 use crate::pairing::{PairingDecision, PairingRequest};
-use crate::protocol::InputEvent;
+use crate::protocol::{InputEvent, Modifier};
 
 /// Which medium backs a [`Channel`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,70 +60,63 @@ pub enum PairingWireMessage {
     Decision(PairingDecision),
 }
 
-/// Everything that can travel over a [`Channel`].
+/// The daemon-to-daemon wire protocol version. A peer announcing another
+/// version (or none: v1 peers speak a different message set) is refused.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// Everything that can travel over a [`Channel`]
+/// (`docs/adr/0001-controller-controlled-input-model.md`).
+///
+/// `seq` is assigned by the controller, one counter per connection shared
+/// by `Enter`, `Leave` and `Input`, and the controlled side drops anything
+/// at or below the last it accepted. A counter, not a timestamp: two
+/// legitimate mouse deltas can share a millisecond.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ChannelMessage {
-    /// `sequence` is assigned by the sender (`daemon::pipeline::send_while_active`),
-    /// starting at 1 and incrementing by exactly 1 per event on that
-    /// connection — never derived from `event`'s own `timestamp_ms`. The
-    /// receiving side (`daemon::pipeline::receive_and_inject`) rejects
-    /// anything arriving with a `sequence` at or below the last one it
-    /// accepted, which a wall-clock timestamp can't reliably do: two
-    /// legitimate high-frequency events (e.g. consecutive mouse-move
-    /// deltas) can share the same millisecond on a coarse OS clock, which
-    /// a timestamp-based check would then have to either wrongly accept
-    /// (defeating replay protection) or wrongly drop (losing real input)
-    /// — a per-connection counter has no such collision by construction.
+    /// First frame from both sides: capabilities and role.
+    Hello {
+        protocol_version: u32,
+        role: Role,
+        os: HostOs,
+        screen: ScreenSize,
+        device_name: String,
+    },
+    /// controller -> controlled: you are now the input target; warp the
+    /// cursor to `(x, y)`.
+    Enter {
+        seq: u64,
+        x: i32,
+        y: i32,
+        held_modifiers: Vec<Modifier>,
+    },
+    /// controller -> controlled: stop being the target; release every
+    /// held key and button.
+    Leave {
+        seq: u64,
+    },
+    /// controller -> controlled; only valid between `Enter` and `Leave`.
     Input {
-        sequence: u64,
+        seq: u64,
         event: InputEvent,
     },
-    Pairing(PairingWireMessage),
-    Heartbeat,
-    /// The single ownership-authority message, serving two purposes so a
-    /// second message type isn't needed for either:
-    ///
-    /// 1. **Live handoff** — hands the input-ownership baton across the
-    ///    *same* persistent connection input events travel over, never a
-    ///    reconnect. Sent by whichever daemon just changed its own role.
-    /// 2. **Reconnect/first-connection handshake** — the very first message
-    ///    each side sends on a brand-new connection (`daemon::pipeline::
-    ///    run_paired_connection`), stating what it currently believes,
-    ///    before either side touches local forwarding/suppression state.
-    ///
-    /// `primary_device_id` is the **absolute** id of whichever device is
-    /// Primary — never a sender-relative role a receiver has to invert
-    /// (`sender_role.opposite()`), which cannot tell two independently
-    /// diverged peers apart (`"Fix Flow V1 Ownership Synchronization"`
-    /// task's core split-brain complaint). A receiver rejects a
-    /// `primary_device_id` that names neither itself nor its peer — the
-    /// only two devices it actually knows about in this V1 model.
-    ///
-    /// `generation` orders these messages across this daemon pair's whole
-    /// lifetime, not just one TCP connection: monotonically bumped by the
-    /// sender on every locally-initiated change
-    /// (`daemon::ownership::OwnershipHandle::bump_generation`) and never
-    /// reset across a reconnect. A receiver applies a live handoff only if
-    /// `generation` is strictly greater than the last one it accepted
-    /// (`OwnershipHandle::try_advance_generation`); an equal or lower value
-    /// is a stale retransmit or exact duplicate and is ignored. The
-    /// handshake case instead *reconciles* both sides' generations
-    /// (`OwnershipHandle::reconcile`) — see
-    /// `daemon::pipeline::resolve_ownership` for the deterministic rule
-    /// that keeps two peers from ever both landing on Primary after a
-    /// disconnect.
-    OwnershipChanged {
-        primary_device_id: DeviceId,
-        generation: u64,
+    /// controlled -> controller: the screen resolution changed.
+    ScreenInfo {
+        width: u32,
+        height: u32,
     },
-    /// Raw bytes for session establishment. Carried by `NoiseChannel`
-    /// (`docs/tasks/daemon-todos.json` H3) for handshake material before its wrapped
-    /// transport is established, and for an encrypted serialized
-    /// `ChannelMessage` afterward; also carries the single cleartext
-    /// public-key frame of `daemon::security`'s dev-only plaintext
-    /// handshake (`FLOW_SECURITY=insecure`). Never constructed or matched
-    /// outside those two modules — every other module only ever sees the
-    /// decrypted `ChannelMessage` the session channel yields.
+    /// controlled -> controller: the user wants their machine back.
+    ReleaseRequest,
+    Heartbeat,
+    /// Orderly close, with a machine-readable reason (`role_conflict`,
+    /// `protocol_mismatch`, `shutdown`, ...).
+    Goodbye {
+        reason: String,
+    },
+    Pairing(PairingWireMessage),
+    /// Raw bytes for session establishment, carried by `NoiseChannel` for
+    /// its handshake and (encrypted) for every serialized
+    /// `ChannelMessage` afterwards, and by the dev-only plaintext
+    /// handshake. Never constructed or matched outside those modules.
     Noise(Vec<u8>),
 }
 
@@ -244,22 +238,27 @@ mod tests {
             modifiers: vec![],
             timestamp_ms: 0,
         });
-        let message = ChannelMessage::Input { sequence: 1, event };
+        let message = ChannelMessage::Input { seq: 1, event };
         a.send(message.clone()).await.expect("send");
         let received = b.recv().await.expect("recv");
         assert_eq!(received, message);
     }
 
     #[tokio::test]
-    async fn an_ownership_changed_message_round_trips() {
+    async fn a_hello_round_trips() {
         let (mut a, mut b) = ChannelPair::new_pair();
-        let message = ChannelMessage::OwnershipChanged {
-            primary_device_id: DeviceId("d1".to_string()),
-            generation: 7,
+        let message = ChannelMessage::Hello {
+            protocol_version: PROTOCOL_VERSION,
+            role: Role::Controller,
+            os: HostOs::Windows,
+            screen: ScreenSize {
+                width: 1920,
+                height: 1080,
+            },
+            device_name: "Desk".to_string(),
         };
         a.send(message.clone()).await.expect("send");
-        let received = b.recv().await.expect("recv");
-        assert_eq!(received, message);
+        assert_eq!(b.recv().await.expect("recv"), message);
     }
 
     #[tokio::test]

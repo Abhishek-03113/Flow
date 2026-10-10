@@ -93,6 +93,14 @@ pub fn parse_rules(text: &str) -> Result<Vec<RemapRule>, RemapError> {
     Ok(file.rule)
 }
 
+/// Renders rules as the `remap.toml` shape [`parse_rules`] reads.
+pub fn rules_to_toml(rules: &[RemapRule]) -> String {
+    let file = RemapFile {
+        rule: rules.to_vec(),
+    };
+    toml::to_string(&file).expect("remap rules serialize to TOML")
+}
+
 /// Rewrites a keyboard event's key and modifiers for `target_os`. Mouse
 /// events and events no rule matches pass through unchanged.
 pub fn apply_remaps(event: InputEvent, target_os: HostOs, rules: &[RemapRule]) -> InputEvent {
@@ -174,6 +182,16 @@ pub fn apply_remaps(event: InputEvent, target_os: HostOs, rules: &[RemapRule]) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rules_survive_a_round_trip_through_toml() {
+        let rules = vec![RemapRule {
+            from: "Ctrl".to_string(),
+            to: "Meta".to_string(),
+            when_target_os: Some(HostOs::Macos),
+        }];
+        assert_eq!(parse_rules(&rules_to_toml(&rules)).unwrap(), rules);
+    }
+
     use super::*;
     use crate::protocol::MouseEvent;
 
