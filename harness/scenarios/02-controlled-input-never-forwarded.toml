@@ -1,0 +1,95 @@
+name = "controlled-input-never-forwarded"
+description = """
+The 'Mac input flows back' bug: a controlled device never captures, so what its owner types and does on its
+own keyboard and trackpad stays on that machine, whether or not the controller is currently driving it."""
+
+[[steps]]
+do = "expect"
+that = "capturing"
+on = "ctd"
+is = false
+[[steps]]
+do = "expect"
+that = "capturing"
+on = "ctl"
+is = true
+
+# Controlled device's owner works while the controller is home.
+[[steps]]
+do = "type"
+on = "ctd"
+text = "mn"
+[[steps]]
+do = "move"
+on = "ctd"
+dx = 30
+dy = 12
+times = 3
+[[steps]]
+do = "click"
+on = "ctd"
+[[steps]]
+do = "scroll"
+on = "ctd"
+dx = 0
+dy = -3
+[[steps]]
+do = "expect"
+that = "no_forwarding"
+on = "ctd"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctl"
+events = []
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
+
+# ... and while the controller is driving it.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "entered"
+on = "ctd"
+is = true
+[[steps]]
+do = "type"
+on = "ctl"
+text = "q"
+[[steps]]
+do = "type"
+on = "ctd"
+text = "op"
+[[steps]]
+do = "move"
+on = "ctd"
+dx = -20
+dy = 5
+times = 2
+[[steps]]
+do = "click"
+on = "ctd"
+button = "right"
+[[steps]]
+do = "expect"
+that = "no_forwarding"
+on = "ctd"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctl"
+events = []
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down Q", "up Q"]

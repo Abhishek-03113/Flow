@@ -1,0 +1,126 @@
+name = "remap-per-target-os"
+description = """
+User remap rules apply on the controller only for the OS they name: Ctrl <-> Meta swapped for a macOS target
+(so Ctrl+C copies on the Mac) leaves Windows and Linux targets untouched, while a rule with no target OS
+applies everywhere. Keys are injected as the target OS's own native codes."""
+
+[[steps]]
+do = "set_remaps"
+on = "ctl"
+rules = [
+  { from = "Ctrl", to = "Meta", when_target_os = "macos" },
+  { from = "Meta", to = "Ctrl", when_target_os = "macos" },
+  { from = "CAPS_LOCK", to = "ESCAPE" },
+]
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+
+# Ctrl+C
+[[steps]]
+do = "press"
+on = "ctl"
+key = "CONTROL"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "C"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "C"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "CONTROL"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down COMMAND", "down C", "up C", "up COMMAND"]
+when = "ctd=macos"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down CONTROL", "down C", "up C", "up CONTROL"]
+when = "ctd!=macos"
+
+# Meta+V (Win/Cmd key)
+[[steps]]
+do = "clear"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "COMMAND"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "V"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "V"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "COMMAND"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down CONTROL", "down V", "up V", "up CONTROL"]
+when = "ctd=macos"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down COMMAND", "down V", "up V", "up COMMAND"]
+when = "ctd!=macos"
+
+# A key rule without a target OS applies to every target.
+[[steps]]
+do = "clear"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "CAPS_LOCK"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "CAPS_LOCK"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down ESCAPE", "up ESCAPE"]
+
+# Remaps are for forwarded input only: at home nothing is rewritten.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "clear"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "CONTROL"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "CONTROL"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down CONTROL", "up CONTROL"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = []

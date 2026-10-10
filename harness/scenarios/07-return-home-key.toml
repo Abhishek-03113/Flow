@@ -1,0 +1,73 @@
+name = "return-home-key"
+description = """
+The optional return-home key jumps straight to the controller's own screen, whichever screen is active, and
+is consumed like the switch hotkey; pressed while already home it does nothing."""
+
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "return_home_key"
+value = { label = "F14", keys = ["F14"] }
+
+# Pressed at home: nothing happens, nothing leaks.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+which = "return_home"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
+
+# From the remote screen it brings control home.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "r"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+which = "return_home"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+[[steps]]
+do = "expect"
+that = "entered"
+on = "ctd"
+is = false
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "F14"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down R", "up R"]
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []

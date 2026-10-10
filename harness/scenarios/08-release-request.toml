@@ -1,0 +1,81 @@
+name = "release-request"
+description = """
+The controlled side's 'Release control': the request reaches the controller, which returns to its own
+screen and un-suppresses its keyboard. Role guards: only a controlled device can release, only a controller
+can switch."""
+
+[[steps]]
+do = "switch_to"
+on = "ctl"
+target = "ctd"
+[[steps]]
+do = "expect"
+that = "entered"
+on = "ctd"
+is = true
+[[steps]]
+do = "type"
+on = "ctl"
+text = "a"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "B"
+
+[[steps]]
+do = "release_request"
+on = "ctd"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+[[steps]]
+do = "expect"
+that = "entered"
+on = "ctd"
+is = false
+[[steps]]
+do = "release"
+on = "ctl"
+key = "B"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down A", "up A", "down B", "up B"]
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
+
+# Back at home, typing is local again; a release request is a no-op.
+[[steps]]
+do = "release_request"
+on = "ctd"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "c"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down C", "up C"]
+
+# Roles are enforced.
+[[steps]]
+do = "release_request"
+on = "ctl"
+expect_error = "not_controlled"
+[[steps]]
+do = "switch_to"
+on = "ctd"
+target = "local"
+expect_error = "not_controller"

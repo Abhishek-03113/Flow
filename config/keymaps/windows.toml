@@ -84,6 +84,8 @@ keys = [
   { name = "COMMAND", code = 0x5B },
   { name = "RIGHT_COMMAND", code = 0x5C },
   { name = "CAPS_LOCK", code = 0x14 },
+  { name = "SCROLLLOCK", code = 0x91 },
+  { name = "PAUSE", code = 0x13 },
   # Navigation
   { name = "HOME", code = 0x24 },
   { name = "END", code = 0x23 },

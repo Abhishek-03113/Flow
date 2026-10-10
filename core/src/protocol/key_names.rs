@@ -64,6 +64,9 @@ pub const RIGHT_OPTION: &str = "RIGHT_OPTION";
 pub const COMMAND: &str = "COMMAND";
 pub const RIGHT_COMMAND: &str = "RIGHT_COMMAND";
 pub const CAPS_LOCK: &str = "CAPS_LOCK";
+/// Spelled without an underscore: switch-key bindings write `ScrollLock`.
+pub const SCROLLLOCK: &str = "SCROLLLOCK";
+pub const PAUSE: &str = "PAUSE";
 pub const FUNCTION: &str = "FUNCTION";
 
 pub const HOME: &str = "HOME";
@@ -117,6 +120,8 @@ pub fn all() -> Vec<String> {
         COMMAND,
         RIGHT_COMMAND,
         CAPS_LOCK,
+        SCROLLLOCK,
+        PAUSE,
         FUNCTION,
         HOME,
         END,

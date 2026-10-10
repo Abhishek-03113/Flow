@@ -1,0 +1,75 @@
+name = "no-local-leak-while-remote"
+description = """
+While the controlled machine is active nothing the controller's user does (keys, pointer moves, buttons,
+scroll) reaches the controller's own applications; all of it arrives on the controlled machine, translated to
+that OS's key codes."""
+
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "clear"
+
+[[steps]]
+do = "type"
+on = "ctl"
+text = "qa 1"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 5
+dy = 3
+times = 2
+[[steps]]
+do = "click"
+on = "ctl"
+[[steps]]
+do = "click"
+on = "ctl"
+button = "right"
+[[steps]]
+do = "scroll"
+on = "ctl"
+dx = 0
+dy = -2
+[[steps]]
+do = "press"
+on = "ctl"
+key = "SHIFT"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "TAB"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "TAB"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "SHIFT"
+
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = [
+  "down Q", "up Q", "down A", "up A", "down SPACE", "up SPACE", "down 1", "up 1",
+  "move 5 3", "move 5 3",
+  "button_down left", "button_up left", "button_down right", "button_up right",
+  "scroll 0 -2",
+  "down SHIFT", "down TAB", "up TAB", "up SHIFT",
+]
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"

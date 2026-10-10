@@ -44,6 +44,13 @@ struct Announce {
     instance_id: String,
 }
 
+/// One parsed announce: the peer, and the id it announced itself with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReceivedAnnounce {
+    pub peer: DiscoveredPeer,
+    pub instance_id: String,
+}
+
 /// Broadcasts this daemon's presence and listens for others' announces.
 pub struct DiscoveryService {
     socket: UdpSocket,
@@ -167,6 +174,14 @@ impl DiscoveryService {
     /// yields `Ok(None)` rather than an error — the caller just waits
     /// for the next packet.
     pub async fn recv_one(&self) -> std::io::Result<Option<DiscoveredPeer>> {
+        Ok(self.recv_announce().await?.map(|received| received.peer))
+    }
+
+    /// Like [`Self::recv_one`], but also returns the sender's instance
+    /// id: its identity public key, hex-encoded. It is unauthenticated, so
+    /// it may only be used to skip work (such as redialing a peer that is
+    /// already linked), never to trust anyone.
+    pub async fn recv_announce(&self) -> std::io::Result<Option<ReceivedAnnounce>> {
         let mut buf = [0u8; 512];
         let (len, sender) = self.socket.recv_from(&mut buf).await?;
         let Ok(announce) = serde_json::from_slice::<Announce>(&buf[..len]) else {
@@ -176,10 +191,13 @@ impl DiscoveryService {
             return Ok(None);
         }
         let tcp_addr = SocketAddr::new(sender.ip(), announce.channel_port);
-        Ok(Some(DiscoveredPeer {
-            name: announce.name,
-            os: announce.os,
-            address: ChannelAddress::Tcp(tcp_addr),
+        Ok(Some(ReceivedAnnounce {
+            peer: DiscoveredPeer {
+                name: announce.name,
+                os: announce.os,
+                address: ChannelAddress::Tcp(tcp_addr),
+            },
+            instance_id: announce.instance_id,
         }))
     }
 

@@ -1,0 +1,106 @@
+name = "hotkey-chord-never-reaches-an-os"
+description = """
+The key that completes the switch hotkey, down and up, is consumed by the router: it is neither delivered to
+the controller's applications nor injected on the controlled machine, in either direction. Checked for the
+single-key default and for a multi-key chord (Ctrl+Shift+Space). Modifiers of a chord that were pressed
+before it completed travel with their screen like any key and are released with it."""
+
+# --- single key (the default; F13 on a Mac keyboard) ---
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "SCROLLLOCK"
+when = "ctl!=macos"
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "F13"
+when = "ctl=macos"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = []
+
+# --- multi-key chord ---
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "switch_key"
+value = { label = "Ctrl + Shift + Space", keys = ["Ctrl", "Shift", "Space"] }
+[[steps]]
+do = "clear"
+
+# Home -> remote: Ctrl and Shift were pressed at home and go to the local OS; Space never goes anywhere.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down CONTROL", "down SHIFT", "up SHIFT", "up CONTROL"]
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "SPACE"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = []
+
+# Remote -> home: Ctrl and Shift reach the controlled machine, which releases them on Leave.
+[[steps]]
+do = "clear"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "injected_includes"
+on = "ctd"
+events = ["down CONTROL", "down SHIFT"]
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "SPACE"
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"

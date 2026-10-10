@@ -1,0 +1,96 @@
+name = "basic-switch"
+description = """
+The reported Windows -> Mac bug: switch to the other machine with the hotkey, type there, and regain control
+with the same hotkey on the controller's own keyboard. Runs with the default switch key (Scroll Lock; F13 on
+a Mac keyboard, which has no Scroll Lock)."""
+
+# Local typing stays local.
+[[steps]]
+do = "type"
+on = "ctl"
+text = "ab"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down A", "up A", "down B", "up B"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = []
+
+# Switch to the controlled machine.
+[[steps]]
+do = "clear"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "expect"
+that = "entered"
+on = "ctd"
+is = true
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = true
+
+# What is typed on the controller lands on the controlled machine only.
+[[steps]]
+do = "type"
+on = "ctl"
+text = "xy"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down X", "up X", "down Y", "up Y"]
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"
+
+# The controller's own keyboard brings control back.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "entered"
+on = "ctd"
+is = false
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+[[steps]]
+do = "type"
+on = "ctl"
+text = "cd"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down C", "up C", "down D", "up D"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down X", "up X", "down Y", "up Y"]
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"

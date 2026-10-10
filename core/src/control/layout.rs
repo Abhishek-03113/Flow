@@ -168,16 +168,34 @@ impl ScreenLayout {
             }
         })?;
         let clamp = |value: i64, size: u32| value.clamp(0, i64::from(size) - 1) as i32;
+        // Land one pixel inside the neighbour's edge, not on it: on the edge
+        // pixel the pointer would already be pressing against the border it
+        // came through and bounce straight back.
+        let inset = |size: u32, far: bool| {
+            let last = size.saturating_sub(1) as i32;
+            let step = i32::from(size > 2);
+            if far {
+                last - step
+            } else {
+                step
+            }
+        };
         let (x, y) = match edge {
-            Edge::Right => (0, clamp(vy - i64::from(target.y), target.height)),
-            Edge::Left => (
-                target.width as i32 - 1,
+            Edge::Right => (
+                inset(target.width, false),
                 clamp(vy - i64::from(target.y), target.height),
             ),
-            Edge::Bottom => (clamp(vx - i64::from(target.x), target.width), 0),
+            Edge::Left => (
+                inset(target.width, true),
+                clamp(vy - i64::from(target.y), target.height),
+            ),
+            Edge::Bottom => (
+                clamp(vx - i64::from(target.x), target.width),
+                inset(target.height, false),
+            ),
             Edge::Top => (
                 clamp(vx - i64::from(target.x), target.width),
-                target.height as i32 - 1,
+                inset(target.height, true),
             ),
         };
         Some(Crossing {
@@ -222,7 +240,7 @@ mod tests {
             crossing,
             Crossing {
                 to: id("p"),
-                x: 0,
+                x: 1,
                 y: 300
             }
         );
@@ -242,7 +260,7 @@ mod tests {
             crossing,
             Crossing {
                 to: id("d1"),
-                x: 1919,
+                x: 1918,
                 y: 500
             }
         );
@@ -259,7 +277,7 @@ mod tests {
             Crossing {
                 to: id("p"),
                 x: 250,
-                y: 0
+                y: 1
             }
         );
         let up = layout.neighbour(&id("p"), Edge::Top, 250).unwrap();
@@ -268,9 +286,22 @@ mod tests {
             Crossing {
                 to: id("d1"),
                 x: 250,
-                y: 799
+                y: 798
             }
         );
+    }
+
+    #[test]
+    fn a_crossing_never_lands_on_the_border_it_came_through() {
+        // Landing on the edge pixel would put the pointer straight back
+        // against the neighbour it just left.
+        let layout = ScreenLayout {
+            screens: vec![place("d1", 0, 0, 1000, 800), place("p", 1000, 0, 1000, 800)],
+        };
+        let there = layout.neighbour(&id("d1"), Edge::Right, 400).unwrap();
+        assert!(there.x > 0, "{there:?}");
+        let back = layout.neighbour(&id("p"), Edge::Left, 400).unwrap();
+        assert!(back.x < 999, "{back:?}");
     }
 
     #[test]

@@ -55,6 +55,19 @@ pub async fn run_command(
             let path = service.reveal_config_dir().map_err(ErrorPayload::from)?;
             return Ok(Some(json!({ "path": path.display().to_string() })));
         }
+        "debug_virtual_io" => {
+            // Test hooks only, like `debug_inject_input`: what the virtual
+            // OS under this engine received and had injected.
+            if !service.test_hooks_enabled() {
+                return Err(unknown_command("debug_virtual_io"));
+            }
+            let args: VirtualIoPayload = if payload.is_null() {
+                VirtualIoPayload::default()
+            } else {
+                parse_payload(payload)?
+            };
+            return Ok(service.debug_virtual_io(args.clear));
+        }
         "export_diagnostics" => {
             let path = service
                 .export_diagnostics()
@@ -185,6 +198,13 @@ async fn handle_ack_only(
         }
         other => Err(unknown_command(other)),
     }
+}
+
+#[derive(serde::Deserialize, Default)]
+struct VirtualIoPayload {
+    /// Forget the recorded logs after answering.
+    #[serde(default)]
+    clear: bool,
 }
 
 #[derive(serde::Deserialize)]

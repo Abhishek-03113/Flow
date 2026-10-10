@@ -380,6 +380,9 @@ pub struct DaemonService {
     export_dir: Option<PathBuf>,
     /// The recent log tail, for diagnostics bundles.
     log_tail: Option<LoggingHandle>,
+    /// The virtual platform under this engine, when it runs on one (test
+    /// hooks read and feed it through `debug_virtual_io`).
+    virtual_io: Arc<std::sync::Mutex<Option<Arc<crate::virtual_backend::VirtualBackend>>>>,
 }
 
 /// What this daemon knows about one live link.
@@ -499,6 +502,7 @@ impl DaemonService {
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
             export_dir: None,
             log_tail: None,
+            virtual_io: Arc::default(),
         };
         service.spawn_active_screen_follower();
         service.spawn_diagnostics_ticker();
@@ -538,13 +542,53 @@ impl DaemonService {
     /// one would be (test hooks only; the dispatcher gates the command).
     pub fn debug_inject(&self, event: InputEvent) {
         use flow_core::input::CaptureSink;
+        let backend = self.virtual_backend();
         crate::hop_note!(
             stage = "debug_inject",
             role = "owner",
             kind = crate::router::event_kind(&event),
             "debug_inject_input fed a synthetic event to the router"
         );
-        self.router.on_event(&event);
+        match backend {
+            // Through the virtual OS, so what the engine lets through is
+            // recorded as delivered to local applications.
+            Some(backend) => {
+                backend.feed(event);
+            }
+            None => {
+                self.router.on_event(&event);
+            }
+        }
+    }
+
+    /// Attaches the virtual platform this engine runs on (harness only).
+    pub fn attach_virtual_backend(&self, backend: Arc<crate::virtual_backend::VirtualBackend>) {
+        *self.virtual_io.lock().unwrap_or_else(|e| e.into_inner()) = Some(backend);
+    }
+
+    fn virtual_backend(&self) -> Option<Arc<crate::virtual_backend::VirtualBackend>> {
+        self.virtual_io
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Test hooks: what the virtual OS under this engine saw, as JSON
+    /// (`null` when the engine runs on a real platform). `clear` forgets
+    /// the recorded logs afterwards.
+    pub fn debug_virtual_io(&self, clear: bool) -> Option<serde_json::Value> {
+        let backend = self.virtual_backend()?;
+        let out = serde_json::json!({
+            "capturing": backend.is_capturing(),
+            "suppressed": backend.is_suppressed(),
+            "delivered_locally": backend.delivered_locally(),
+            "injected": backend.injected(),
+            "warps": backend.warps(),
+        });
+        if clear {
+            backend.clear_logs();
+        }
+        Some(out)
     }
 
     /// How many IPC clients are connected right now.
@@ -827,6 +871,16 @@ impl DaemonService {
             device_id: device_id.clone(),
             links: Arc::clone(&self.links),
         })
+    }
+
+    /// Whether a link (live or still handshaking) exists to the peer whose
+    /// identity public key is `instance_id` (hex), as discovery announces it.
+    pub fn has_link_to_instance(&self, instance_id: &str) -> bool {
+        let id = DeviceId(format!("pk:{instance_id}"));
+        self.links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
     }
 
     /// Test fixture: a live controlled-peer link to an already-listed
@@ -2123,6 +2177,20 @@ fn mock_parity_candidates() -> Vec<PairingCandidate> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_linked_peer_is_recognised_by_its_announced_instance_id() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        assert!(!service.has_link_to_instance("abc123"));
+        let registration = service
+            .register_link(&DeviceId("pk:abc123".to_string()))
+            .expect("slot is free");
+        assert!(service.has_link_to_instance("abc123"));
+        assert!(!service.has_link_to_instance("other"));
+        drop(registration);
+        assert!(!service.has_link_to_instance("abc123"));
+    }
+
     use super::*;
 
     #[tokio::test]

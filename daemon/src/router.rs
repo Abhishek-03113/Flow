@@ -1096,7 +1096,7 @@ mod tests {
         assert!(r.suppressing());
         assert!(matches!(
             drain(&mut p)[..],
-            [LinkOut::Enter { x: 0, y: 300, .. }]
+            [LinkOut::Enter { x: 1, y: 300, .. }]
         ));
     }
 
@@ -1171,7 +1171,7 @@ mod tests {
         r.local_cursor(1919, 300);
         drain(&mut p);
 
-        // Entered at x=0; one more step left crosses back.
+        // Entered one pixel inside the left edge; two steps left cross back.
         assert_eq!(r.on_event(&motion(-3, 0)), Disposition::Swallow);
 
         assert_eq!(r.active(), ActiveScreen::Local);
@@ -1181,7 +1181,11 @@ mod tests {
             vec![LinkOut::Leave],
             "the crossing move is not forwarded"
         );
-        assert_eq!(warps.try_recv().ok(), Some((1919, 300)));
+        assert_eq!(
+            warps.try_recv().ok(),
+            Some((1918, 300)),
+            "home, one pixel inside the edge so the pointer does not bounce back"
+        );
     }
 
     #[test]
@@ -1210,7 +1214,7 @@ mod tests {
         assert_eq!(drain(&mut p), vec![LinkOut::Leave]);
         assert!(matches!(
             drain(&mut q)[..],
-            [LinkOut::Enter { x: 0, y: 300, .. }]
+            [LinkOut::Enter { x: 1, y: 300, .. }]
         ));
     }
 
