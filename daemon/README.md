@@ -222,7 +222,7 @@ Every third-party dependency that does real I/O (SQLite, WebSockets, Bluetooth, 
 
 ## Link protocol v2 (`link.rs`)
 
-One authenticated connection per peer (deduplicated by proven identity, `DaemonService::register_link`) runs `link::run_link`: both ends send `Hello{protocol_version, role, os, screen, device_name}`; a peer on another protocol version (or a v1 peer whose first frame doesn't parse) is refused with `protocol_mismatch`. The controller end then writes what the router queued (`Enter`/`Leave`/`Input`, stamped with one per-connection `seq`) and the controlled end handles it. Both send `Heartbeat` every 2s and end the link after 7s of silence; `ScreenInfo` reports resolution changes; `Goodbye{reason}` closes orderly. `core/src/channel/mod.rs` defines the messages.
+One authenticated connection per peer (deduplicated by proven identity, `DaemonService::register_link`) runs `link::run_link`: both ends send `Hello{protocol_version, role, os, screen, device_name}`; a peer on another protocol version (or a v1 peer whose first frame doesn't parse) is refused with `protocol_mismatch`. The controller end then writes what the router queued (`Enter`/`Leave`/`Input`, stamped with one per-connection `seq`) and the controlled end handles it. Both send `Heartbeat` every 2s and end the link after 7s of silence; `ScreenInfo` reports resolution changes; the controller sends `Arrangement` (its layout, as the two screens' rectangles) on link-up and on every layout change; `Goodbye{reason}` closes orderly. `core/src/channel/mod.rs` defines the messages.
 
 ## Engine wiring (`engine.rs`)
 

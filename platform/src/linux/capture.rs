@@ -12,9 +12,11 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use evdev::Device;
-use flow_core::input::{CaptureSink, Disposition, InputCapture};
+use flow_core::input::{CaptureSink, Disposition, InputCapture, InputInjector};
 
 use super::discovery::discover_devices;
+use super::injector::LinuxInputInjector;
+use super::passthrough::PassThrough;
 use super::translate::EventTranslator;
 
 /// How long the capture loop sleeps after a pass over every device found
@@ -67,8 +69,18 @@ impl InputCapture for LinuxInputCapture {
         self.stop_flag.store(false, Ordering::SeqCst);
         let stop_flag = self.stop_flag.clone();
         let sink = self.sink.clone();
+        // Pass events must still reach the local session while grabbed.
+        // Without uinput access capture still works, but a `Pass` while
+        // grabbed is then lost.
+        let injector = match LinuxInputInjector::new() {
+            Ok(injector) => Some(injector),
+            Err(err) => {
+                tracing::warn!("no uinput pass-through for grabbed input: {err}");
+                None
+            }
+        };
         self.worker = Some(thread::spawn(move || {
-            run_capture_loop(devices, &stop_flag, sink.as_ref())
+            run_capture_loop(devices, &stop_flag, sink.as_ref(), injector)
         }));
         Ok(())
     }
@@ -84,19 +96,18 @@ impl InputCapture for LinuxInputCapture {
     }
 }
 
-fn run_capture_loop(mut devices: Vec<Device>, stop_flag: &AtomicBool, sink: &dyn CaptureSink) {
+fn run_capture_loop(
+    mut devices: Vec<Device>,
+    stop_flag: &AtomicBool,
+    sink: &dyn CaptureSink,
+    mut injector: Option<LinuxInputInjector>,
+) {
     let mut translator = EventTranslator::new();
+    let mut pass = PassThrough::default();
     // What is actually applied, so the ioctl runs only on a transition.
     let mut grabbed = false;
-    let sync_grab = |devices: &mut Vec<Device>, grabbed: &mut bool| {
-        let want = sink.suppressing();
-        if want != *grabbed {
-            apply_grab(devices, want);
-            *grabbed = want;
-        }
-    };
     while !stop_flag.load(Ordering::SeqCst) {
-        sync_grab(&mut devices, &mut grabbed);
+        sync_grab(sink, &mut devices, &mut grabbed, &mut pass, &mut injector);
 
         let mut read_any = false;
         for index in 0..devices.len() {
@@ -109,10 +120,17 @@ fn run_capture_loop(mut devices: Vec<Device>, stop_flag: &AtomicBool, sink: &dyn
             for raw_event in events {
                 read_any = true;
                 if let Some(event) = translator.translate(raw_event) {
+                    pass.observe(&event);
+                    let disposition = sink.on_event(&event);
                     // Grab as soon as the sink starts hiding input, not on
                     // the next poll.
-                    if sink.on_event(&event) == Disposition::Swallow || grabbed {
-                        sync_grab(&mut devices, &mut grabbed);
+                    if disposition == Disposition::Swallow || grabbed {
+                        sync_grab(sink, &mut devices, &mut grabbed, &mut pass, &mut injector);
+                    }
+                    // A grabbed device delivers nothing locally, so
+                    // re-emit what the router let pass.
+                    if let Some(local) = pass.forward(&event, disposition, grabbed) {
+                        emit_local(injector.as_mut(), &[local]);
                     }
                 }
             }
@@ -131,6 +149,43 @@ fn run_capture_loop(mut devices: Vec<Device>, stop_flag: &AtomicBool, sink: &dyn
     // drop.
     if grabbed {
         apply_grab(&mut devices, false);
+        emit_local(injector.as_mut(), &pass.on_ungrab());
+    }
+}
+
+/// Grabs or releases the devices when the sink's wish changed, repairing
+/// local key state across the transition.
+fn sync_grab(
+    sink: &dyn CaptureSink,
+    devices: &mut [Device],
+    grabbed: &mut bool,
+    pass: &mut PassThrough,
+    injector: &mut Option<LinuxInputInjector>,
+) {
+    let want = sink.suppressing();
+    if want != *grabbed {
+        apply_grab(devices, want);
+        *grabbed = want;
+        let events = if want {
+            pass.on_grab()
+        } else {
+            pass.on_ungrab()
+        };
+        emit_local(injector.as_mut(), &events);
+    }
+}
+
+/// Delivers events to the local session through the virtual device.
+/// Best-effort: a failed emit must not stop capture.
+fn emit_local(
+    injector: Option<&mut LinuxInputInjector>,
+    events: &[flow_core::protocol::InputEvent],
+) {
+    let Some(injector) = injector else { return };
+    for event in events {
+        if let Err(err) = injector.inject(event) {
+            tracing::warn!("local pass-through failed: {err}");
+        }
     }
 }
 
