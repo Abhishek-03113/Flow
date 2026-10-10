@@ -144,7 +144,12 @@ async fn exchange_hello(
             let peer = PeerInfo { role, os, screen };
             match env.service.check_peer(device_id, &peer) {
                 Ok(()) => Ok(peer),
-                Err(reason) => Err(refuse(channel, reason).await),
+                Err(reason) => {
+                    // Show what the peer is now (e.g. that it became a
+                    // controller too), not what it was when last linked.
+                    env.service.note_refused_peer(device_id, &peer).await;
+                    Err(refuse(channel, reason).await)
+                }
             }
         }
         // The peer refused us; surface its reason on our side too.

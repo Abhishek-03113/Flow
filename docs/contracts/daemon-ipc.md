@@ -1,6 +1,6 @@
 # Daemon IPC Contract
 
-Contract version: **0.2.1** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands.
+Contract version: **0.2.2** (see `CHANGELOG.md`). Original 0.1.0 baseline; 0.2.0 added the controller/controlled model; 0.2.1 the embedded engine, honest permissions and support commands; 0.2.2 refused links and withdrawn pairing requests.
 
 **Three transports, one contract** (see `README.md`): the desktop app calls the engine in-process (Tauri `flow_command(command, payload)` → result or `{code, message}` error; state arrives as `flow://event` events `{event, payload}`), `flow-daemon` serves the same over a loopback WebSocket, and the UI's mock implements both shapes in memory. The rest of this document uses the WebSocket envelope; the Tauri bridge carries the identical command names, payloads, results, errors and events.
 
@@ -108,7 +108,7 @@ controlled:  idle --Enter--> entered --Leave / disconnect / heartbeat timeout-->
 
 - Hotkey: the switch key cycles `local -> d1 -> d2 -> ... -> local` over controlled peers with a live link; the optional return-home key jumps to `local`. Both work while the controller's input is hidden from its own OS.
 - Edges: with a `ScreenLayout`, pushing the pointer through an edge that has a neighbour switches to it (`edge_switching`, `edge_switch_delay_ms`).
-- A link between two controllers or two controlled devices is refused: the device gets `link_error: "role_conflict"` (`"protocol_mismatch"` for a v1 peer).
+- A link between two controllers or two controlled devices is refused: the device gets `link_error: "role_conflict"` (`"protocol_mismatch"` for a v1 peer). The device's `role`/`os` show what the peer announced, the link state becomes `error`, and the engine does not redial that peer until a role changes (the side that changes dials the other).
 - Link loss while a peer is active returns the controller to `local`.
 - `devices_changed` always has exactly one `active` device: the active screen's.
 
@@ -121,6 +121,7 @@ connected --(active link drops, not retrying)--> disconnected
 disconnected --(user retries / daemon recovers)--> connecting
 any --(input-capture permission missing)--> permissionRequired --(request_permission granted)--> connected
 any --(non-permission failure)--> error --(user retries)--> connecting
+any --(link refused: role_conflict / protocol_mismatch)--> error --(a role changes, the link comes up)--> connected
 ```
 
 ## What's deliberately out of scope for 0.1.0
