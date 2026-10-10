@@ -233,11 +233,18 @@ impl DiscoveryService {
 /// fails outright with `AddrInUse` and local two-daemon testing is
 /// impossible. For the normal single-instance deployment this is a
 /// harmless no-op — nothing else contends for the port.
+///
+/// Port `0` (an OS-assigned ephemeral port, as tests and the harness use)
+/// is bound without the reuse options: with them Linux may hand two
+/// sockets the same ephemeral port, and unicast announces to it then
+/// reach only one of the two engines, which never discover the sender.
 fn bind_reusable_udp(port: u16) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    socket.set_reuse_port(true)?;
+    if port != 0 {
+        socket.set_reuse_address(true)?;
+        #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+        socket.set_reuse_port(true)?;
+    }
     socket.set_nonblocking(true)?;
     socket.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
     UdpSocket::from_std(socket.into())
@@ -246,6 +253,21 @@ fn bind_reusable_udp(port: u16) -> std::io::Result<UdpSocket> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// With `SO_REUSEPORT`, Linux handed the same ephemeral port to
+    /// several sockets (dozens per thousand binds), so two engines could
+    /// share a discovery port and one would never hear announces.
+    #[tokio::test]
+    async fn ephemeral_discovery_ports_are_never_shared() {
+        let mut sockets = Vec::new();
+        let mut ports = std::collections::HashSet::new();
+        for _ in 0..500 {
+            let socket = bind_reusable_udp(0).expect("bind");
+            let port = socket.local_addr().expect("addr").port();
+            assert!(ports.insert(port), "port {port} handed out twice");
+            sockets.push(socket);
+        }
+    }
 
     /// `broadcast_destinations` must never come back empty — even on a
     /// host where interface enumeration fails or finds nothing routable,
