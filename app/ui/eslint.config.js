@@ -24,6 +24,9 @@ export default tseslint.config(
     plugins: { 'react-hooks': reactHooks },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      // v7's new rule flags the deliberate "reset local state when a prop/store value changes" effects
+      // (ArrangementEditor, ShortcutsView, usePairingFlow); they are intentional, so keep them as-is.
+      'react-hooks/set-state-in-effect': 'off',
       '@typescript-eslint/consistent-type-imports': ['error', { fixStyle: 'inline-type-imports' }],
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
     },
