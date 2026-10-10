@@ -52,8 +52,8 @@ fn classify(token: &str) -> Option<Target> {
         "Ctrl" => Some(Target::Modifier(Modifier::Ctrl)),
         "Alt" => Some(Target::Modifier(Modifier::Alt)),
         "Meta" => Some(Target::Modifier(Modifier::Meta)),
-        name if key_names::is_known(name) => Some(Target::Key(name.to_string())),
-        _ => None,
+        // The UI's tokens (`CapsLock`, `Esc`) and wire names (`CAPS_LOCK`) alike.
+        name => key_names::canonical(name).map(Target::Key),
     }
 }
 
@@ -182,6 +182,27 @@ pub fn apply_remaps(event: InputEvent, target_os: HostOs, rules: &[RemapRule]) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rules_written_with_the_ui_tokens_apply_to_wire_keys() {
+        let rules = vec![RemapRule {
+            from: "CapsLock".to_string(),
+            to: "Esc".to_string(),
+            when_target_os: None,
+        }];
+        rules[0].validate().expect("UI tokens are valid");
+        let down = InputEvent::Keyboard(KeyboardEvent::KeyDown {
+            key: key_names::CAPS_LOCK.to_string(),
+            modifiers: vec![],
+            timestamp_ms: 1,
+        });
+        let InputEvent::Keyboard(KeyboardEvent::KeyDown { key, .. }) =
+            apply_remaps(down, HostOs::Macos, &rules)
+        else {
+            panic!("still a key down");
+        };
+        assert_eq!(key, key_names::ESCAPE);
+    }
+
     #[test]
     fn rules_survive_a_round_trip_through_toml() {
         let rules = vec![RemapRule {
