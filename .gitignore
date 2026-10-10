@@ -15,3 +15,11 @@ flutter/**/generated_plugin_registrant.dart
 
 # Claude Design export (reference only, not project source)
 /design/claude-design-export/
+
+# Tauri app
+node_modules
+dist
+test-results
+playwright-report
+app/src-tauri/target
+app/src-tauri/gen
