@@ -469,8 +469,12 @@ impl Runtime {
                             }
                         }
                     }
-                    received = discovery.recv_one() => match received {
-                        Ok(Some(peer)) => runtime.handle_discovered_peer(peer).await,
+                    received = discovery.recv_announce() => match received {
+                        Ok(Some(announce)) => {
+                            runtime
+                                .handle_discovered_peer(announce.peer, &announce.instance_id)
+                                .await
+                        }
                         Ok(None) => {}
                         // A transient receive error must not end discovery
                         // for the rest of the process's life.
@@ -486,7 +490,7 @@ impl Runtime {
     /// own task: the dial does a TCP connect and a Noise handshake, and the
     /// pipeline it hands off to lives as long as the connection — awaiting
     /// either inside the discovery loop would stop this engine announcing.
-    async fn handle_discovered_peer(&self, peer: DiscoveredPeer) {
+    async fn handle_discovered_peer(&self, peer: DiscoveredPeer, instance_id: &str) {
         crate::hop!(
             stage = "discovered",
             role = "local",
@@ -495,6 +499,12 @@ impl Runtime {
             "discovery announce parsed for a peer"
         );
         self.link.service.note_discovered_peer(peer.clone()).await;
+
+        // Peers announce for as long as they run; a peer that already has a
+        // link needs no new Noise handshake on every announce.
+        if self.link.service.has_link_to_instance(instance_id) {
+            return;
+        }
 
         let runtime = self.clone();
         self.tasks.spawn(async move {

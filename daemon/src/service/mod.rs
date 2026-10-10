@@ -790,6 +790,16 @@ impl DaemonService {
         })
     }
 
+    /// Whether a link (live or still handshaking) exists to the peer whose
+    /// identity public key is `instance_id` (hex), as discovery announces it.
+    pub fn has_link_to_instance(&self, instance_id: &str) -> bool {
+        let id = DeviceId(format!("pk:{instance_id}"));
+        self.links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(&id)
+    }
+
     /// Test fixture: a live controlled-peer link to an already-listed
     /// device, without any network. Keep the registration alive for as
     /// long as the link should be.
@@ -2086,6 +2096,20 @@ fn mock_parity_candidates() -> Vec<PairingCandidate> {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn a_linked_peer_is_recognised_by_its_announced_instance_id() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await;
+        assert!(!service.has_link_to_instance("abc123"));
+        let registration = service
+            .register_link(&DeviceId("pk:abc123".to_string()))
+            .expect("slot is free");
+        assert!(service.has_link_to_instance("abc123"));
+        assert!(!service.has_link_to_instance("other"));
+        drop(registration);
+        assert!(!service.has_link_to_instance("abc123"));
+    }
+
     use super::*;
 
     #[tokio::test]

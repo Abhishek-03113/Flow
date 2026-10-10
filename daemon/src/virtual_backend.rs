@@ -91,6 +91,23 @@ impl VirtualBackend {
     pub fn warps(&self) -> Vec<(i32, i32)> {
         lock(&self.shared.warps).clone()
     }
+
+    /// How many events were delivered locally, injected and warps asked
+    /// for so far: a cheap fingerprint for "has anything happened yet".
+    pub fn counts(&self) -> (usize, usize, usize) {
+        (
+            lock(&self.shared.delivered_locally).len(),
+            lock(&self.shared.injected).len(),
+            lock(&self.shared.warps).len(),
+        )
+    }
+
+    /// Forgets the recorded logs (not the capture or the cursor).
+    pub fn clear_logs(&self) {
+        lock(&self.shared.delivered_locally).clear();
+        lock(&self.shared.injected).clear();
+        lock(&self.shared.warps).clear();
+    }
 }
 
 impl PlatformBackend for VirtualBackend {
@@ -129,6 +146,8 @@ impl Injector for VirtualInjector {
 
     fn warp_cursor(&mut self, x: i32, y: i32) -> Result<(), BackendError> {
         lock(&self.0.warps).push((x, y));
+        // The pointer really is there now, as the engine will read back.
+        *lock(&self.0.cursor) = Some((x, y));
         Ok(())
     }
 }
