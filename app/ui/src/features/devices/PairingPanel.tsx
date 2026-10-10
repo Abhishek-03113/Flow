@@ -60,6 +60,7 @@ export function PairingPanel({
         >
           <Spinner size={14} /> Waiting for {display.targetName} to accept…
         </div>
+        <Button onClick={() => void flow.cancel()}>Cancel</Button>
       </div>
     );
   }

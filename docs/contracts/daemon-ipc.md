@@ -92,7 +92,9 @@ and is not already trusted, the daemon publishes an
 waits up to ~30s for `respond_to_pairing_request`. No connected UI,
 no answer within the timeout, or a second request arriving while one
 is pending ⇒ the daemon rejects that request and the initiator sees
-a normal pairing failure. Exactly one request is surfaced at a time;
+a normal pairing failure. If the initiator cancels (`cancel_pairing`
+closes its connection) while the request is pending, the request is
+withdrawn: `incoming_pairing_request_changed` goes back to `null`. Exactly one request is surfaced at a time;
 the stream is `null` whenever none is pending.
 
 ### Switching

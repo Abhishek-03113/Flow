@@ -41,10 +41,16 @@ export function usePairingFlow() {
       await client.cancelPairing().catch(() => undefined);
   }, [client]);
 
+  /** Abandons the request in flight (`cancel_pairing`) and goes back to searching. */
+  const cancel = useCallback(async () => {
+    await stop();
+    await start();
+  }, [stop, start]);
+
   const pair = useCallback(
     (id: string) => client.pairWithCandidate(id).catch((e) => toast.show(friendlyError(e), 'error')),
     [client, toast],
   );
 
-  return { display, searching: starting && !display, start, stop, pair };
+  return { display, searching: starting && !display, start, stop, cancel, pair };
 }
