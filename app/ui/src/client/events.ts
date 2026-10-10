@@ -1,10 +1,12 @@
 import { fromWire } from './mapper';
+import { LINK_ERROR_CODES } from './types';
 import type {
   ControlState,
   Device,
   Diagnostics,
   FlowSettings,
   IncomingPairingRequest,
+  LinkErrorCode,
   LinkState,
   PairingSession,
   PermissionStatus,
@@ -26,11 +28,18 @@ export type FlowEvent =
   | { type: 'diagnostics_changed'; diagnostics: Diagnostics }
   | { type: 'remap_rules_changed'; rules: RemapRule[] };
 
-type RawDevice = Omit<Partial<Device>, 'lastSeenMs'> & {
+type RawDevice = Omit<Partial<Device>, 'lastSeenMs' | 'linkError'> & {
   id: string;
   lastSeen?: string;
   lastSeenMs?: number;
+  linkError?: string | null;
 };
+
+/** A code this UI has no copy for (a newer engine) still means the link failed. */
+function toLinkError(code: string | null | undefined): LinkErrorCode | null {
+  if (!code) return null;
+  return (LINK_ERROR_CODES as readonly string[]).includes(code) ? (code as LinkErrorCode) : 'protocol_error';
+}
 
 /** Normalises 0.1.x devices (ISO `last_seen`, no role) and 0.2.0 devices alike. */
 function toDevice(raw: RawDevice): Device {
@@ -43,7 +52,7 @@ function toDevice(raw: RawDevice): Device {
     role: raw.role ?? null,
     screen: raw.screen ?? null,
     lastSeenMs: Number.isFinite(lastSeenMs) ? lastSeenMs : 0,
-    linkError: raw.linkError ?? null,
+    linkError: toLinkError(raw.linkError),
     isLocal: raw.isLocal === true,
   };
 }

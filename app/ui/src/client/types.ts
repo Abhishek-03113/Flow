@@ -10,8 +10,16 @@ export type Role = 'controller' | 'controlled';
 
 export type DeviceState = 'pairing' | 'connected' | 'active' | 'inactive' | 'disconnected' | 'error';
 
-/** Why a link to a paired device is unhealthy (`Device.link_error`). */
-export type LinkErrorCode = 'role_conflict' | 'version_mismatch' | 'unreachable' | 'untrusted';
+/** Why the last link attempt to a paired device failed (`Device.link_error`, `flow_core::link::link_error`). */
+export const LINK_ERROR_CODES = [
+  'role_conflict',
+  'protocol_mismatch',
+  'protocol_error',
+  'hello_timeout',
+  'connection_lost',
+  'injector_unavailable',
+] as const;
+export type LinkErrorCode = (typeof LINK_ERROR_CODES)[number];
 
 export interface Device {
   id: string;

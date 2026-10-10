@@ -273,7 +273,7 @@ export function seedScenario(name: string, os: HostOs): EngineState {
       return s;
     }
     case 'error': {
-      const s = base(os, [me(), { ...officePc, state: 'error', linkError: 'unreachable' }]);
+      const s = base(os, [me(), { ...officePc, state: 'error', linkError: 'hello_timeout' }]);
       s.linkState = 'error';
       return s;
     }

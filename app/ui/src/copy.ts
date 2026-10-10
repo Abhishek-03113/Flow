@@ -52,20 +52,31 @@ export function linkErrorCopy(
             : `${device.name} is also set to be controlled. One of you needs to share the keyboard and mouse.`,
         action: 'role',
       };
-    case 'version_mismatch':
+    case 'protocol_mismatch':
       return {
         title: 'Different Flow versions',
-        detail: `Update Flow on ${device.name} so both computers match.`,
+        detail: `Update Flow on ${device.name} so both computers run the same version.`,
       };
-    case 'untrusted':
+    case 'protocol_error':
       return {
-        title: 'Not trusted',
-        detail: `Forget ${device.name} and add it again to re-establish trust.`,
+        title: "Couldn't connect",
+        detail: `${device.name} answered in a way Flow didn't expect. Update Flow on both computers, then try again.`,
       };
-    case 'unreachable':
+    case 'hello_timeout':
+    case 'connection_lost':
       return {
         title: "Can't reach it",
-        detail: `Make sure ${device.name} is on, awake and on the same network.`,
+        detail: `Make sure ${device.name} is on, awake and on the same network. Flow keeps trying.`,
+      };
+    case 'injector_unavailable':
+      return {
+        title: "Flow can't use the keyboard and mouse here",
+        detail: `Check that Flow has permission to control this computer, then try again from ${device.name}.`,
+      };
+    default:
+      return {
+        title: "Couldn't connect",
+        detail: `Something went wrong connecting to ${device.name}. Flow keeps trying.`,
       };
   }
 }

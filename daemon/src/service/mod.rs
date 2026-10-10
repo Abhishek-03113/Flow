@@ -21,7 +21,7 @@ use flow_core::control::{ActiveScreen, ControlState, Diagnostics, Role};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
 use flow_core::keymap::remap::RemapRule;
-use flow_core::link::DaemonLinkState;
+use flow_core::link::{link_error, DaemonLinkState};
 use flow_core::pairing::{
     IncomingPairingRequest, PairingCandidate, PairingDecision, PairingRequest, PairingSession,
     PairingStage,
@@ -929,7 +929,7 @@ impl DaemonService {
     pub fn check_peer(&self, device_id: &DeviceId, peer: &PeerInfo) -> Result<(), &'static str> {
         let local = self.local_role();
         if peer.role == local {
-            return Err("role_conflict");
+            return Err(link_error::ROLE_CONFLICT);
         }
         if local == Role::Controlled {
             // A controlled device accepts exactly one controller.
@@ -938,7 +938,7 @@ impl DaemonService {
                 .iter()
                 .any(|(id, link)| id != device_id && link.peer_role == Some(Role::Controller));
             if other_controller {
-                return Err("role_conflict");
+                return Err(link_error::ROLE_CONFLICT);
             }
         }
         Ok(())
@@ -1014,7 +1014,10 @@ impl DaemonService {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(device_id);
-        let refused = matches!(error, Some("role_conflict" | "protocol_mismatch"));
+        let refused = matches!(
+            error,
+            Some(link_error::ROLE_CONFLICT | link_error::PROTOCOL_MISMATCH)
+        );
         // Only a peer with this device's own role stays refused until a role
         // changes; a controlled device that already has another controller
         // may accept this one once that controller leaves, so keep dialling.
@@ -1026,7 +1029,7 @@ impl DaemonService {
             .get(device_id)
             .and_then(|d| d.role);
         let same_role = peer_role == Some(self.local_role());
-        if (refused && same_role) || error == Some("protocol_mismatch") {
+        if (refused && same_role) || error == Some(link_error::PROTOCOL_MISMATCH) {
             self.refused_peers
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
