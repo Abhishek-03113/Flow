@@ -108,19 +108,55 @@ fn hex_encode(bytes: &[u8]) -> String {
 /// ACL call for a token whose actual secrecy already depends on desktop
 /// account isolation either way.
 fn write_token_file(path: &std::path::Path, token: &str) -> io::Result<()> {
-    fs::write(path, token)?;
+    use std::io::Write;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    // Created owner-only, so the token is never readable by others, not
+    // even between creating the file and tightening its mode.
     #[cfg(unix)]
     {
-        let mut perms = fs::metadata(path)?.permissions();
-        perms.set_mode(0o600);
-        fs::set_permissions(path, perms)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
-    Ok(())
+    let mut file = options.open(path)?;
+    // `mode` only applies to a new file; an existing (empty) one is
+    // tightened before the secret goes in.
+    #[cfg(unix)]
+    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    file.write_all(token.as_bytes())
+}
+
+/// Whether `presented` is the token, in time independent of where the two
+/// first differ.
+pub fn token_matches(presented: &str, expected: &str) -> bool {
+    let (a, b) = (presented.as_bytes(), expected.as_bytes());
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_matches_only_the_exact_token() {
+        assert!(token_matches("abc123", "abc123"));
+        assert!(!token_matches("abc124", "abc123"));
+        assert!(!token_matches("abc12", "abc123"));
+        assert!(!token_matches("", "abc123"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_token_file_is_owner_only() {
+        let dir = tempfile_dir();
+        let path = dir.join("ipc.token");
+        load_or_generate_token_at(&path);
+        let mode = fs::metadata(&path)
+            .expect("token file")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 
     /// Every test in this module mutates process-global environment
     /// variables (`HOME`/`USERPROFILE`/`FLOW_IPC_TOKEN_PATH`), so they

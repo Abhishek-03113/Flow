@@ -73,7 +73,7 @@ pub async fn handle_connection(
                 .get(TOKEN_HEADER)
                 .and_then(|value| value.to_str().ok());
             match presented {
-                Some(token) if token == expected_token.as_ref() => {
+                Some(token) if super::auth::token_matches(token, &expected_token) => {
                     // Echo the offered subprotocol back — required for
                     // the handshake to be a spec-valid accept of it, and
                     // for a real (e.g. browser) WebSocket client to treat
