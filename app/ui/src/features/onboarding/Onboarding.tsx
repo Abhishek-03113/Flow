@@ -5,7 +5,7 @@ import { trayName } from '../../copy';
 import { Button, KeyCombo, Row, Section, Toggle } from '@flow/design-system';
 import { useAction } from '../../state/useAction';
 import { useClient, useFlow } from '../../state/FlowProvider';
-import { localOs } from '../../state/selectors';
+import { isReachable, localOs, remoteDevices } from '../../state/selectors';
 import { PairingPanel } from '../devices/PairingPanel';
 import { usePairingFlow } from '../devices/usePairingFlow';
 import { PermissionGuide } from '../permissions/PermissionGuide';
@@ -39,7 +39,15 @@ export function Onboarding({ onFinish }: { onFinish(): void }) {
 
   const next = () => setStep((i) => Math.min(i + 1, STEPS.length - 1));
   const granted = s.permission?.granted ?? false;
-  const paired = flow.display?.stage === 'paired';
+  // Pairing works both ways: this computer may have accepted the other one's request.
+  const linked = remoteDevices(s).find(isReachable);
+  const paired = flow.display?.stage === 'paired' || linked !== undefined;
+
+  // Once connected, stop this computer's own search.
+  useEffect(() => {
+    if (name === 'pair' && linked && flow.display?.stage !== 'paired') void flow.stop();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, linked?.id]);
 
   const page = (() => {
     switch (name) {
@@ -98,7 +106,7 @@ export function Onboarding({ onFinish }: { onFinish(): void }) {
               Pairing happens once. After that your computers find each other automatically.
             </p>
             <div className="fl-onboard__body">
-              <PairingPanel flow={flow} myRole={role} />
+              <PairingPanel flow={flow} myRole={role} connectedTo={linked?.name} />
             </div>
           </>
         );

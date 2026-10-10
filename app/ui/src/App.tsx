@@ -74,7 +74,8 @@ function Routes({
       ) : (
         <AppShell route={route} />
       )}
-      {!onboarding && <IncomingRequestSheet />}
+      {/* Also during onboarding: the other computer is often being set up at the same time. */}
+      {!isTray && <IncomingRequestSheet />}
       {!onboarding && <PairingSheet />}
       <PermissionSheet />
       {!isTray && <ShellNavigation />}
