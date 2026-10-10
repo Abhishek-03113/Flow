@@ -1,8 +1,9 @@
-//! Persisted `FlowSettings` (`docs/tasks/daemon-todos.json` task P3). `load()`
+//! Persisted `FlowSettings` (`docs/archive/tasks/daemon-todos.json` task P3). `load()`
 //! bootstraps the single `settings` row with [`FlowSettings::defaults`]
 //! the first time it's called against an empty table; every later call
 //! (including after a restart) returns whatever was last saved.
 
+use flow_core::control::Role;
 use flow_core::settings::{FlowSettings, PointerSensitivity};
 use flow_core::switch_key::SwitchKeyBinding;
 use rusqlite::{OptionalExtension, Row};
@@ -29,7 +30,8 @@ impl SettingsRepo {
                         "SELECT launch_at_login, show_tray_icon, auto_reconnect,
                                 auto_connect_paired_devices, share_keyboard, share_mouse,
                                 debug_logging, pointer_sensitivity, switch_key_label,
-                                switch_key_tokens
+                                switch_key_tokens, role, return_home_key_label,
+                                return_home_key_tokens, edge_switching, edge_switch_delay_ms
                          FROM settings WHERE id = 1",
                         [],
                         row_to_settings,
@@ -62,8 +64,10 @@ fn insert(conn: &rusqlite::Connection, settings: &FlowSettings) {
         "INSERT INTO settings (
              id, launch_at_login, show_tray_icon, auto_reconnect,
              auto_connect_paired_devices, share_keyboard, share_mouse,
-             debug_logging, pointer_sensitivity, switch_key_label, switch_key_tokens
-         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             debug_logging, pointer_sensitivity, switch_key_label, switch_key_tokens,
+             role, return_home_key_label, return_home_key_tokens, edge_switching,
+             edge_switch_delay_ms
+         ) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
          ON CONFLICT (id) DO UPDATE SET
              launch_at_login = excluded.launch_at_login,
              show_tray_icon = excluded.show_tray_icon,
@@ -74,7 +78,12 @@ fn insert(conn: &rusqlite::Connection, settings: &FlowSettings) {
              debug_logging = excluded.debug_logging,
              pointer_sensitivity = excluded.pointer_sensitivity,
              switch_key_label = excluded.switch_key_label,
-             switch_key_tokens = excluded.switch_key_tokens",
+             switch_key_tokens = excluded.switch_key_tokens,
+             role = excluded.role,
+             return_home_key_label = excluded.return_home_key_label,
+             return_home_key_tokens = excluded.return_home_key_tokens,
+             edge_switching = excluded.edge_switching,
+             edge_switch_delay_ms = excluded.edge_switch_delay_ms",
         rusqlite::params![
             settings.launch_at_login,
             settings.show_tray_icon,
@@ -86,6 +95,14 @@ fn insert(conn: &rusqlite::Connection, settings: &FlowSettings) {
             pointer_sensitivity_to_str(settings.pointer_sensitivity),
             settings.switch_key.label,
             serde_json::to_string(&settings.switch_key.keys).expect("serialize switch key tokens"),
+            role_to_str(settings.role),
+            settings.return_home_key.as_ref().map(|k| &k.label),
+            settings
+                .return_home_key
+                .as_ref()
+                .map(|k| serde_json::to_string(&k.keys).expect("serialize return home tokens")),
+            settings.edge_switching,
+            settings.edge_switch_delay_ms,
         ],
     )
     .expect("upsert settings row");
@@ -107,7 +124,36 @@ fn row_to_settings(row: &Row) -> rusqlite::Result<FlowSettings> {
             label: row.get(8)?,
             keys: serde_json::from_str(&switch_key_tokens).expect("deserialize switch key tokens"),
         },
+        role: role_from_str(&row.get::<_, String>(10)?),
+        return_home_key: match (
+            row.get::<_, Option<String>>(11)?,
+            row.get::<_, Option<String>>(12)?,
+        ) {
+            (Some(label), Some(tokens)) => Some(SwitchKeyBinding {
+                label,
+                keys: serde_json::from_str(&tokens).expect("deserialize return home tokens"),
+            }),
+            _ => None,
+        },
+        edge_switching: row.get(13)?,
+        edge_switch_delay_ms: row.get(14)?,
+        // Supplied by the engine, never stored.
+        keymap_overrides_path: String::new(),
     })
+}
+
+fn role_to_str(role: Role) -> &'static str {
+    match role {
+        Role::Controller => "controller",
+        Role::Controlled => "controlled",
+    }
+}
+
+fn role_from_str(s: &str) -> Role {
+    match s {
+        "controlled" => Role::Controlled,
+        _ => Role::Controller,
+    }
 }
 
 fn pointer_sensitivity_to_str(sensitivity: PointerSensitivity) -> &'static str {
@@ -152,6 +198,10 @@ mod tests {
         let mut settings = repo.load().await;
         settings.share_mouse = false;
         settings.pointer_sensitivity = PointerSensitivity::High;
+        settings.role = Role::Controlled;
+        settings.return_home_key = Some(flow_core::switch_key::presets()[1].clone());
+        settings.edge_switching = false;
+        settings.edge_switch_delay_ms = 250;
         repo.save(settings.clone()).await;
 
         let reloaded = repo.load().await;

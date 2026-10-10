@@ -1,0 +1,103 @@
+name = "disconnect-controlled-while-remote"
+description = """
+Link loss while the controlled machine is active: the controller returns home by itself and un-suppresses, so
+its user is never stranded behind a dead link; the controlled machine coming back resumes normal switching."""
+
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "B"
+
+[[steps]]
+do = "disconnect"
+device = "ctd"
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+[[steps]]
+do = "expect"
+that = "linked"
+on = "ctl"
+peer = "ctd"
+is = false
+
+# The key that was held on the dead machine is swallowed; new typing is local.
+[[steps]]
+do = "release"
+on = "ctl"
+key = "B"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "cd"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down C", "up C", "down D", "up D"]
+
+# The switch hotkey with nobody to switch to does nothing.
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+
+# It comes back and works again.
+[[steps]]
+do = "reconnect"
+device = "ctd"
+[[steps]]
+do = "clear"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "e"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down E", "up E"]
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"

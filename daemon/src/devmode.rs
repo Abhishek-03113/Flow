@@ -85,6 +85,38 @@ impl DevMode {
         }
     }
 
+    /// Drops the switches a shipped desktop app must never honour: test
+    /// hooks (synthetic input over the command bridge) and insecure mode.
+    /// `FLOW_TRACE` stays, it only makes logs verbose. A warning records
+    /// anything that was asked for and ignored.
+    pub fn without_test_switches(mut self) -> Self {
+        if self.test_hooks {
+            self.warnings.push(
+                "FLOW_TEST_HOOKS ignored: release builds of the app have no test hooks.".into(),
+            );
+            self.test_hooks = false;
+        }
+        if self.security == SecurityMode::Insecure {
+            self.warnings.push(
+                "FLOW_SECURITY=insecure ignored: release builds of the app always run secure."
+                    .into(),
+            );
+            self.security = SecurityMode::Secure;
+        }
+        self
+    }
+
+    /// Logs the startup warnings and the insecure-mode banner. Call once
+    /// the tracing subscriber is installed.
+    pub fn announce(&self) {
+        for warning in &self.warnings {
+            tracing::warn!("{warning}");
+        }
+        if let Some(banner) = self.insecure_banner() {
+            tracing::warn!("\n{banner}");
+        }
+    }
+
     /// A loud multi-line banner for `main` to log whenever the daemon is
     /// *not* on the secure path, so an insecure daemon is never a quiet
     /// surprise in a log. `None` on the secure path.
@@ -141,6 +173,18 @@ mod tests {
 
         assert!(DevMode::parse(None, Some("yes"), None, None).test_hooks);
         assert!(!DevMode::parse(None, Some(""), None, None).test_hooks);
+    }
+
+    #[test]
+    fn a_release_app_drops_test_hooks_and_insecure_mode_but_keeps_trace() {
+        let asked = DevMode::parse(Some("1"), Some("1"), Some("insecure"), Some("1"));
+        assert!(asked.test_hooks && asked.security == SecurityMode::Insecure);
+        let shipped = asked.without_test_switches();
+        assert!(shipped.trace);
+        assert!(!shipped.test_hooks);
+        assert_eq!(shipped.security, SecurityMode::Secure);
+        assert_eq!(shipped.insecure_banner(), None);
+        assert_eq!(shipped.warnings.len(), 2);
     }
 
     #[test]

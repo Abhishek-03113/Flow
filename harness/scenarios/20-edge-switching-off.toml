@@ -1,0 +1,60 @@
+name = "edge-switching-off"
+description = """
+With edge switching disabled the pointer stops at the screen edge: pushing against it never switches, while
+the hotkey and switch_to still do."""
+
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "edge_switching"
+value = false
+[[steps]]
+do = "place_cursor"
+on = "ctl"
+x = 1919
+y = 300
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 50
+dy = 0
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+
+[[steps]]
+do = "switch_to"
+on = "ctl"
+target = "ctd"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 1000
+dy = 0
+times = 5
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = -1000
+dy = 0
+times = 5
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"

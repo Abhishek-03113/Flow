@@ -1,4 +1,4 @@
-//! The connection-accept gate (`docs/tasks/daemon-todos.json` H4): rejects an
+//! The connection-accept gate (`docs/archive/tasks/daemon-todos.json` H4): rejects an
 //! incoming connection whose Noise-handshake-proven `H1` identity isn't
 //! already trusted (`H2`, backed by `P4`'s device repository) — before
 //! it can ever reach the input-streaming pipeline (`G8`) or exchange a
@@ -82,6 +82,9 @@ mod tests {
                     os: HostOs::Linux,
                     state: DeviceState::Inactive,
                     last_seen: chrono::Utc::now(),
+                    role: None,
+                    screen: None,
+                    link_error: None,
                 },
                 public_key: Some(identity_a.public_key_bytes().to_vec()),
                 removable: true,

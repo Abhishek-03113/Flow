@@ -8,35 +8,6 @@ use serde::{Deserialize, Serialize};
 
 pub mod key_names;
 
-/// Which side of a paired connection this daemon's physical input
-/// currently drives (`docs/product/vision.md` §22, "only the active
-/// device should receive input").
-///
-/// `Primary` = this machine's keyboard/mouse are being captured and
-/// forwarded to the peer (and suppressed locally). `Secondary` = this
-/// machine is receiving and injecting the peer's input instead. Exactly
-/// one end of a pair is `Primary` at any moment; a switch hands the role
-/// across over the same connection, carried by
-/// [`crate::channel::ChannelMessage::OwnershipChanged`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InputRole {
-    Primary,
-    Secondary,
-}
-
-impl InputRole {
-    /// The other role — a switch always flips this end to `opposite()` of
-    /// what it was, and tells the peer to take `opposite()` of the new
-    /// local role.
-    pub fn opposite(self) -> Self {
-        match self {
-            InputRole::Primary => InputRole::Secondary,
-            InputRole::Secondary => InputRole::Primary,
-        }
-    }
-}
-
 /// A keyboard modifier held down during a key event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Modifier {
@@ -99,7 +70,7 @@ pub enum InputEvent {
 
 impl InputEvent {
     /// This event's own capture-time timestamp, common to every variant.
-    /// `docs/tasks/daemon-todos.json` H4's replay guard reuses this existing field
+    /// `docs/archive/tasks/daemon-todos.json` H4's replay guard reuses this existing field
     /// as its sequence check rather than adding a separate one.
     pub fn timestamp_ms(&self) -> u64 {
         match self {
@@ -116,24 +87,6 @@ impl InputEvent {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn input_role_opposite_is_the_other_role() {
-        assert_eq!(InputRole::Primary.opposite(), InputRole::Secondary);
-        assert_eq!(InputRole::Secondary.opposite(), InputRole::Primary);
-    }
-
-    #[test]
-    fn input_role_serializes_snake_case() {
-        assert_eq!(
-            serde_json::to_value(InputRole::Primary).unwrap(),
-            serde_json::json!("primary")
-        );
-        assert_eq!(
-            serde_json::to_value(InputRole::Secondary).unwrap(),
-            serde_json::json!("secondary")
-        );
-    }
 
     #[test]
     fn timestamp_ms_reads_the_right_field_on_every_variant() {

@@ -1,4 +1,4 @@
-//! TCP/Wi-Fi peer discovery (`docs/tasks/daemon-todos.json` G3): a lightweight UDP
+//! TCP/Wi-Fi peer discovery (`docs/archive/tasks/daemon-todos.json` G3): a lightweight UDP
 //! broadcast announce/listen loop so `start_pairing`'s candidate list
 //! can eventually be populated by real TCP-reachable peers, not just the
 //! mock-parity 2 hardcoded ones.
@@ -20,7 +20,7 @@ use super::DiscoveredPeer;
 
 /// The well-known UDP port every Flow daemon's discovery listener binds
 /// to in real deployment. Distinct from `flow_core::ipc::IPC_PORT`
-/// (local Flutter<->daemon) and from wherever a peer's own `TcpChannel`
+/// (local UI<->engine) and from wherever a peer's own `TcpChannel`
 /// listener ends up bound (advertised inside the announce packet
 /// itself, since it can vary per daemon).
 pub const DISCOVERY_PORT: u16 = 47824;
@@ -42,6 +42,13 @@ struct Announce {
     /// filter a loopback echo, and is never used to decide trust (that
     /// stays with the Noise-proven identity key).
     instance_id: String,
+}
+
+/// One parsed announce: the peer, and the id it announced itself with.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReceivedAnnounce {
+    pub peer: DiscoveredPeer,
+    pub instance_id: String,
 }
 
 /// Broadcasts this daemon's presence and listens for others' announces.
@@ -94,8 +101,8 @@ impl DiscoveryService {
     /// Kept as the fallback [`broadcast_destinations`] always includes,
     /// but not relied on alone in real use — see that function's doc
     /// comment for why.
-    pub fn broadcast_destination() -> SocketAddr {
-        SocketAddr::new(Ipv4Addr::BROADCAST.into(), DISCOVERY_PORT)
+    pub fn broadcast_destination(port: u16) -> SocketAddr {
+        SocketAddr::new(Ipv4Addr::BROADCAST.into(), port)
     }
 
     /// Every destination this daemon's periodic announce should be sent
@@ -122,7 +129,7 @@ impl DiscoveryService {
     /// finding nothing) still leaves the limited-broadcast fallback in
     /// the list, so single-NIC hosts and any environment enumeration
     /// doesn't work in are unaffected.
-    pub fn broadcast_destinations() -> Vec<SocketAddr> {
+    pub fn broadcast_destinations(port: u16) -> Vec<SocketAddr> {
         let mut destinations = Vec::new();
         if let Ok(interfaces) = if_addrs::get_if_addrs() {
             for interface in interfaces {
@@ -131,12 +138,12 @@ impl DiscoveryService {
                 }
                 if let if_addrs::IfAddr::V4(v4) = interface.addr {
                     if let Some(broadcast) = v4.broadcast {
-                        destinations.push(SocketAddr::new(broadcast.into(), DISCOVERY_PORT));
+                        destinations.push(SocketAddr::new(broadcast.into(), port));
                     }
                 }
             }
         }
-        let fallback = Self::broadcast_destination();
+        let fallback = Self::broadcast_destination(port);
         if !destinations.contains(&fallback) {
             destinations.push(fallback);
         }
@@ -167,6 +174,14 @@ impl DiscoveryService {
     /// yields `Ok(None)` rather than an error — the caller just waits
     /// for the next packet.
     pub async fn recv_one(&self) -> std::io::Result<Option<DiscoveredPeer>> {
+        Ok(self.recv_announce().await?.map(|received| received.peer))
+    }
+
+    /// Like [`Self::recv_one`], but also returns the sender's instance
+    /// id: its identity public key, hex-encoded. It is unauthenticated, so
+    /// it may only be used to skip work (such as redialing a peer that is
+    /// already linked), never to trust anyone.
+    pub async fn recv_announce(&self) -> std::io::Result<Option<ReceivedAnnounce>> {
         let mut buf = [0u8; 512];
         let (len, sender) = self.socket.recv_from(&mut buf).await?;
         let Ok(announce) = serde_json::from_slice::<Announce>(&buf[..len]) else {
@@ -176,10 +191,13 @@ impl DiscoveryService {
             return Ok(None);
         }
         let tcp_addr = SocketAddr::new(sender.ip(), announce.channel_port);
-        Ok(Some(DiscoveredPeer {
-            name: announce.name,
-            os: announce.os,
-            address: ChannelAddress::Tcp(tcp_addr),
+        Ok(Some(ReceivedAnnounce {
+            peer: DiscoveredPeer {
+                name: announce.name,
+                os: announce.os,
+                address: ChannelAddress::Tcp(tcp_addr),
+            },
+            instance_id: announce.instance_id,
         }))
     }
 
@@ -215,11 +233,18 @@ impl DiscoveryService {
 /// fails outright with `AddrInUse` and local two-daemon testing is
 /// impossible. For the normal single-instance deployment this is a
 /// harmless no-op — nothing else contends for the port.
+///
+/// Port `0` (an OS-assigned ephemeral port, as tests and the harness use)
+/// is bound without the reuse options: with them Linux may hand two
+/// sockets the same ephemeral port, and unicast announces to it then
+/// reach only one of the two engines, which never discover the sender.
 fn bind_reusable_udp(port: u16) -> std::io::Result<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
-    socket.set_reuse_address(true)?;
-    #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
-    socket.set_reuse_port(true)?;
+    if port != 0 {
+        socket.set_reuse_address(true)?;
+        #[cfg(all(unix, not(target_os = "solaris"), not(target_os = "illumos")))]
+        socket.set_reuse_port(true)?;
+    }
     socket.set_nonblocking(true)?;
     socket.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
     UdpSocket::from_std(socket.into())
@@ -229,6 +254,21 @@ fn bind_reusable_udp(port: u16) -> std::io::Result<UdpSocket> {
 mod tests {
     use super::*;
 
+    /// With `SO_REUSEPORT`, Linux handed the same ephemeral port to
+    /// several sockets (dozens per thousand binds), so two engines could
+    /// share a discovery port and one would never hear announces.
+    #[tokio::test]
+    async fn ephemeral_discovery_ports_are_never_shared() {
+        let mut sockets = Vec::new();
+        let mut ports = std::collections::HashSet::new();
+        for _ in 0..500 {
+            let socket = bind_reusable_udp(0).expect("bind");
+            let port = socket.local_addr().expect("addr").port();
+            assert!(ports.insert(port), "port {port} handed out twice");
+            sockets.push(socket);
+        }
+    }
+
     /// `broadcast_destinations` must never come back empty — even on a
     /// host where interface enumeration fails or finds nothing routable,
     /// the limited-broadcast fallback keeps single-NIC hosts working, and
@@ -236,9 +276,9 @@ mod tests {
     /// test-running machine happens to have.
     #[test]
     fn broadcast_destinations_always_includes_the_limited_broadcast_fallback() {
-        let destinations = DiscoveryService::broadcast_destinations();
+        let destinations = DiscoveryService::broadcast_destinations(DISCOVERY_PORT);
         assert!(!destinations.is_empty());
-        assert!(destinations.contains(&DiscoveryService::broadcast_destination()));
+        assert!(destinations.contains(&DiscoveryService::broadcast_destination(DISCOVERY_PORT)));
     }
 
     /// A loopback-only send target for a service bound with `bind(0, ...)`

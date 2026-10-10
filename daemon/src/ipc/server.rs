@@ -1,4 +1,4 @@
-//! Per-connection WebSocket IPC handler (`docs/tasks/daemon-todos.json` task C3).
+//! Per-connection WebSocket IPC handler (`docs/archive/tasks/daemon-todos.json` task C3).
 //! `tokio-tungstenite` is confined to this module — application code
 //! elsewhere in the daemon only ever sees `IpcRequest`/`IpcResponse`
 //! (`flow-core`), never the WebSocket crate directly.
@@ -8,7 +8,6 @@ use std::sync::Arc;
 use flow_core::ipc::{IpcRequest, IpcResponse};
 use futures_util::stream::SplitSink;
 use futures_util::{SinkExt, StreamExt};
-use serde::Serialize;
 use tokio::net::TcpStream;
 use tokio_tungstenite::tungstenite::handshake::server::{
     ErrorResponse, Request, Response as HandshakeResponse,
@@ -32,6 +31,7 @@ fn ipc_websocket_config() -> WebSocketConfig {
 }
 
 use super::dispatch::dispatch;
+use super::events::{StateEvent, StateStream, RESYNC_COMMAND};
 use crate::service::DaemonService;
 
 type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
@@ -39,7 +39,7 @@ type WsSink = SplitSink<WebSocketStream<TcpStream>, Message>;
 const TOKEN_HEADER: &str = "sec-websocket-protocol";
 
 /// Handles one client connection end to end: an authenticated WebSocket
-/// handshake, the six initial state-push events, then forwarding
+/// handshake, the initial state-push events, then forwarding
 /// further watch-channel updates as events while dispatching incoming
 /// commands — until the client disconnects. Never panics on a client
 /// error; a bad frame or a dropped socket just ends this task, leaving
@@ -47,7 +47,7 @@ const TOKEN_HEADER: &str = "sec-websocket-protocol";
 ///
 /// `expected_token` gates the handshake itself (`auth::load_or_generate_token`,
 /// loaded once at daemon startup): `127.0.0.1` is reachable by *any*
-/// local process, not just the intended Flutter UI, and this connection
+/// local process, not just the intended UI, and this connection
 /// previously had no way to tell the two apart. The token travels as the
 /// WebSocket subprotocol (`Sec-WebSocket-Protocol`) specifically because
 /// a browser page's own `WebSocket` can set that (unlike an arbitrary
@@ -73,7 +73,7 @@ pub async fn handle_connection(
                 .get(TOKEN_HEADER)
                 .and_then(|value| value.to_str().ok());
             match presented {
-                Some(token) if token == expected_token.as_ref() => {
+                Some(token) if super::auth::token_matches(token, &expected_token) => {
                     // Echo the offered subprotocol back — required for
                     // the handshake to be a spec-valid accept of it, and
                     // for a real (e.g. browser) WebSocket client to treat
@@ -113,120 +113,21 @@ pub async fn handle_connection(
     let _client_guard = service.register_ipc_client();
     let (mut sink, mut source) = ws_stream.split();
 
-    let mut devices_rx = service.watch_devices();
-    let mut link_state_rx = service.watch_link_state();
-    let mut pairing_session_rx = service.watch_pairing_session();
-    let mut settings_rx = service.watch_settings();
-    let mut permission_rx = service.watch_permission();
-    let mut incoming_request_rx = service.watch_incoming_request();
-
     // "Connecting to the channel and subscribing IS the initial fetch"
-    // (daemon-ipc.md) — one Event per watch* stream's current value,
-    // before anything else, in a fixed order. Each value is cloned out of
-    // its `watch::Ref` guard *before* the `.await` below: the guard isn't
-    // `Send`, so holding it across an await (as a single array-literal
-    // expression of `.await`s would, via temporary lifetime extension)
-    // makes this whole connection's future non-`Send` and unspawnable.
-    let devices = devices_rx.borrow_and_update().clone();
-    if send_event(&mut sink, "devices_changed", &devices)
+    // (daemon-ipc.md): the full snapshot first, then every change.
+    let mut stream = StateStream::new(&service);
+    if send_events(&mut sink, stream.snapshot(&service))
         .await
         .is_err()
-    {
-        return;
-    }
-    let link_state = *link_state_rx.borrow_and_update();
-    if send_event(&mut sink, "link_state_changed", &link_state)
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let pairing_session = pairing_session_rx.borrow_and_update().clone();
-    if send_event(&mut sink, "pairing_session_changed", &pairing_session)
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let settings = settings_rx.borrow_and_update().clone();
-    if send_event(&mut sink, "settings_changed", &settings)
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let permission = permission_rx.borrow_and_update().clone();
-    if send_event(&mut sink, "permission_changed", &permission)
-        .await
-        .is_err()
-    {
-        return;
-    }
-    let incoming_request = incoming_request_rx.borrow_and_update().clone();
-    if send_event(
-        &mut sink,
-        "incoming_pairing_request_changed",
-        &incoming_request,
-    )
-    .await
-    .is_err()
     {
         return;
     }
 
     loop {
         tokio::select! {
-            changed = devices_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let value = devices_rx.borrow_and_update().clone();
-                if send_event(&mut sink, "devices_changed", &value).await.is_err() {
-                    break;
-                }
-            }
-            changed = link_state_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let value = *link_state_rx.borrow_and_update();
-                if send_event(&mut sink, "link_state_changed", &value).await.is_err() {
-                    break;
-                }
-            }
-            changed = pairing_session_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let value = pairing_session_rx.borrow_and_update().clone();
-                if send_event(&mut sink, "pairing_session_changed", &value).await.is_err() {
-                    break;
-                }
-            }
-            changed = settings_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let value = settings_rx.borrow_and_update().clone();
-                if send_event(&mut sink, "settings_changed", &value).await.is_err() {
-                    break;
-                }
-            }
-            changed = permission_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let value = permission_rx.borrow_and_update().clone();
-                if send_event(&mut sink, "permission_changed", &value).await.is_err() {
-                    break;
-                }
-            }
-            changed = incoming_request_rx.changed() => {
-                if changed.is_err() {
-                    break;
-                }
-                let value = incoming_request_rx.borrow_and_update().clone();
-                if send_event(&mut sink, "incoming_pairing_request_changed", &value).await.is_err() {
+            event = stream.next() => {
+                let Some(event) = event else { break };
+                if send_response(&mut sink, &event.into_response()).await.is_err() {
                     break;
                 }
             }
@@ -236,11 +137,16 @@ pub async fn handle_connection(
                         // A frame that isn't a well-formed IpcRequest has
                         // no `id` to correlate a reply to — drop it
                         // rather than crash the connection.
-                        if let Ok(req) = serde_json::from_str::<IpcRequest>(&text) {
-                            let response = dispatch(&service, req).await;
-                            if send_response(&mut sink, &response).await.is_err() {
-                                break;
-                            }
+                        let Ok(req) = serde_json::from_str::<IpcRequest>(&text) else {
+                            continue;
+                        };
+                        let resync = req.command == RESYNC_COMMAND;
+                        let response = dispatch(&service, req).await;
+                        if send_response(&mut sink, &response).await.is_err() {
+                            break;
+                        }
+                        if resync && send_events(&mut sink, stream.snapshot(&service)).await.is_err() {
+                            break;
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,
@@ -252,15 +158,11 @@ pub async fn handle_connection(
     }
 }
 
-async fn send_event<T: Serialize>(sink: &mut WsSink, event: &str, value: &T) -> Result<(), ()> {
-    send_response(
-        sink,
-        &IpcResponse::Event {
-            event: event.to_string(),
-            payload: serde_json::to_value(value).expect("serialize event payload"),
-        },
-    )
-    .await
+async fn send_events(sink: &mut WsSink, events: Vec<StateEvent>) -> Result<(), ()> {
+    for event in events {
+        send_response(sink, &event.into_response()).await?;
+    }
+    Ok(())
 }
 
 async fn send_response(sink: &mut WsSink, response: &IpcResponse) -> Result<(), ()> {
@@ -281,6 +183,7 @@ mod tests {
     async fn spawn_test_server() -> std::net::SocketAddr {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = Arc::new(DaemonService::new_seeded_for_test(storage).await);
+        std::mem::forget(service.connect_peer_for_test("d2").await);
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
         let addr = listener.local_addr().expect("local addr");
         let token: Arc<str> = Arc::from(TEST_TOKEN);
@@ -360,8 +263,8 @@ mod tests {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
 
-        // Drain the 6 initial events.
-        for _ in 0..6 {
+        // Drain the 10 initial events.
+        for _ in 0..10 {
             ws.next().await.expect("frame").expect("ok frame");
         }
 
@@ -376,7 +279,7 @@ mod tests {
 
         let mut saw_ack = false;
         let mut saw_devices_changed = false;
-        for _ in 0..2 {
+        for _ in 0..3 {
             let msg = ws.next().await.expect("frame").expect("ok frame");
             let value: serde_json::Value =
                 serde_json::from_str(&msg.into_text().expect("text frame")).expect("valid json");
@@ -406,7 +309,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
 
-    /// `docs/tasks/daemon-todos.json` I3's regression test: `tokio::spawn` already
+    /// `docs/archive/tasks/daemon-todos.json` I3's regression test: `tokio::spawn` already
     /// isolates a panic to its own task (the runtime catches it and
     /// reports it only through that task's own `JoinHandle`) — this
     /// confirms that holds for the exact spawn shape `main.rs`'s
@@ -452,7 +355,7 @@ mod tests {
     }
 
     /// The whole point of the token check: `127.0.0.1` is reachable by
-    /// any local process, not just the intended Flutter UI, and a
+    /// any local process, not just the intended UI, and a
     /// connection presenting no proof of that at all must never reach
     /// the point of receiving state or being able to send a command.
     #[tokio::test]
@@ -498,7 +401,7 @@ mod tests {
     async fn an_oversized_frame_ends_the_connection_instead_of_being_processed() {
         let addr = spawn_test_server().await;
         let mut ws = connect(addr).await;
-        for _ in 0..6 {
+        for _ in 0..10 {
             ws.next().await.expect("frame").expect("initial event");
         }
 

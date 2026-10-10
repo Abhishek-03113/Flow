@@ -7,6 +7,7 @@ use std::mem::size_of;
 use flow_core::input::InputInjector;
 use flow_core::protocol::{InputEvent, KeyboardEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{SendInput, INPUT};
+use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
 use super::inject_translate::to_input;
 
@@ -26,6 +27,8 @@ pub enum WindowsInjectError {
     /// `core/src/input/mod.rs`: a caller that believes a key was
     /// injected when it wasn't is worse than a loud failure.
     UnmappedKey(String),
+    /// `SetCursorPos` was refused.
+    CursorWarpFailed,
 }
 
 impl fmt::Display for WindowsInjectError {
@@ -35,6 +38,7 @@ impl fmt::Display for WindowsInjectError {
                 write!(f, "SendInput did not queue all events (input blocked)")
             }
             Self::UnmappedKey(key) => write!(f, "no VIRTUAL_KEY for key {key:?}"),
+            Self::CursorWarpFailed => write!(f, "SetCursorPos failed"),
         }
     }
 }
@@ -70,5 +74,10 @@ impl InputInjector for WindowsInputInjector {
             return Err(WindowsInjectError::SendInputBlocked);
         }
         Ok(())
+    }
+
+    fn warp_cursor(&mut self, x: i32, y: i32) -> Result<(), Self::Error> {
+        // SAFETY: SetCursorPos takes plain screen coordinates.
+        unsafe { SetCursorPos(x, y) }.map_err(|_| WindowsInjectError::CursorWarpFailed)
     }
 }

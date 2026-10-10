@@ -1,4 +1,4 @@
-//! [`NoiseChannel`]: an encrypted `Channel` decorator (`docs/tasks/daemon-todos.json`
+//! [`NoiseChannel`]: an encrypted `Channel` decorator (`docs/archive/tasks/daemon-todos.json`
 //! H3) wrapping any other `Channel` with an authenticated [Noise
 //! protocol](http://www.noiseprotocol.org/) session (the `snow` crate —
 //! confined to this module per the wrap-third-party-deps rule), so
@@ -306,7 +306,7 @@ mod tests {
             .expect("initiate");
 
         let sent = ChannelMessage::Input {
-            sequence: 1,
+            seq: 1,
             event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
                 key: "A".to_string(),
                 modifiers: vec![],

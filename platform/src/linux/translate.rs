@@ -1,13 +1,13 @@
 //! Pure translation from evdev's raw event model to `flow_core`'s
 //! platform-independent [`InputEvent`] (vision.md §11). Isolated from any
 //! device I/O so it's unit-testable without hardware access
-//! (`docs/tasks/daemon-todos.json` E1 acceptance criteria).
+//! (`docs/archive/tasks/daemon-todos.json` E1 acceptance criteria).
 
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use evdev::{EventSummary, KeyCode, RelativeAxisCode};
-use flow_core::protocol::{key_names, InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
+use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
 
 /// evdev's `EV_KEY` value for a press. Shared with `inject_translate`,
 /// which needs the same values going the other direction.
@@ -139,7 +139,7 @@ fn translate_mouse_button(
 /// `SYN_REPORT`, rather than a combined `(dx, dy)` sample — so a physical
 /// mouse move typically becomes two [`MouseEvent::Move`]s in quick
 /// succession (one per axis) rather than one. Deliberate simplification:
-/// documented in `docs/tasks/daemon-todos.json` E1's `buildNote` rather than hidden.
+/// documented in `docs/archive/tasks/daemon-todos.json` E1's `buildNote` rather than hidden.
 fn translate_relative_axis(
     code: RelativeAxisCode,
     value: i32,
@@ -170,78 +170,14 @@ fn translate_relative_axis(
     }
 }
 
-/// Maps an evdev code that has a cross-platform equivalent to the shared
-/// `key_names` vocabulary. Letters, digits, and evdev-only keys with no
-/// equivalent on Windows/macOS (e.g. `KEY_LEFTBRACE`'s neighbors that
-/// don't exist there) fall through to the generic strip-`KEY_`-prefix
-/// passthrough below, which already matches the bare-char convention for
-/// plain letters/digits.
+/// Names an evdev code via the host keymap (`config/keymaps/linux.toml`).
+/// Codes the keymap doesn't list fall back to evdev's own name with the
+/// `KEY_` prefix stripped.
 fn key_name(code: KeyCode) -> String {
-    match code {
-        KeyCode::KEY_ENTER => key_names::RETURN.to_string(),
-        KeyCode::KEY_TAB => key_names::TAB.to_string(),
-        KeyCode::KEY_SPACE => key_names::SPACE.to_string(),
-        KeyCode::KEY_BACKSPACE => key_names::DELETE.to_string(),
-        KeyCode::KEY_DELETE => key_names::FORWARD_DELETE.to_string(),
-        KeyCode::KEY_ESC => key_names::ESCAPE.to_string(),
-        KeyCode::KEY_LEFTSHIFT => key_names::SHIFT.to_string(),
-        KeyCode::KEY_RIGHTSHIFT => key_names::RIGHT_SHIFT.to_string(),
-        KeyCode::KEY_LEFTCTRL => key_names::CONTROL.to_string(),
-        KeyCode::KEY_RIGHTCTRL => key_names::RIGHT_CONTROL.to_string(),
-        KeyCode::KEY_LEFTALT => key_names::OPTION.to_string(),
-        KeyCode::KEY_RIGHTALT => key_names::RIGHT_OPTION.to_string(),
-        KeyCode::KEY_LEFTMETA => key_names::COMMAND.to_string(),
-        KeyCode::KEY_RIGHTMETA => key_names::RIGHT_COMMAND.to_string(),
-        KeyCode::KEY_CAPSLOCK => key_names::CAPS_LOCK.to_string(),
-        KeyCode::KEY_FN => key_names::FUNCTION.to_string(),
-        KeyCode::KEY_HOME => key_names::HOME.to_string(),
-        KeyCode::KEY_END => key_names::END.to_string(),
-        KeyCode::KEY_PAGEUP => key_names::PAGE_UP.to_string(),
-        KeyCode::KEY_PAGEDOWN => key_names::PAGE_DOWN.to_string(),
-        KeyCode::KEY_LEFT => key_names::LEFT_ARROW.to_string(),
-        KeyCode::KEY_RIGHT => key_names::RIGHT_ARROW.to_string(),
-        KeyCode::KEY_UP => key_names::UP_ARROW.to_string(),
-        KeyCode::KEY_DOWN => key_names::DOWN_ARROW.to_string(),
-        KeyCode::KEY_HELP => key_names::HELP.to_string(),
-        KeyCode::KEY_VOLUMEUP => key_names::VOLUME_UP.to_string(),
-        KeyCode::KEY_VOLUMEDOWN => key_names::VOLUME_DOWN.to_string(),
-        KeyCode::KEY_MUTE => key_names::MUTE.to_string(),
-        KeyCode::KEY_MINUS => key_names::MINUS.to_string(),
-        KeyCode::KEY_EQUAL => key_names::EQUAL.to_string(),
-        KeyCode::KEY_LEFTBRACE => key_names::LEFT_BRACKET.to_string(),
-        KeyCode::KEY_RIGHTBRACE => key_names::RIGHT_BRACKET.to_string(),
-        KeyCode::KEY_SEMICOLON => key_names::SEMICOLON.to_string(),
-        KeyCode::KEY_APOSTROPHE => key_names::QUOTE.to_string(),
-        KeyCode::KEY_COMMA => key_names::COMMA.to_string(),
-        KeyCode::KEY_DOT => key_names::PERIOD.to_string(),
-        KeyCode::KEY_SLASH => key_names::SLASH.to_string(),
-        KeyCode::KEY_BACKSLASH => key_names::BACKSLASH.to_string(),
-        KeyCode::KEY_GRAVE => key_names::GRAVE.to_string(),
-        // evdev's F-keys aren't numbered contiguously: F1-F10 sit in one
-        // range, F11-F12 in another, F13-F24 in a third — so these are
-        // enumerated individually rather than derived arithmetically.
-        KeyCode::KEY_F1 => key_names::function_key(1),
-        KeyCode::KEY_F2 => key_names::function_key(2),
-        KeyCode::KEY_F3 => key_names::function_key(3),
-        KeyCode::KEY_F4 => key_names::function_key(4),
-        KeyCode::KEY_F5 => key_names::function_key(5),
-        KeyCode::KEY_F6 => key_names::function_key(6),
-        KeyCode::KEY_F7 => key_names::function_key(7),
-        KeyCode::KEY_F8 => key_names::function_key(8),
-        KeyCode::KEY_F9 => key_names::function_key(9),
-        KeyCode::KEY_F10 => key_names::function_key(10),
-        KeyCode::KEY_F11 => key_names::function_key(11),
-        KeyCode::KEY_F12 => key_names::function_key(12),
-        KeyCode::KEY_F13 => key_names::function_key(13),
-        KeyCode::KEY_F14 => key_names::function_key(14),
-        KeyCode::KEY_F15 => key_names::function_key(15),
-        KeyCode::KEY_F16 => key_names::function_key(16),
-        KeyCode::KEY_F17 => key_names::function_key(17),
-        KeyCode::KEY_F18 => key_names::function_key(18),
-        KeyCode::KEY_F19 => key_names::function_key(19),
-        KeyCode::KEY_F20 => key_names::function_key(20),
-        other => {
-            let debug = format!("{other:?}");
+    match crate::keymap::host().name_for_code(u32::from(code.0)) {
+        Some(name) => name.to_owned(),
+        None => {
+            let debug = format!("{code:?}");
             debug.strip_prefix("KEY_").unwrap_or(&debug).to_owned()
         }
     }

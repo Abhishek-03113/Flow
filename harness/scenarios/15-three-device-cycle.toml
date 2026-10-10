@@ -1,0 +1,129 @@
+name = "three-device-cycle"
+description = """
+One controller driving two controlled machines: the hotkey cycles local -> A -> B -> local, each screen gets
+exactly the input typed while it was active, and `switch_to` jumps to any screen directly."""
+
+matrix = "triples"
+
+[[devices]]
+name = "ctl"
+os = "$a"
+role = "controller"
+[[devices]]
+name = "alpha"
+os = "$b"
+role = "controlled"
+[[devices]]
+name = "beta"
+os = "$c"
+role = "controlled"
+
+[[steps]]
+do = "type"
+on = "ctl"
+text = "h"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "alpha"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "a"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "beta"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "b"
+[[steps]]
+do = "expect"
+that = "entered"
+on = "alpha"
+is = false
+[[steps]]
+do = "expect"
+that = "entered"
+on = "beta"
+is = true
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "t"
+
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down H", "up H", "down T", "up T"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "alpha"
+events = ["down A", "up A"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "beta"
+events = ["down B", "up B"]
+
+# Direct jumps, including remote -> remote, and each input follows the screen.
+[[steps]]
+do = "clear"
+[[steps]]
+do = "switch_to"
+on = "ctl"
+target = "beta"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "1"
+[[steps]]
+do = "switch_to"
+on = "ctl"
+target = "alpha"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "2"
+[[steps]]
+do = "expect"
+that = "entered"
+on = "beta"
+is = false
+[[steps]]
+do = "switch_to"
+on = "ctl"
+target = "local"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "beta"
+events = ["down 1", "up 1"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "alpha"
+events = ["down 2", "up 2"]
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"

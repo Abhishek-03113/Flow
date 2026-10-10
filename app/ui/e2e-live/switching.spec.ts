@@ -1,0 +1,138 @@
+import { composite, expect, test } from './fixtures';
+import { keyLog } from './harness';
+
+test.use({
+  world: {
+    paired: true,
+    devices: [
+      { name: 'Mac', os: 'mac', role: 'controller' },
+      { name: 'PC', os: 'win', role: 'controlled' },
+    ],
+  },
+});
+
+test('2. switching from the UI: controller drives the PC, keys land only there, then back', async ({
+  live,
+  browser,
+}) => {
+  const mac = live.daemon('Mac');
+  const pc = live.daemon('PC');
+  const macPage = await live.open('Mac');
+  const pcPage = await live.open('PC');
+
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('This computer is ready');
+
+  await macPage.getByRole('button', { name: 'Switch to PC' }).click();
+  await expect(macPage.getByTestId('status-title')).toHaveText('Controlling PC');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('Mac is controlling this computer');
+  await expect.poll(() => mac.controlState()?.active_screen).toBe(mac.idOf('PC'));
+
+  await mac.clearIo();
+  await pc.clearIo();
+  await mac.tap('A');
+  await mac.tap('B');
+  await expect
+    .poll(async () => keyLog((await pc.virtualIo()).injected))
+    .toEqual(['down A', 'up A', 'down B', 'up B']);
+  const macIo = await mac.virtualIo();
+  expect(macIo.suppressed).toBe(true);
+  expect(macIo.delivered_locally).toEqual([]);
+
+  // The controlled computer's tips are about being controlled, not about shortcuts it doesn't have.
+  await expect(pcPage.getByText('Take your computer back')).toBeVisible();
+  await expect(pcPage.getByText('Switch computers', { exact: true })).toHaveCount(0);
+  await expect(macPage.getByText('Switch computers', { exact: true })).toBeVisible();
+  // The controlled page shows its controller beside it, read-only, not a lone tile.
+  await expect(pcPage.getByTestId(`tile-${pc.idOf('Mac')}`)).toBeVisible();
+  await expect(pcPage.getByTestId('home')).toContainText('Mac sets up where the screens sit');
+  // Switch time is real but sub-millisecond in-process: never a misleading "0.0 ms".
+  await expect
+    .poll(
+      () =>
+        (mac.state.get('diagnostics_changed') as { switch_latency_ms_p50: number | null })
+          ?.switch_latency_ms_p50,
+    )
+    .not.toBeNull();
+  await expect(macPage.getByTestId('home')).not.toContainText('0.0 ms');
+
+  // On the blue live card the prominent button stays white, also under the pointer.
+  const back = macPage.getByRole('button', { name: 'Return to this computer' });
+  await back.hover();
+  const bg = await back.evaluate((b) => getComputedStyle(b).backgroundColor);
+  expect(bg, 'hovered button on the live card').toMatch(/^rgb\((2[2-5]\d), (2[2-5]\d), (2[2-5]\d)\)$/);
+
+  await composite(browser, '02-controlling.png', [
+    { page: macPage, label: 'Mac (controller): controlling PC' },
+    { page: pcPage, label: 'PC (controlled): being controlled' },
+  ]);
+
+  await macPage.getByRole('button', { name: 'Return to this computer' }).click();
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('This computer is ready');
+
+  await mac.clearIo();
+  await pc.clearIo();
+  await mac.tap('C');
+  await expect
+    .poll(async () => keyLog((await mac.virtualIo()).delivered_locally))
+    .toEqual(['down C', 'up C']);
+  expect((await mac.virtualIo()).suppressed).toBe(false);
+  expect(keyLog((await pc.virtualIo()).injected)).toEqual([]);
+});
+
+test('3. the switch hotkey on the controller updates both pages live', async ({ live, browser }) => {
+  const mac = live.daemon('Mac');
+  const pc = live.daemon('PC');
+  const macPage = await live.open('Mac', { theme: 'dark' });
+  const pcPage = await live.open('PC', { theme: 'dark' });
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+
+  // The harness gives a Mac controller the F13 preset (no Scroll Lock key).
+  expect((mac.settings()?.switch_key as { keys: string[] }).keys).toEqual(['F13']);
+  await mac.clearIo();
+  await mac.chord(['F13']);
+  await expect(macPage.getByTestId('status-title')).toHaveText('Controlling PC');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('Mac is controlling this computer');
+  // The hotkey itself reaches no OS.
+  expect((await mac.virtualIo()).delivered_locally).toEqual([]);
+  expect((await pc.virtualIo()).injected).toEqual([]);
+  await composite(
+    browser,
+    '03-hotkey-dark.png',
+    [
+      { page: macPage, label: 'Mac (dark): switched by the hotkey' },
+      { page: pcPage, label: 'PC (dark): being controlled' },
+    ],
+    'dark',
+  );
+
+  await mac.chord(['F13']);
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('This computer is ready');
+  expect(mac.controlState()?.active_screen).toBe('local');
+});
+
+test('4. "Release control" on the controlled page sends the controller home', async ({ live }) => {
+  const mac = live.daemon('Mac');
+  const pc = live.daemon('PC');
+  const macPage = await live.open('Mac');
+  const pcPage = await live.open('PC');
+  await macPage.getByRole('button', { name: 'Switch to PC' }).click();
+  await expect(pcPage.getByTestId('status-title')).toHaveText('Mac is controlling this computer');
+
+  await pcPage.getByRole('button', { name: 'Release control' }).click();
+  await expect(macPage.getByTestId('status-title')).toHaveText('Your keyboard and mouse are on Mac');
+  await expect(pcPage.getByTestId('status-title')).toHaveText('This computer is ready');
+  await expect.poll(() => mac.controlState()?.active_screen).toBe('local');
+  await expect.poll(() => pc.controlState()?.entered).toBe(false);
+
+  // Typing on the controller stays on the controller now.
+  await mac.clearIo();
+  await pc.clearIo();
+  await mac.tap('K');
+  await expect
+    .poll(async () => keyLog((await mac.virtualIo()).delivered_locally))
+    .toEqual(['down K', 'up K']);
+  expect((await pc.virtualIo()).injected).toEqual([]);
+});

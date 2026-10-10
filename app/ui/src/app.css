@@ -1,0 +1,433 @@
+/* App-specific layout (not part of the design system): home status card, arrangement editor, onboarding, shell, tray. */
+
+.fl-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-5);
+  padding: var(--s-5) var(--s-6);
+  border-radius: var(--r-card);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-1);
+}
+
+.fl-status--live {
+  background: linear-gradient(135deg, #0071e3, #4a5cf0);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(40, 80, 220, 0.28);
+}
+
+.fl-status--live .fl-status__sub {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.fl-status__icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+
+.fl-status--live .fl-status__icon {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.fl-status__main {
+  flex: 1;
+  min-width: 0;
+}
+
+.fl-status__sub {
+  margin-top: var(--s-1);
+  color: var(--label-secondary);
+}
+
+.fl-status__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+
+.fl-status--live .fl-btn:not(.fl-btn--prominent) {
+  background: rgba(0, 20, 70, 0.32);
+  color: #fff;
+  box-shadow: none;
+}
+
+.fl-status--live .fl-btn:not(.fl-btn--prominent):hover:not(:disabled) {
+  background: rgba(0, 20, 70, 0.45);
+}
+
+.fl-status--live .fl-btn--prominent {
+  background: #fff;
+  color: #0b4fb3;
+}
+
+/* The design system's prominent hover/pressed colours are the accent itself:
+   on the blue live card that would turn the button blue-on-blue. */
+.fl-status--live .fl-btn--prominent:hover:not(:disabled) {
+  background: #eaf1ff;
+}
+
+.fl-status--live .fl-btn--prominent:active:not(:disabled) {
+  background: #d6e4ff;
+}
+
+.fl-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--s-4);
+}
+
+.fl-stat__value {
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+  font-weight: var(--fw-semibold);
+  letter-spacing: -0.01em;
+}
+
+.fl-stat__label {
+  color: var(--label-secondary);
+  font-size: var(--fs-callout);
+}
+
+/* Arrangement editor ------------------------------------------------------------------------------------ */
+.fl-arrange {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 5;
+  min-height: 170px;
+  border-radius: var(--r-group);
+  background:
+    radial-gradient(circle, var(--separator) 1px, transparent 1.5px) 0 0 / 16px 16px,
+    var(--bg-window);
+  overflow: hidden;
+  touch-action: none;
+}
+
+.fl-tile {
+  position: absolute;
+  min-width: 112px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: var(--s-1);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-1);
+  text-align: center;
+  overflow: hidden;
+  transition:
+    left var(--dur) var(--ease),
+    top var(--dur) var(--ease),
+    box-shadow var(--dur) var(--ease);
+}
+
+.fl-tile--edit {
+  cursor: grab;
+}
+
+.fl-tile--drag {
+  cursor: grabbing;
+  z-index: 2;
+  transition: none;
+  box-shadow: var(--shadow-2);
+}
+
+.fl-tile--active {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    0 4px 14px rgba(0, 113, 227, 0.3);
+}
+
+.fl-tile__name {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--fw-medium);
+}
+
+.fl-tile__meta {
+  color: var(--label-secondary);
+  font-size: var(--fs-footnote);
+  white-space: nowrap;
+}
+
+.fl-ghost {
+  position: absolute;
+  border: 1.5px dashed var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  pointer-events: none;
+}
+
+/* Role cards / onboarding ---------------------------------------------------------------------------------- */
+.fl-roles {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-4);
+}
+
+.fl-rolecard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-5) var(--s-4) var(--s-4);
+  border: 0;
+  border-radius: var(--r-card);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-1);
+  text-align: center;
+  transition:
+    box-shadow var(--dur) var(--ease),
+    transform var(--dur) var(--ease);
+}
+
+.fl-rolecard:hover {
+  transform: translateY(-1px);
+}
+
+.fl-rolecard[aria-checked='true'] {
+  box-shadow:
+    0 0 0 2px var(--accent),
+    var(--shadow-1);
+}
+
+.fl-rolecard__art {
+  width: 100%;
+  height: 96px;
+  color: var(--accent-text);
+}
+
+.fl-rolecard__title {
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-title3);
+  line-height: var(--lh-title3);
+}
+
+.fl-onboard {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-window);
+}
+
+.fl-onboard__top {
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  padding: 0 var(--s-4);
+}
+
+.fl-onboard__page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-4);
+  padding: var(--s-4) var(--s-8);
+  text-align: center;
+  animation: fl-page-in var(--dur-slow) var(--ease);
+}
+
+.fl-onboard__body {
+  width: min(520px, 100%);
+  text-align: left;
+}
+
+.fl-onboard__foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-8) var(--s-6);
+}
+
+.fl-onboard__actions {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+}
+
+.fl-dots {
+  display: flex;
+  gap: var(--s-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fl-dots li {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--label-tertiary);
+  opacity: 0.45;
+  transition:
+    background var(--dur) var(--ease),
+    opacity var(--dur) var(--ease);
+}
+
+.fl-dots li[aria-current='step'] {
+  background: var(--label);
+  opacity: 1;
+}
+
+@keyframes fl-page-in {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes fl-page-in {
+    from {
+      opacity: 0;
+      transform: none;
+    }
+  }
+}
+
+.fl-hero {
+  width: 220px;
+  height: 140px;
+  color: var(--accent-text);
+}
+
+/* App shell ---------------------------------------------------------------------------------------------------- */
+.fl-app {
+  display: flex;
+  height: 100%;
+}
+
+.fl-main {
+  --col-pad: max(var(--s-6), calc((100% - 780px) / 2));
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.fl-content {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 var(--col-pad) var(--s-8);
+}
+
+.fl-sidebar__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2);
+  color: var(--label-secondary);
+  font-size: var(--fs-callout);
+}
+
+.fl-tray {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-window);
+}
+
+.fl-tray__head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-4) var(--s-4) var(--s-2);
+}
+
+.fl-tray__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-1) var(--s-2);
+}
+
+.fl-tray__item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  padding: var(--s-2) var(--s-2);
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  text-align: left;
+}
+
+.fl-tray__item:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.fl-tray__item:hover:not(:disabled) .t-secondary {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.fl-tray__item:disabled {
+  opacity: 0.55;
+}
+
+.fl-tray__foot {
+  display: flex;
+  gap: var(--s-2);
+  padding: var(--s-3) var(--s-4);
+  border-top: 0.5px solid var(--separator);
+}
+
+.fl-splash {
+  height: 100%;
+  display: grid;
+  place-items: center;
+}
+
+/* Permission fix-it steps ------------------------------------------------------------------------------------ */
+.fl-steps {
+  margin: 0;
+  padding: var(--s-1) var(--s-4) var(--s-3) calc(var(--s-4) + var(--s-5));
+  display: grid;
+  gap: var(--s-2);
+  text-align: left;
+}
+.fl-steps li {
+  display: grid;
+  gap: var(--s-1);
+}
+
+.fl-keymap {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--s-1) var(--s-4);
+  max-height: 220px;
+  overflow: auto;
+  padding: var(--s-2) var(--s-4) var(--s-3);
+  width: 100%;
+}
+
+.fl-keymap__key {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s-2);
+  font-size: var(--fs-callout);
+}
+
+.fl-keymap__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

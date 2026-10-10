@@ -1,0 +1,107 @@
+name = "edge-switching-layout"
+description = """
+Switching by pushing the pointer through a screen edge across a three-screen arrangement (A right of the
+controller, B right of A), and back again the same way; the controller's own pointer is put where it left."""
+
+matrix = "triples"
+
+[[devices]]
+name = "ctl"
+os = "$a"
+role = "controller"
+[[devices]]
+name = "alpha"
+os = "$b"
+role = "controlled"
+[[devices]]
+name = "beta"
+os = "$c"
+role = "controlled"
+
+# Out through the controller's right edge into A.
+[[steps]]
+do = "place_cursor"
+on = "ctl"
+x = 1919
+y = 300
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "alpha"
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = true
+
+# Across A to B.
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 1000
+dy = 0
+times = 2
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "beta"
+
+# Back left through B and A to the controller.
+[[steps]]
+do = "move"
+on = "ctl"
+dx = -40
+dy = 0
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "alpha"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = -1000
+dy = 0
+times = 2
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+[[steps]]
+do = "expect"
+that = "warped"
+on = "ctl"
+x = 1918
+y = 300
+
+# At home again the pointer moves the local screen (and is not forwarded).
+[[steps]]
+do = "clear"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = -10
+dy = 0
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["move -10 0"]
+[[steps]]
+do = "expect"
+that = "pointer_moved"
+on = "alpha"
+dx = 0
+dy = 0
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "alpha"

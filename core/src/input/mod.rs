@@ -1,44 +1,51 @@
-//! Capture/injection traits that isolate OS-specific input handling
-//! (vision.md §7, Flutter Does Not Remove OS Complexity).
+//! Capture/injection traits that isolate OS-specific input handling.
 //!
 //! The `flow-platform` crate implements these per operating system; the
-//! daemon's core loop depends only on the traits, never on a concrete
-//! adapter.
+//! daemon depends only on the traits, never on a concrete adapter.
 
 use crate::protocol::InputEvent;
+
+/// What to do with a physical event that was just captured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Disposition {
+    /// Let this machine's own applications see it.
+    Pass,
+    /// Hide it from this machine's own applications.
+    Swallow,
+}
+
+/// Receives captured input on the OS capture thread and decides, before
+/// the OS delivers it, whether local applications get to see it.
+///
+/// The decision has to be synchronous: an asynchronous consumer would leave
+/// a window after a switch in which events are still delivered locally
+/// although they are also forwarded (or the other way round).
+pub trait CaptureSink: Send + Sync {
+    /// Called for every translated physical event, in order.
+    fn on_event(&self, event: &InputEvent) -> Disposition;
+
+    /// Whether physical input is currently hidden from local applications.
+    /// Adapters use it for raw events with no [`InputEvent`] translation
+    /// and, where hiding is per device rather than per event (Linux
+    /// `EVIOCGRAB`), to know when to grab.
+    fn suppressing(&self) -> bool;
+}
 
 pub trait InputCapture {
     type Error;
 
     fn start(&mut self) -> Result<(), Self::Error>;
     fn stop(&mut self) -> Result<(), Self::Error>;
-
-    /// Suppresses (or restores) delivery of captured input to *this*
-    /// machine's own applications.
-    ///
-    /// This is what makes remote control actually remote. Capture is
-    /// passive on every platform — an evdev read, a listen-only event
-    /// tap, a low-level hook that always chains onward — so while
-    /// another device is the active one, forwarding alone would deliver
-    /// each keystroke to *both* machines. `vision.md` §22 is explicit
-    /// that "only the active device should receive input," which means
-    /// the forwarding side has to stop its own OS from seeing the same
-    /// events.
-    ///
-    /// Deliberately has no default implementation. Every current adapter
-    /// (Linux `EVIOCGRAB`, Windows low-level-hook swallow, macOS active
-    /// `CGEventTap`) implements it for real; an adapter that genuinely
-    /// could not should return an error rather than silently report
-    /// success, since a caller that believes it suppressed local input
-    /// when it didn't produces duplicated keystrokes the user never asked
-    /// for — worse than a loud "this platform can't do that." The macOS
-    /// and Windows implementations are unverified on real hardware (see
-    /// `daemon/README.md`'s "Local input suppression" section).
-    fn set_suppress_local(&mut self, suppress: bool) -> Result<(), Self::Error>;
 }
 
 pub trait InputInjector {
     type Error;
 
     fn inject(&mut self, event: &InputEvent) -> Result<(), Self::Error>;
+
+    /// Moves the pointer to an absolute position. Adapters that can't
+    /// (a relative-only virtual device) keep the default no-op.
+    fn warp_cursor(&mut self, _x: i32, _y: i32) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }

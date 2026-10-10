@@ -6,13 +6,14 @@
 //!
 //! `rusqlite` is synchronous; every query runs inside
 //! `tokio::task::spawn_blocking` against a single connection shared behind
-//! `Arc<tokio::sync::Mutex<_>>`, per `docs/tasks/daemon-todos.json`'s
+//! `Arc<tokio::sync::Mutex<_>>`, per `docs/archive/tasks/daemon-todos.json`'s
 //! `persistenceModel.concurrencyModel`.
 
 pub mod connection_history_repo;
 pub mod device_repo;
 pub mod history_logger;
 pub mod identity_repo;
+pub mod layout_repo;
 mod schema;
 pub mod settings_repo;
 

@@ -1,14 +1,13 @@
 //! Pure translation from Core Graphics' `CGEvent` model to `flow_core`'s
 //! platform-independent [`InputEvent`] (vision.md §11). Isolated from any
 //! event tap so it's unit-testable without installing one
-//! (`docs/tasks/daemon-todos.json` E4 acceptance criteria) — though, like the rest of
+//! (`docs/archive/tasks/daemon-todos.json` E4 acceptance criteria) — though, like the rest of
 //! this module, the tests here can only actually run on macOS; this
 //! session verified them by cross-compiling only (`daemon/README.md`).
 
 use std::collections::HashSet;
 
 use core_graphics::event::{CGEvent, CGEventFlags, CGEventType, CGKeyCode, EventField, KeyCode};
-use flow_core::protocol::key_names;
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
 
 /// Converts `CGEvent`s into `flow_core` [`InputEvent`]s.
@@ -209,166 +208,20 @@ fn scroll_event(event: &CGEvent, timestamp_ms: u64) -> InputEvent {
     })
 }
 
-/// The US ANSI keyboard's letter/digit/punctuation row, as fixed
-/// hardware-position virtual keycodes (Apple's standard `kVK_ANSI_*`
-/// table — `core_graphics::event::KeyCode` has no named constants for
-/// these; unlike `RETURN`/`TAB`/the arrow keys/etc., they simply aren't
-/// in that crate). Shared by [`key_name`] (encode) and
-/// `inject_translate::code_for_name` (decode) via `pub(super)` so the
-/// two directions can't drift apart from each other.
-///
-/// Before this table existed, every plain letter and digit fell through
-/// to the `0x..` hex fallback below — which is symmetric within macOS
-/// itself (this same process's own inject side accepts its own hex
-/// output back) but meant a letter captured on *another* platform (which
-/// sends the bare character `"A"`, never macOS's raw hex) could never
-/// match here. That was the dominant reason typed text didn't cross
-/// platforms at all; see `key_names`' module doc comment.
-pub(super) const ANSI_KEYCODES: &[(CGKeyCode, char)] = &[
-    (0x00, 'A'),
-    (0x01, 'S'),
-    (0x02, 'D'),
-    (0x03, 'F'),
-    (0x04, 'H'),
-    (0x05, 'G'),
-    (0x06, 'Z'),
-    (0x07, 'X'),
-    (0x08, 'C'),
-    (0x09, 'V'),
-    (0x0B, 'B'),
-    (0x0C, 'Q'),
-    (0x0D, 'W'),
-    (0x0E, 'E'),
-    (0x0F, 'R'),
-    (0x10, 'Y'),
-    (0x11, 'T'),
-    (0x12, '1'),
-    (0x13, '2'),
-    (0x14, '3'),
-    (0x15, '4'),
-    (0x16, '6'),
-    (0x17, '5'),
-    (0x18, '='),
-    (0x19, '9'),
-    (0x1A, '7'),
-    (0x1B, '-'),
-    (0x1C, '8'),
-    (0x1D, '0'),
-    (0x1E, ']'),
-    (0x1F, 'O'),
-    (0x20, 'U'),
-    (0x21, '['),
-    (0x22, 'I'),
-    (0x23, 'P'),
-    (0x25, 'L'),
-    (0x26, 'J'),
-    (0x27, '\''),
-    (0x28, 'K'),
-    (0x29, ';'),
-    (0x2A, '\\'),
-    (0x2B, ','),
-    (0x2C, '/'),
-    (0x2D, 'N'),
-    (0x2E, 'M'),
-    (0x2F, '.'),
-    (0x32, '`'),
-];
-
-/// This table's own [`ANSI_KEYCODES`] speaks raw ASCII punctuation
-/// (`'-'`, `'='`, ...), but the wire format uses `key_names`' named
-/// tokens for punctuation (`MINUS`, `EQUAL`, ...) the same as every
-/// other non-alphanumeric key — only letters and digits stay bare
-/// characters. This maps between the two for [`key_name`]'s encode
-/// direction; `punctuation_char_for` in `inject_translate.rs` is its
-/// exact inverse.
-fn punctuation_name_for(ch: char) -> Option<&'static str> {
-    Some(match ch {
-        '-' => key_names::MINUS,
-        '=' => key_names::EQUAL,
-        '[' => key_names::LEFT_BRACKET,
-        ']' => key_names::RIGHT_BRACKET,
-        ';' => key_names::SEMICOLON,
-        '\'' => key_names::QUOTE,
-        ',' => key_names::COMMA,
-        '.' => key_names::PERIOD,
-        '/' => key_names::SLASH,
-        '\\' => key_names::BACKSLASH,
-        '`' => key_names::GRAVE,
-        _ => return None,
-    })
-}
-
-/// Names a virtual keycode using `flow_core::protocol::key_names`'
-/// shared, cross-platform vocabulary wherever one applies (`key_names`'
-/// module doc comment explains why that matters), falling back to a raw
-/// hex literal — same as the Windows/Linux sides — for anything this
-/// function doesn't itself name.
+/// Names a virtual keycode via the host keymap
+/// (`config/keymaps/macos.toml`); unlisted codes become a `0xNN` hex
+/// literal, which `inject_translate` accepts back.
 fn key_name(code: CGKeyCode) -> String {
-    if let Some((_, ch)) = ANSI_KEYCODES.iter().find(|(c, _)| *c == code) {
-        if ch.is_ascii_alphanumeric() {
-            return ch.to_string();
-        }
-        // `find` above guarantees a `punctuation_name_for` hit — every
-        // non-alphanumeric char in `ANSI_KEYCODES` has one.
-        return punctuation_name_for(*ch).expect("ANSI_KEYCODES only carries known punctuation").to_string();
-    }
-    match code {
-        KeyCode::RETURN => key_names::RETURN.to_string(),
-        KeyCode::TAB => key_names::TAB.to_string(),
-        KeyCode::SPACE => key_names::SPACE.to_string(),
-        KeyCode::DELETE => key_names::DELETE.to_string(),
-        KeyCode::ESCAPE => key_names::ESCAPE.to_string(),
-        KeyCode::COMMAND => key_names::COMMAND.to_string(),
-        KeyCode::SHIFT => key_names::SHIFT.to_string(),
-        KeyCode::CAPS_LOCK => key_names::CAPS_LOCK.to_string(),
-        KeyCode::OPTION => key_names::OPTION.to_string(),
-        KeyCode::CONTROL => key_names::CONTROL.to_string(),
-        KeyCode::RIGHT_COMMAND => key_names::RIGHT_COMMAND.to_string(),
-        KeyCode::RIGHT_SHIFT => key_names::RIGHT_SHIFT.to_string(),
-        KeyCode::RIGHT_OPTION => key_names::RIGHT_OPTION.to_string(),
-        KeyCode::RIGHT_CONTROL => key_names::RIGHT_CONTROL.to_string(),
-        KeyCode::FUNCTION => key_names::FUNCTION.to_string(),
-        KeyCode::VOLUME_UP => key_names::VOLUME_UP.to_string(),
-        KeyCode::VOLUME_DOWN => key_names::VOLUME_DOWN.to_string(),
-        KeyCode::MUTE => key_names::MUTE.to_string(),
-        KeyCode::F1 => key_names::function_key(1),
-        KeyCode::F2 => key_names::function_key(2),
-        KeyCode::F3 => key_names::function_key(3),
-        KeyCode::F4 => key_names::function_key(4),
-        KeyCode::F5 => key_names::function_key(5),
-        KeyCode::F6 => key_names::function_key(6),
-        KeyCode::F7 => key_names::function_key(7),
-        KeyCode::F8 => key_names::function_key(8),
-        KeyCode::F9 => key_names::function_key(9),
-        KeyCode::F10 => key_names::function_key(10),
-        KeyCode::F11 => key_names::function_key(11),
-        KeyCode::F12 => key_names::function_key(12),
-        KeyCode::F13 => key_names::function_key(13),
-        KeyCode::F14 => key_names::function_key(14),
-        KeyCode::F15 => key_names::function_key(15),
-        KeyCode::F16 => key_names::function_key(16),
-        KeyCode::F17 => key_names::function_key(17),
-        KeyCode::F18 => key_names::function_key(18),
-        KeyCode::F19 => key_names::function_key(19),
-        KeyCode::F20 => key_names::function_key(20),
-        KeyCode::HELP => key_names::HELP.to_string(),
-        KeyCode::HOME => key_names::HOME.to_string(),
-        KeyCode::PAGE_UP => key_names::PAGE_UP.to_string(),
-        KeyCode::FORWARD_DELETE => key_names::FORWARD_DELETE.to_string(),
-        KeyCode::END => key_names::END.to_string(),
-        KeyCode::PAGE_DOWN => key_names::PAGE_DOWN.to_string(),
-        KeyCode::LEFT_ARROW => key_names::LEFT_ARROW.to_string(),
-        KeyCode::RIGHT_ARROW => key_names::RIGHT_ARROW.to_string(),
-        KeyCode::DOWN_ARROW => key_names::DOWN_ARROW.to_string(),
-        KeyCode::UP_ARROW => key_names::UP_ARROW.to_string(),
-        other => format!("0x{other:02X}"),
-    }
+    crate::keymap::host()
+        .name_for_code(u32::from(code))
+        .map_or_else(|| format!("0x{code:02X}"), str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use flow_core::protocol::key_names;
 
     fn source() -> CGEventSource {
         CGEventSource::new(CGEventSourceStateID::HIDSystemState).expect("event source")
@@ -382,8 +235,7 @@ mod tests {
     fn plain_key_press_and_release_carry_no_modifiers() {
         let mut translator = EventTranslator::new();
 
-        // 0x00 is kVK_ANSI_A — a plain letter, not a hex fallback (see
-        // `ANSI_KEYCODES`).
+        // 0x00 is kVK_ANSI_A — a plain letter, not a hex fallback.
         let down = translator
             .translate(CGEventType::KeyDown, &key_event(0x00, true), 0)
             .unwrap();
@@ -621,5 +473,14 @@ mod tests {
         assert!(translator
             .translate(CGEventType::TabletPointer, &event, 0)
             .is_none());
+    }
+
+    #[test]
+    fn the_embedded_keymap_agrees_with_core_graphics_keycodes() {
+        assert_eq!(key_name(KeyCode::RETURN), key_names::RETURN);
+        assert_eq!(key_name(KeyCode::RIGHT_COMMAND), key_names::RIGHT_COMMAND);
+        assert_eq!(key_name(KeyCode::F13), key_names::function_key(13));
+        assert_eq!(key_name(KeyCode::FORWARD_DELETE), key_names::FORWARD_DELETE);
+        assert_eq!(key_name(KeyCode::UP_ARROW), key_names::UP_ARROW);
     }
 }

@@ -1,0 +1,67 @@
+name = "held-button-across-switch"
+description = """
+The same rule for mouse buttons: a drag started at home that ends after switching away is released at home,
+and a button held on the controlled machine is released there when control returns."""
+
+[[steps]]
+do = "button_down"
+on = "ctl"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "button_up"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["button_down left", "button_up left"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = []
+
+[[steps]]
+do = "clear"
+[[steps]]
+do = "button_down"
+on = "ctl"
+button = "right"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 4
+dy = 4
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["button_down right", "move 4 4", "button_up right"]
+[[steps]]
+do = "button_up"
+on = "ctl"
+button = "right"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"

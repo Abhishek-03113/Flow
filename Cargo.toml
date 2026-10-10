@@ -1,7 +1,24 @@
 [workspace]
 resolver = "2"
-members = ["core", "daemon", "platform"]
+members = ["core", "daemon", "platform", "harness", "app/src-tauri"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+
+# Shared lint policy; every crate opts in with `[lints] workspace = true`.
+# `clippy::unwrap_used` was measured (~100 hits incl. tests) and is intentionally NOT enabled yet.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+
+# Keep dev builds small: full debug info for dependencies costs gigabytes and is rarely needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

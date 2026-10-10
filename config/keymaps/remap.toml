@@ -1,0 +1,21 @@
+# Default remap rules: none. Copy to your user keymaps directory and edit
+# (see config/keymaps/README.md). Examples:
+#
+# Swap Ctrl and Cmd when controlling a Mac from Windows/Linux, so Ctrl+C
+# copies on the Mac:
+#
+# [[rule]]
+# from = "Ctrl"
+# to = "Meta"
+# when_target_os = "macos"
+#
+# [[rule]]
+# from = "Meta"
+# to = "Ctrl"
+# when_target_os = "macos"
+#
+# Turn Caps Lock into Escape on every target:
+#
+# [[rule]]
+# from = "CAPS_LOCK"
+# to = "ESCAPE"

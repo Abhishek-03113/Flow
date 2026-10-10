@@ -20,8 +20,8 @@ pub struct IpcRequest {
 }
 
 /// A machine-readable/human-readable error pair, matching
-/// `DaemonCommandException(code, message)` on the Dart side
-/// (`flutter/lib/domain/daemon_command_exception.dart`).
+/// `FlowCommandError(code, message)` in the TypeScript UI
+/// (`app/ui/src/client/errors.ts`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ErrorPayload {
     pub code: String,
@@ -41,7 +41,7 @@ impl From<FlowError> for ErrorPayload {
 /// ack/error for a specific command (matched to the request by `id`), or
 /// an unsolicited state-change event (no `id`).
 ///
-/// `#[serde(untagged)]`, with `Err` listed before `Ack`: both share
+/// `#[serde(untagged)]`, with `Err` (and `Data`) listed before `Ack`: both share
 /// `id`/`ok`, and only `Err` additionally requires `error`. Untagged
 /// deserialization tries variants in declaration order, and struct
 /// deserialization otherwise ignores JSON fields it doesn't recognize —
@@ -56,6 +56,14 @@ pub enum IpcResponse {
         id: String,
         ok: bool,
         error: ErrorPayload,
+    },
+    /// An ack that also carries the command's answer (`get_keymap`).
+    /// Listed before `Ack`, which would otherwise swallow it by ignoring
+    /// the extra `result` field.
+    Data {
+        id: String,
+        ok: bool,
+        result: serde_json::Value,
     },
     Ack {
         id: String,
@@ -146,6 +154,22 @@ mod tests {
         let round_tripped: IpcResponse = serde_json::from_value(json).unwrap();
         assert_eq!(round_tripped, original);
         assert!(matches!(round_tripped, IpcResponse::Err { .. }));
+    }
+
+    #[test]
+    fn data_round_trips_and_is_not_mistaken_for_ack() {
+        let original = IpcResponse::Data {
+            id: "req-20".to_string(),
+            ok: true,
+            result: json!({ "os": "macos" }),
+        };
+        let json = serde_json::to_value(&original).unwrap();
+        assert_eq!(
+            json,
+            json!({ "id": "req-20", "ok": true, "result": { "os": "macos" } })
+        );
+        let round_tripped: IpcResponse = serde_json::from_value(json).unwrap();
+        assert_eq!(round_tripped, original);
     }
 
     #[test]

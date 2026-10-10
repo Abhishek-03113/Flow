@@ -3,7 +3,7 @@
 //! [`ConnectionHistoryRepo`] row for meaningful transitions — device
 //! state changes, a pairing session reaching `paired`/`failed`, and link
 //! state changes — without any command handler in B3-B6 needing to
-//! remember to log anything explicitly (`docs/tasks/daemon-todos.json` task P5).
+//! remember to log anything explicitly (`docs/archive/tasks/daemon-todos.json` task P5).
 
 use flow_core::device::Device;
 use flow_core::pairing::{PairingSession, PairingStage};
@@ -165,6 +165,7 @@ mod tests {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new_seeded_for_test(storage.clone()).await;
         let _logger = spawn(&service, storage.clone());
+        let _link = service.connect_peer_for_test("d2").await;
 
         service
             .switch_active_device("d2")

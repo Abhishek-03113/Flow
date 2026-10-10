@@ -86,6 +86,10 @@ pub struct PairingSession {
     pub target_name: Option<String>,
     /// Set only when `stage == Failed`.
     pub error: Option<String>,
+    /// The verification code both computers show once `requesting`
+    /// (identical to the other side's `IncomingPairingRequest.fingerprint`).
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 impl PairingSession {
@@ -96,6 +100,7 @@ impl PairingSession {
             candidates: Vec::new(),
             target_name: None,
             error: None,
+            code: None,
         }
     }
 }

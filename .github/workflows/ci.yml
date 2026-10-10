@@ -1,0 +1,192 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel superseded runs of the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # hashFiles() is not allowed in job-level `if`, so detect optional components here.
+  detect:
+    name: detect components
+    runs-on: ubuntu-latest
+    outputs:
+      ui: ${{ steps.d.outputs.ui }}
+      harness: ${{ steps.d.outputs.harness }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: d
+        run: |
+          echo "ui=$([ -f app/ui/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "harness=$([ -f harness/Cargo.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+  rust:
+    name: rust (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      # rust-toolchain.toml pins the version; this installs it with rustfmt + clippy.
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # The Tauri crate embeds the built frontend; build it first once app/ui exists.
+      - uses: actions/setup-node@v4
+        if: ${{ hashFiles('app/ui/package.json') != '' }}
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - name: Build UI (embedded by the Tauri crate)
+        if: ${{ hashFiles('app/ui/package.json') != '' }}
+        working-directory: app/ui
+        run: |
+          npm ci
+          npm run build
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  # Real Windows/macOS runners give real compile + unit-test coverage of the platform adapters.
+  rust-cross:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        if: ${{ hashFiles('app/ui/package.json') != '' }}
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - name: Build UI (embedded by the Tauri crate)
+        if: ${{ hashFiles('app/ui/package.json') != '' }}
+        working-directory: app/ui
+        run: |
+          npm ci
+          npm run build
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+
+  ui:
+    name: ui (lint, typecheck, unit, e2e)
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.ui == 'true'
+    defaults:
+      run:
+        working-directory: app/ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+      - name: E2E (Playwright)
+        run: npm run e2e
+      - name: Upload Playwright report and screenshots
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            app/ui/playwright-report/
+            app/ui/test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  harness:
+    name: harness (scenario matrix)
+    runs-on: ubuntu-latest
+    needs: detect
+    if: needs.detect.outputs.harness == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri Linux dependencies (workspace builds flow-app)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      # Runs the OS-pair scenario matrix and writes HTML/JSON/JUnit reports (docs/testing/harness.md).
+      - run: cargo run -p flow-harness --release -- --report-dir target/harness-report
+      - name: Upload harness report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-report
+          path: target/harness-report/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # The real UI against live virtual engines (flow-harness up), docs/testing/harness.md
+  # "UI end-to-end against live daemons".
+  ui-e2e-live:
+    name: ui e2e (live engines)
+    runs-on: ubuntu-latest
+    needs: [detect, harness]
+    if: needs.detect.outputs.ui == 'true' && needs.detect.outputs.harness == 'true'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build flow-harness (release)
+        run: cargo build -p flow-harness --release
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/ui/package-lock.json
+      - run: npm ci
+        working-directory: app/ui
+      - name: Install Playwright browser
+        working-directory: app/ui
+        run: npx playwright install --with-deps chromium
+      - name: Live E2E (Playwright + flow-harness up)
+        working-directory: app/ui
+        env:
+          FLOW_HARNESS_BIN: ${{ github.workspace }}/target/release/flow-harness
+        run: npm run e2e:live
+      - name: Upload live Playwright report and screenshots
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-live
+          path: |
+            app/ui/playwright-report-live/
+            app/ui/test-results-live/
+          if-no-files-found: ignore
+          retention-days: 14

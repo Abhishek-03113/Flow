@@ -15,9 +15,25 @@ pub fn key_fingerprint(public_key: &[u8]) -> String {
     )
 }
 
+/// The verification code both computers show while pairing: derived from
+/// both proven public keys, in a canonical order, so each side computes the
+/// same value and a man in the middle (who cannot know both keys' pairing)
+/// shows a different one.
+pub fn pairing_code(a: &[u8], b: &[u8]) -> String {
+    let (first, second) = if a <= b { (a, b) } else { (b, a) };
+    key_fingerprint(&[first, second].concat())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn both_sides_compute_the_same_pairing_code() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        assert_eq!(pairing_code(&a, &b), pairing_code(&b, &a));
+        assert_ne!(pairing_code(&a, &b), pairing_code(&a, &[3u8; 32]));
+    }
 
     #[test]
     fn fingerprint_is_stable_and_shaped_for_a_fixed_key() {

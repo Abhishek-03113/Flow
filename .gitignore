@@ -2,8 +2,7 @@
 /target/
 **/target/
 
-# Flutter / Dart (flutter/.gitignore, from `flutter create`, covers the rest)
-flutter/**/generated_plugin_registrant.dart
+
 
 # Git worktrees
 /worktrees/
@@ -15,3 +14,39 @@ flutter/**/generated_plugin_registrant.dart
 
 # Claude Design export (reference only, not project source)
 /design/claude-design-export/
+
+# Tauri app
+node_modules
+dist
+test-results
+test-results-live
+playwright-report
+playwright-report-live
+app/src-tauri/target
+app/src-tauri/gen
+# Node / frontend
+node_modules/
+app/ui/dist/
+*.tsbuildinfo
+.vite/
+coverage/
+
+# Tauri
+app/src-tauri/target/
+app/src-tauri/gen/
+app/src-tauri/WixTools/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Harness output
+harness-report/
+/target/harness-report/
+
+# Env
+.env
+.env.*
+!.env.example

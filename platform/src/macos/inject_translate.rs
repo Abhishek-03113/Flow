@@ -4,18 +4,15 @@
 //! building a `CGEvent` is itself a Core Graphics API call, not just
 //! struct construction, but it needs no event tap and no permission, so
 //! it's unit-testable the same way `translate.rs` is
-//! (`docs/tasks/daemon-todos.json` E5 acceptance criteria) — and, like `translate.rs`,
+//! (`docs/archive/tasks/daemon-todos.json` E5 acceptance criteria) — and, like `translate.rs`,
 //! these tests can only actually execute on macOS.
 
 use core_graphics::event::{
-    CGEvent, CGEventType, CGKeyCode, CGMouseButton, EventField, KeyCode, ScrollEventUnit,
+    CGEvent, CGEventType, CGKeyCode, CGMouseButton, EventField, ScrollEventUnit,
 };
 use core_graphics::event_source::CGEventSource;
 use core_graphics::geometry::{CGPoint, CG_ZERO_POINT};
-use flow_core::protocol::key_names;
 use flow_core::protocol::{InputEvent, KeyboardEvent, MouseButton, MouseEvent};
-
-use super::translate::ANSI_KEYCODES;
 
 /// Which mouse buttons are currently held down on the receiving side.
 ///
@@ -189,108 +186,21 @@ fn current_location(source: &CGEventSource) -> CGPoint {
         .unwrap_or(CG_ZERO_POINT)
 }
 
-/// The inverse of `translate::punctuation_name_for`: a shared
-/// `key_names` punctuation token back to the ASCII char `ANSI_KEYCODES`
-/// indexes by.
-fn punctuation_char_for(name: &str) -> Option<char> {
-    Some(match name {
-        n if n == key_names::MINUS => '-',
-        n if n == key_names::EQUAL => '=',
-        n if n == key_names::LEFT_BRACKET => '[',
-        n if n == key_names::RIGHT_BRACKET => ']',
-        n if n == key_names::SEMICOLON => ';',
-        n if n == key_names::QUOTE => '\'',
-        n if n == key_names::COMMA => ',',
-        n if n == key_names::PERIOD => '.',
-        n if n == key_names::SLASH => '/',
-        n if n == key_names::BACKSLASH => '\\',
-        n if n == key_names::GRAVE => '`',
-        _ => return None,
-    })
-}
-
-/// Reverses `translate::key_name`. A bare single letter/digit, or one of
-/// `key_names`' punctuation tokens, is looked up in the shared
-/// `ANSI_KEYCODES` table; everything else in `key_names`' vocabulary
-/// (so this accepts what *any* platform's capture side sends, not only
-/// macOS' own) is a reversed lookup; anything left over falls back to
-/// parsing a `"0x.."` hex literal. Any name this crate itself produced
-/// round-trips.
+/// Reverses `translate::key_name`: the host keymap (which accepts what
+/// *any* platform's capture side sends), then a `"0x.."` hex literal.
 fn code_for_name(name: &str) -> Option<CGKeyCode> {
-    if let Some(ch) = single_char(name).or_else(|| punctuation_char_for(name)) {
-        if let Some((code, _)) = ANSI_KEYCODES.iter().find(|(_, c)| *c == ch) {
-            return Some(*code);
-        }
+    match crate::keymap::host().code_for_name(name) {
+        Some(code) => CGKeyCode::try_from(code).ok(),
+        None => name
+            .strip_prefix("0x")
+            .and_then(|digits| CGKeyCode::from_str_radix(digits, 16).ok()),
     }
-    Some(match name {
-        n if n == key_names::RETURN => KeyCode::RETURN,
-        n if n == key_names::TAB => KeyCode::TAB,
-        n if n == key_names::SPACE => KeyCode::SPACE,
-        n if n == key_names::DELETE => KeyCode::DELETE,
-        n if n == key_names::ESCAPE => KeyCode::ESCAPE,
-        n if n == key_names::COMMAND => KeyCode::COMMAND,
-        n if n == key_names::SHIFT => KeyCode::SHIFT,
-        n if n == key_names::CAPS_LOCK => KeyCode::CAPS_LOCK,
-        n if n == key_names::OPTION => KeyCode::OPTION,
-        n if n == key_names::CONTROL => KeyCode::CONTROL,
-        n if n == key_names::RIGHT_COMMAND => KeyCode::RIGHT_COMMAND,
-        n if n == key_names::RIGHT_SHIFT => KeyCode::RIGHT_SHIFT,
-        n if n == key_names::RIGHT_OPTION => KeyCode::RIGHT_OPTION,
-        n if n == key_names::RIGHT_CONTROL => KeyCode::RIGHT_CONTROL,
-        n if n == key_names::FUNCTION => KeyCode::FUNCTION,
-        n if n == key_names::VOLUME_UP => KeyCode::VOLUME_UP,
-        n if n == key_names::VOLUME_DOWN => KeyCode::VOLUME_DOWN,
-        n if n == key_names::MUTE => KeyCode::MUTE,
-        n if n == key_names::function_key(1) => KeyCode::F1,
-        n if n == key_names::function_key(2) => KeyCode::F2,
-        n if n == key_names::function_key(3) => KeyCode::F3,
-        n if n == key_names::function_key(4) => KeyCode::F4,
-        n if n == key_names::function_key(5) => KeyCode::F5,
-        n if n == key_names::function_key(6) => KeyCode::F6,
-        n if n == key_names::function_key(7) => KeyCode::F7,
-        n if n == key_names::function_key(8) => KeyCode::F8,
-        n if n == key_names::function_key(9) => KeyCode::F9,
-        n if n == key_names::function_key(10) => KeyCode::F10,
-        n if n == key_names::function_key(11) => KeyCode::F11,
-        n if n == key_names::function_key(12) => KeyCode::F12,
-        n if n == key_names::function_key(13) => KeyCode::F13,
-        n if n == key_names::function_key(14) => KeyCode::F14,
-        n if n == key_names::function_key(15) => KeyCode::F15,
-        n if n == key_names::function_key(16) => KeyCode::F16,
-        n if n == key_names::function_key(17) => KeyCode::F17,
-        n if n == key_names::function_key(18) => KeyCode::F18,
-        n if n == key_names::function_key(19) => KeyCode::F19,
-        n if n == key_names::function_key(20) => KeyCode::F20,
-        n if n == key_names::HELP => KeyCode::HELP,
-        n if n == key_names::HOME => KeyCode::HOME,
-        n if n == key_names::PAGE_UP => KeyCode::PAGE_UP,
-        n if n == key_names::FORWARD_DELETE => KeyCode::FORWARD_DELETE,
-        n if n == key_names::END => KeyCode::END,
-        n if n == key_names::PAGE_DOWN => KeyCode::PAGE_DOWN,
-        n if n == key_names::LEFT_ARROW => KeyCode::LEFT_ARROW,
-        n if n == key_names::RIGHT_ARROW => KeyCode::RIGHT_ARROW,
-        n if n == key_names::DOWN_ARROW => KeyCode::DOWN_ARROW,
-        n if n == key_names::UP_ARROW => KeyCode::UP_ARROW,
-        hex => {
-            return hex
-                .strip_prefix("0x")
-                .and_then(|digits| u16::from_str_radix(digits, 16).ok())
-        }
-    })
-}
-
-/// `name` if it's exactly one ASCII letter or digit, else `None` — the
-/// bare-character convention every platform's capture side uses for
-/// plain letters/digits (`key_names`' module doc comment).
-fn single_char(name: &str) -> Option<char> {
-    let mut chars = name.chars();
-    let only = chars.next()?;
-    (chars.next().is_none() && only.is_ascii_alphanumeric()).then_some(only)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_graphics::event::KeyCode;
     use core_graphics::event_source::CGEventSourceStateID;
 
     fn source() -> CGEventSource {

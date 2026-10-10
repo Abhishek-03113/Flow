@@ -1,0 +1,91 @@
+name = "custom-layout"
+description = """
+A user-arranged layout instead of the default: a larger controlled screen (2560x1440) above the controller,
+centred. Only the edge that touches a neighbour switches; the entry point maps through the shared coordinate
+space, both ways."""
+
+[[devices]]
+name = "ctl"
+os = "$a"
+role = "controller"
+[[devices]]
+name = "ctd"
+os = "$b"
+role = "controlled"
+screen = [2560, 1440]
+
+[[steps]]
+do = "set_layout"
+on = "ctl"
+screens = [
+  { device = "ctd", x = 0, y = 0 },
+  { device = "local", x = 320, y = 1440 },
+]
+
+# The right edge has no neighbour any more: pushing against it stays home.
+[[steps]]
+do = "place_cursor"
+on = "ctl"
+x = 1919
+y = 500
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 50
+dy = 0
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+
+# Up through the top edge into the controlled screen, entering above where the pointer left, one pixel
+# inside the edge so the next move does not bounce straight back.
+[[steps]]
+do = "place_cursor"
+on = "ctl"
+x = 960
+y = 0
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "expect"
+that = "warped"
+on = "ctd"
+x = 1280
+y = 1438
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = true
+
+# Down through its bottom edge and home again, at the mirrored position.
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 0
+dy = 40
+[[steps]]
+do = "wait"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "warped"
+on = "ctl"
+x = 960
+y = 1
+[[steps]]
+do = "expect"
+that = "suppressed"
+on = "ctl"
+is = false
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"

@@ -1,4 +1,4 @@
-//! The pairing trust gate (`docs/tasks/daemon-todos.json` H2): whether an incoming
+//! The pairing trust gate (`docs/archive/tasks/daemon-todos.json` H2): whether an incoming
 //! connection's claimed identity belongs to an already-paired device,
 //! per `P4`'s device repository — the single source of trust
 //! (`docs/product/vision.md` §16: "Once accepted, the devices become
@@ -68,6 +68,9 @@ mod tests {
                 os: HostOs::Linux,
                 state: DeviceState::Inactive,
                 last_seen: chrono::Utc::now(),
+                role: None,
+                screen: None,
+                link_error: None,
             },
             public_key: Some(public_key),
             removable: true,

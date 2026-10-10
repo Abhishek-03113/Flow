@@ -1,300 +1,178 @@
-# Flow V1 — Physical Test Script (Windows ↔ Mac)
+# Flow 2.0 — Physical Test Script (Windows ↔ Mac)
 
-Run by the maintainer, on two physical machines on the same LAN. This is the acceptance
-gate the automated tests structurally cannot cover: watching a keystroke land on the other
-screen.
+Run by the maintainer on two physical machines on the same LAN. This is the acceptance gate
+the automated tests structurally cannot cover: the real OS hooks (Windows low-level hooks,
+the macOS event tap, `SendInput`/`CGEventPost`) and watching a keystroke land on the other
+screen. Everything above the platform adapters (router, links, pairing, switching, held
+keys, edge switching, remaps, every OS pair) is already covered without hardware by
+[`harness.md`](harness.md); when something fails here, first check whether the matching
+harness scenario passes, which tells you whether the bug is in the engine or in an adapter.
 
-- **Windows PC** — has the physical keyboard and mouse you'll use.
-- **Mac** — the second machine.
+The control model is [ADR 0001](../adr/0001-controller-controlled-input-model.md):
 
-Both need the repo built: `cargo build -p flow-daemon` (and `flutter build`/`flutter run`
-for the UI). Keep this doc open on a phone/tablet, not on either machine under test.
+- The **controller** is the machine whose keyboard and mouse you share. It is the only side
+  that captures input for forwarding and the only side that switches. Its switch hotkey
+  (default **Scroll Lock**) cycles `own screen → controlled machine → own screen`; because the
+  controller's capture sees its keyboard even while it hides it from the OS, **the same
+  hotkey on the same keyboard always brings control back**.
+- A **controlled** machine is driven by a controller. It never captures for forwarding: its
+  own keyboard and trackpad keep working locally and are never sent anywhere.
+- The role is chosen in onboarding ("Share this computer's keyboard & mouse" / "Control this
+  computer from another one") and changed in Settings. Two controllers, or two controlled
+  machines, refuse to link (`role_conflict`, shown in the device list).
 
-> **Safety — read before Round 2.** Round 2 makes the Mac suppress its own keyboard/mouse.
-> If the event tap misbehaves, the Mac's local input can become unresponsive. Before
-> starting Round 2: open an **SSH session into the Mac from the Windows PC** (`ssh
-> you@mac.local`) and leave it connected. Recovery is `killall flow-daemon` over that SSH
-> session — it releases the tap immediately. Windows suppression (Round 1) has the same
-> escape: the daemon releases on exit, and `Ctrl-C` in its terminal or Task Manager ends it.
+Round 1 makes **Windows the controller and the Mac controlled** (the everyday setup and the
+originally reported bug). Round 2 swaps the roles.
+
+Keep this doc open on a phone or tablet, not on either machine under test.
+
+> **Safety.** Only the controller ever hides its own input, and only while a remote screen is
+> active. Scroll Lock on the controller's own keyboard always returns home, and quitting the
+> app or daemon releases everything. In Round 2 the Mac is the controller: before starting it,
+> open an **SSH session into the Mac** from the Windows PC (`ssh you@mac.local`) and keep
+> `killall flow-app flow-daemon` ready; it removes the event tap immediately.
 
 ---
 
 ## Common setup
 
-### Environment (both daemons)
+### Build and start (each machine)
 
-Development mode, insecure peer security (local dev only), scoped debug logging:
+The app embeds the engine; do not also run `flow-daemon` on the same machine.
 
-**Windows (PowerShell):**
-```powershell
-$env:FLOW_ENV       = "development"
-$env:FLOW_DEV       = "1"
-$env:FLOW_SECURITY  = "insecure"
-$env:RUST_LOG       = "flow=debug"
-cargo run -p flow-daemon
+```sh
+npm --prefix app/ui ci && npm --prefix app/ui run build
+cargo run -p flow-app
 ```
 
-**Mac (bash/zsh):**
-```bash
-export FLOW_ENV=development FLOW_DEV=1 FLOW_SECURITY=insecure RUST_LOG=flow=debug
-cargo run -p flow-daemon
+Headless alternative (no UI on that machine; attach a UI later with
+`?daemon=ws://127.0.0.1:47823&token=<contents of ~/.flow/ipc.token>`, see `daemon/README.md`):
+
+```sh
+# Windows (PowerShell)
+$env:FLOW_SECURITY = "insecure"; $env:RUST_LOG = "flow=debug"; cargo run -p flow-daemon
+# macOS
+FLOW_SECURITY=insecure RUST_LOG=flow=debug cargo run -p flow-daemon
 ```
 
-`RUST_LOG=flow=debug` (post-logging-fix) gives the product-level trail —
-`[PEER] … connected`, `[SWITCH] … -> …`, `[INPUT] … -> … | KeyDown A` — with no
-websocket/TCP frame noise. If you need the full firehose for a specific bug, use
-`RUST_LOG=flow=trace` instead (still scoped — no dependency noise) or `FLOW_TRACE=1`.
+`RUST_LOG=flow=debug` gives the product-level trail without dependency noise:
+`[PEER] <name> connected|disconnected`, `[SWITCH] <from> -> <to>`,
+`[INPUT] <from> -> <to> | KeyDown A`. Use `RUST_LOG=flow=trace` for everything Flow logs.
+Capture each machine's output to a file to send back:
+`cargo run -p flow-app 2>&1 | tee flow-<machine>-<round>.log`.
 
-### Ownership model (what a switch now does)
+### Permissions
 
-A switch no longer just makes the local machine stop forwarding. Whichever daemon detects
-the switch key (or gets an IPC `switch_active_device`) flips its own active device **and
-sends `ChannelMessage::OwnershipChanged` (absolute `primary_device_id`, not a role the
-receiver has to invert) over the existing connection** — no reconnect. The peer applies it
-(`DaemonService::apply_peer_ownership`), so both device lists, both send gates, and both UIs
-stay consistent. Exactly one machine is **Primary** (captures + forwards + suppresses
-locally) and one is **Secondary** (injects) at all times.
-
-Every new connection — including a reconnect after a dropped link — opens with both daemons
-exchanging one `OwnershipChanged` each stating their current belief, before either touches
-forwarding or suppression ("Fix Flow V1 Ownership Synchronization" task). This is what
-prevents split-brain: a disconnect no longer forces either side back to `Primary`; the next
-connection's handshake deterministically reconciles whichever side has the fresher
-(higher-generation) belief. Look for `stage=ownership_reconciled` at the very start of every
-connection's log — it names `local_belief`, `peer_belief`, and `resolved_primary` so a
-reconnect that converges "wrong" is diagnosable from the log alone.
-
-`RUST_LOG=flow=trace` markers to grep for on a switch:
-- Connection start (including every reconnect): `stage=ownership_reconciled … "ownership
-  reconciled at connection start"`.
-- Presser: `stage=input_role_changed trigger=local … "local switch relayed to the peer"`.
-- Other machine: `stage=switch_key … "peer handed the ownership baton over the live connection"`
-  then `stage=input_role_changed trigger=peer`.
-- Held keys/buttons mid-switch: `KeyUp`/`ButtonUp` frames are flushed to the peer *before*
-  the `OwnershipChanged` frame — the far machine must never be left holding a key.
-- A press on the wrong machine: `stage=switch_ignored reason=not_primary` — the key was
-  consumed locally (never forwarded, never leaked into the remote foreground app) but did
-  **not** change ownership.
-- A rejected ownership message: `stage=ownership_rejected reason=stale_or_duplicate_generation`
-  or `reason=invalid_target_owner` (a message naming a device outside this pair).
-
-**Scroll Lock is Primary-only** ("Complete Flow V1" task §6): only the machine that is
-*currently* Primary may use its own Scroll Lock to hand control away. A machine that is
-currently Secondary has its Scroll Lock swallowed locally — logged as `switch_ignored`, not
-forwarded, not typed anywhere — but nothing switches. Concretely: Windows presses Scroll
-Lock once to become Secondary (Mac becomes Primary); getting control back over Windows now
-requires pressing Scroll Lock **on the Mac's own keyboard** (Round 2's pre-flight state),
-not a second press on Windows. (An earlier pass of this doc described a symmetric "press
-Scroll Lock on Windows twice" flow with no Mac keyboard needed — that flow no longer applies
-under the Primary-only gate; see Round 1 step 7 below and Round 2's intro.)
-
-> If `cargo run` rebuilds slowly each start, build once (`cargo build -p flow-daemon`) and
-> run `./target/debug/flow-daemon` (Mac) / `.\target\debug\flow-daemon.exe` (Windows)
-> directly with the same env vars.
-
-### UI (each machine, optional but recommended for Round-0)
-
-```
-# Windows
-cd flutter ; flutter run -d windows --dart-define=FLOW_ENV=development --dart-define=FLOW_DAEMON_MODE=ipc
-# Mac
-cd flutter && flutter run -d macos --dart-define=FLOW_ENV=development --dart-define=FLOW_DAEMON_MODE=ipc
-```
-
-macOS will prompt for **Accessibility** and **Input Monitoring** permission for the daemon
-(or the terminal running it) — grant both in System Settings → Privacy & Security. Without
-them the Mac cannot capture or inject.
-
-### Capturing logs
-
-Redirect each daemon's output to a file so you can send it back:
-```
-cargo run -p flow-daemon 2>&1 | tee flow-daemon-<machine>-<round>.log
-```
+- **macOS** asks for **Accessibility** (needed to inject, so needed in both roles) and
+  **Input Monitoring** (needed to capture, so only as controller). Grant them in System
+  Settings → Privacy & Security, then restart Flow. The app's Permissions screen shows the
+  live state.
+- **Windows** needs nothing extra, but an elevated (administrator) window does not receive
+  injected input from a non-elevated Flow: test with ordinary apps.
 
 ---
 
-## Round 0 — Discovery, pairing, connection (both directions safe)
+## Round 0 — Roles, discovery, pairing (nothing is suppressed yet)
 
-No suppression yet; nothing can lock you out.
+1. [ ] Windows: onboarding → **Share this computer's keyboard & mouse** (controller).
+2. [ ] Mac: onboarding → **Control this computer from another one** (controlled).
+3. [ ] Within ~10 s each side lists the other as a pairing candidate. If not: same subnet?
+       Windows Defender Firewall allowing inbound UDP 47824 (`daemon/README.md` "Channels")?
+4. [ ] Windows: **Pair** with the Mac. Mac: accept the incoming pairing prompt.
+5. [ ] Both device lists show the other as connected; both logs show `[PEER] <name> connected`.
+       The Mac's screen appears to the right of the Windows screen in the Arrangement view.
+6. [ ] **Role conflict.** Temporarily set the Mac to controller in Settings. → The link drops
+       and both device lists show a role-conflict error. Set it back to controlled. → The
+       link comes back by itself.
+7. [ ] Restart both apps. Pairing, roles and arrangement survive; the link reconnects with no
+       re-pair prompt.
 
-1. [ ] Start the Windows daemon. Confirm startup lines: IPC on `127.0.0.1:47823`, peer
-       channel on `0.0.0.0:<port>`, discovery on `0.0.0.0:47824`, "announcing to […]".
-2. [ ] Start the Mac daemon. Same lines.
-3. [ ] Within ~10 s each log shows a discovered peer (`[…] discovery announce parsed` /
-       candidate). If not: check both are on the same subnet, and Windows Defender Firewall
-       is not blocking inbound UDP 47824 (`daemon/README.md` "Channels" §2).
-4. [ ] In the Windows UI: **Pair new device** → the Mac appears → **Pair**.
-5. [ ] On the Mac UI: accept the incoming pairing prompt.
-6. [ ] Both UIs show the other as a paired device, link state **Connected**. Both logs show
-       `[PEER] <name> connected`.
-7. [ ] Restart both daemons. Confirm the pairing survived (still listed, reconnects
-       automatically) and identity persisted (no re-pair prompt).
-
-**Send back:** both `flow-daemon-*-round0.log` files + which checkboxes passed.
+**Send back:** both logs and which boxes passed.
 
 ---
 
-## Round 1 — Windows as master (no new code; validates merged Windows suppression)
+## Round 1 — Windows controls the Mac
 
-The Windows PC holds the keyboard/mouse. Target: everything you type/move goes to the Mac
-and **not** to Windows; Scroll Lock hands control back.
+Start state: Round 0 done, Windows controller, Mac controlled, Windows on its own screen.
 
-Start state: paired + connected (Round 0). Make **Windows the active device is wrong** —
-you want the **Mac** to be the Active/"Using" device so Windows forwards to it. In the
-Windows UI, switch so the Mac shows as active ("Using"), or press Scroll Lock once and
-check which way it went.
+1. [ ] **Switch.** Press **Scroll Lock** on the Windows keyboard.
+       - Windows log: `[SWITCH] <Windows> -> <Mac>`.
+       - The Windows UI shows the Mac as the active screen; the Mac UI shows it is being
+         controlled by Windows.
+       - Scroll Lock itself is typed nowhere and does not toggle the Windows Scroll Lock LED
+         into an app.
+2. [ ] **Keyboard.** Focus a text field on the Mac. Type `the quick brown fox` on the Windows
+       keyboard. → It appears on the **Mac** only; the focused Windows app receives nothing.
+3. [ ] **Modifiers.** `Shift`+`a` → `A` on the Mac. `Ctrl`+`c` → note what the Mac does. With a
+       remap rule swapping Ctrl and Cmd for Mac targets (Keyboard & Shortcuts → Remap keys),
+       `Ctrl`+`c` copies on the Mac.
+4. [ ] **Mouse.** Move, left/right/middle click and scroll. → All land on the Mac at its
+       cursor; the Windows cursor does not move and Windows apps get nothing.
+5. [ ] **Regain control (the original bug).** Press **Scroll Lock** on the Windows keyboard
+       again. → `[SWITCH] <Mac> -> <Windows>`; the Windows keyboard and mouse control Windows
+       again; nothing more reaches the Mac.
+6. [ ] **The Mac stays its own.** While Windows is on its own screen, and again while it
+       controls the Mac, type and move on the **Mac's own** keyboard/trackpad. → It always acts
+       on the Mac only and never appears on Windows (the "Mac input flows back" bug).
+7. [ ] **Edge switching.** Push the Windows pointer through the right edge of its screen. →
+       The pointer continues on the Mac. Push back through the Mac's left edge. → It returns to
+       Windows at the matching height. Turn edge switching off in Settings → the pointer stops
+       at the edge; Scroll Lock still switches.
+8. [ ] **Held key across a switch.** On the Mac's screen, hold `j`, press Scroll Lock while
+       holding it, then release `j`. → The Mac shows a short `jjj…` that stops at the switch
+       (the Mac releases it), Windows types nothing. Then at home hold `k`, switch to the Mac,
+       release `k`. → Nothing stuck on either machine.
+9. [ ] **Held button.** Start a drag on the Mac, switch home mid-drag. → The drag ends on the
+       Mac; no phantom drag or selection on either machine.
+10. [ ] **Rapid switching.** Alternate Scroll Lock 20+ times, typing a few characters and
+        moving the mouse after each. Every time: input goes only to the screen the last
+        `[SWITCH]` named; no stuck keys or buttons; no doubled characters; no crash; both UIs
+        always agree on the active screen.
+11. [ ] **Release control.** With the Mac active, click **Release control** in the Mac UI. →
+        Windows returns to its own screen by itself.
+12. [ ] **Disconnect the controlled side while remote.** With the Mac active, quit Flow on
+        the Mac (or pull its network). → Windows returns to its own screen **immediately**
+        (its keyboard/mouse work locally, nothing stuck), log `[PEER] <Mac> disconnected`,
+        the UI shows the Mac reconnecting. Start Flow on the Mac again. → Reconnects within
+        ~10 s; Scroll Lock works again.
+13. [ ] **Disconnect the controller while remote.** With the Mac active and a key held on
+        Windows, quit Flow on Windows. → The Mac releases the key itself (no stuck character)
+        and its own keyboard works normally. Restart Windows Flow. → Reconnects; switching works.
 
-1. [ ] **Keyboard forward.** Focus a text field on the Mac. Type `the quick brown fox` on
-       the Windows keyboard. → The text appears on the **Mac**. → It does **not** appear in
-       any Windows field, and the Windows foreground app receives nothing.
-       Log (Windows): `[INPUT] <Windows> -> <Mac> | KeyDown t` … per key.
-2. [ ] **Modifiers.** On Windows type `Shift`+`a` → `A` on the Mac. `Ctrl`+`c` in a Mac app
-       → the Mac sees `Cmd`/`Ctrl`+`c` per its mapping (note what actually happens).
-3. [ ] **Mouse move.** Move the Windows mouse. → The **Mac** cursor moves. → The Windows
-       cursor does **not** move.
-4. [ ] **Clicks.** Left / right / middle click on Mac targets. → All register on the Mac,
-       at the cursor position. None leak to Windows.
-5. [ ] **Scroll.** Scroll wheel up/down over a Mac scroll view. → Scrolls on the Mac.
-6. [ ] **Switch to Windows.** Press **Scroll Lock** once.
-       - Log (Windows): `[SWITCH] <Mac> -> <Windows>`, `stage=input_role_changed trigger=local`.
-       - Log (Mac): `stage=switch_key … "peer handed the ownership baton"`, then
-         `[SWITCH] … -> <Windows>` and `stage=input_role_changed trigger=peer`.
-       - The Scroll Lock press itself does **not** type anything on the Mac and does
-         **not** toggle the Windows Scroll Lock indicator into an app.
-       - Now typing/moving on the Windows keyboard/mouse controls **Windows** normally.
-         The Mac receives nothing.
-       - **The Mac UI's active device flips to <Windows>** (Mac is now Primary toward
-         Windows) — with no reconnect, link state stays **Connected** throughout.
-7. [ ] **Windows is now Secondary — its own Scroll Lock does nothing.** Press **Scroll
-       Lock** on the Windows keyboard again. Confirm: no `[SWITCH]` line on either machine,
-       Windows log shows `stage=switch_ignored reason=not_primary`, neither UI's
-       active-device indicator moves, and the key is not typed anywhere. This is new
-       behavior (Primary-only Scroll Lock authority) — a prior pass of this script expected
-       this second press to hand control back; it now must not.
-7b. [ ] **Switch back — from the Mac.** On the **Mac's own keyboard**, press **Scroll
-       Lock**. → `[SWITCH] <Windows> -> <Mac>` on the Mac log + the mirror `switch_key` /
-       `input_role_changed trigger=peer` on Windows → back to controlling the Mac from
-       Windows. Both UIs' active-device indicators flip together. (This is the task §6
-       "document the exact mechanism for the reverse transition": the Mac's own physical
-       Scroll Lock, since only the current Primary — now the Mac — may initiate.)
-8. [ ] **Repeated switching.** Alternate Scroll Lock 10+ times — remembering each press must
-       be on whichever machine is *currently* Primary, not always Windows — typing a few
-       characters and moving the mouse after each switch. Confirm every time:
-       - no stuck keys (no character repeating forever on either machine),
-       - no stuck mouse button (no phantom drag/selection),
-       - no duplicate input (a key never lands on both),
-       - input always goes to exactly the machine the last `[SWITCH]` named,
-       - neither daemon crashes or logs a panic,
-       - neither UI's active-device indicator drifts from reality.
-9. [ ] **Disconnect.** On the Mac, quit the daemon (`Ctrl-C`). On Windows:
-       - `[PEER] <Mac> disconnected` in the log,
-       - the Windows keyboard/mouse **immediately** control Windows again (suppression
-         released), no stuck keys,
-       - UI link state → **Reconnecting**.
-10. [ ] **Reconnect.** Restart the Mac daemon → within ~10 s `[PEER] <Mac> connected`,
-        link state → Connected, and Scroll Lock switching works again.
-10b. [ ] **Reconnect does not split-brain ("Fix Flow V1 Ownership Synchronization" task —
-        the scenario this pass exists to fix).** With the Mac Primary (holding the
-        keyboard), pull its network cable (or `Ctrl-C` the daemon) rather than switching
-        first. On Windows, confirm `[PEER] <Mac> disconnected` and Windows's own Scroll
-        Lock does **not** silently make Windows Primary — Windows should show
-        `stage=ownership_reconciled` only once the Mac actually reconnects, at which point
-        both logs must show the **same** `resolved_primary` and exactly one of the two UIs'
-        active-device indicators reads "Using: <the other machine>" — never both, never
-        neither. If both machines ever show themselves as Primary/Active at once after this
-        reconnect, that is the split-brain bug — capture both logs and send them back
-        immediately rather than continuing the checklist.
-11. [ ] **Held key across a switch.** Press and hold `j` on Windows while the Mac is
-        active, and while holding it press Scroll Lock. Release `j`. Confirm the Mac does
-        **not** get a stuck `j`, and Windows does not either.
-
-**Send back:** `flow-daemon-windows-round1.log`, `flow-daemon-mac-round1.log`, the checklist
-results, and a note on anything that felt laggy or wrong. If step 8 or 11 fails, that is
-concern #4/#10 territory — the logs are what make it fixable.
+**Send back:** both round-1 logs, the checklist results, anything that felt laggy or wrong.
 
 ---
 
-## Round 2 — Mac as master (macOS suppression — code-complete, unverified on HW)
+## Round 2 — the Mac controls Windows
 
-> **V1 scope note.** For the current V1 acceptance pass, Round 0 + Round 1 are the gate.
-> Round 2 is where macOS *local suppression* first runs on real hardware; it is optional
-> for this pass and can be scheduled separately. Scroll Lock is now Primary-only-gated (see
-> the "Ownership model" section above), so entering this state **does** need a Mac keyboard
-> press: Windows hands off to the Mac once (Windows Scroll Lock, while Windows is still
-> Primary), and getting back out of it again requires the Mac's own Scroll Lock, since the
-> Mac is Primary by then. Step 4 below exercises exactly that press.
+Change roles in Settings: Mac → controller, Windows → controlled (set the Windows side first;
+the link refuses with a role conflict until both are changed, then comes back). Open the SSH
+lifeline to the Mac first (see Safety).
 
-macOS suppression is implemented (active `CGEventTap` + raw-FFI trampoline returning `NULL`
-to drop consumed events, `SuppressionGate`, self-inject guard, fails open on any callback
-panic). **Two things have never run on a real Mac** and this round is where they're proven:
+This is where macOS *suppression* runs on real hardware: the event tap must drop the Mac's
+own events while Windows is active, and the Mac's injected events must not be re-captured.
 
-1. Does returning `NULL` from the tap callback actually drop the event on your macOS version?
-   (If not: you type into both machines — same symptom as no suppression, not worse.)
-2. Does `EVENT_SOURCE_USER_DATA` survive `CGEventPost`? (If not, with a paired peer the Mac
-   re-forwards its own injected input → doubled/looping characters. Fallback is a `getpid()`
-   check — report it and I'll switch the guard.)
+1. [ ] **One-key pre-flight.** Press Scroll Lock on the Mac keyboard (a Mac keyboard without
+       Scroll Lock uses **F13**, set in Keyboard & Shortcuts). Type a single `k`. → It appears
+       on Windows and not on the Mac. Switch back with the same key. → The Mac keyboard works
+       normally. If the Mac's input feels wedged: `killall flow-app flow-daemon` over SSH.
+2. [ ] **Echo check.** Switch to Windows and type `abcdef` on the Mac. → Windows shows exactly
+       `abcdef` once.
+3. [ ] Repeat Round 1 steps 2–13 with the machines swapped (keyboard, modifiers, mouse,
+       regain control, Windows' own keyboard stays local, edge switching, held key and button,
+       rapid switching, release control from Windows, both disconnects).
+4. [ ] **Tap timeout.** If input ever stalls for ~1 s and resumes, the OS disabled the event
+       tap and Flow re-armed it. Note how often; occasional is fine, frequent is a bug.
 
-> **Lifeline — do this before anything else.** From the Windows PC:
-> `ssh you@mac.local` and leave it open. Keep this command ready in it:
-> `killall flow-daemon` — it drops the tap and restores the Mac's local input instantly.
-> Also know the fail-open behavior: any bug in the callback passes the event through, so the
-> Mac locking its own keyboard/mouse should not happen — but the SSH session is the
-> guaranteed out if it does.
-
-### Pre-flight (before the full checklist)
-
-1. [ ] Mac daemon running, paired + connected to Windows (Round 0 state).
-2. [ ] Make **Windows** the active ("Using") device so the Mac forwards to it.
-3. [ ] **One keystroke test.** Press a single key (e.g. `k`) on the Mac keyboard once.
-       - It should appear on **Windows** (in a focused text field there).
-       - It should **not** appear on the Mac.
-       - Immediately type something else on the Mac — confirm the Mac keyboard still works
-         normally (i.e. suppression released as expected between events / the daemon didn't
-         wedge). If the Mac feels unresponsive, `killall flow-daemon` over SSH.
-4. [ ] **Echo check.** With the peer connected, type `abcdef` on the Mac. On Windows you
-       should see exactly `abcdef` once — not `aabbccddeeff`, not a runaway repeat. A
-       doubled/looping result means `EVENT_SOURCE_USER_DATA` did not survive `CGEventPost`
-       — stop, report it, that's the pid-fallback case.
-
-### Full checklist (only if pre-flight passed)
-
-Mirror of Round 1 with roles reversed — Mac holds the keyboard/mouse, Windows is the target:
-
-1. [ ] **Keyboard forward.** Type `the quick brown fox` on the Mac → appears on Windows,
-       not on the Mac.
-2. [ ] **Modifiers.** `Shift`+`a` → `A` on Windows. A `Cmd`/`Ctrl` combo → note the mapping.
-3. [ ] **Mouse move / clicks / scroll.** All land on Windows at the cursor; the Mac cursor
-       does not move and Mac apps get nothing.
-4. [ ] **Switch to Mac.** Press **Scroll Lock** → `[SWITCH] <Windows> -> <Mac>` in the Mac
-       log. The Scroll Lock press itself doesn't type on Windows and doesn't leak into a Mac
-       app. Now the Mac keyboard/mouse control the Mac normally; Windows gets nothing.
-5. [ ] **Switch back.** Scroll Lock again → control returns to driving Windows.
-6. [ ] **Repeated switching** (10+ cycles): no stuck keys on either machine, no stuck mouse
-       button, no duplicate input, input always goes where the last `[SWITCH]` said, no
-       panic (`the macOS event-tap callback panicked` in the log = a fail-open event, note
-       it), UI active-device indicator never drifts.
-7. [ ] **Held key across a switch.** Hold `j` on the Mac while Windows is active; press
-       Scroll Lock while holding; release `j`. Neither machine gets a stuck `j`
-       (`SuppressionGate` press/release symmetry).
-8. [ ] **Disconnect.** Quit the Windows daemon → Mac log `[PEER] <Windows> disconnected`,
-       the Mac's own keyboard/mouse work immediately (suppression released), no stuck keys,
-       Mac UI link state → Reconnecting.
-9. [ ] **Reconnect.** Restart the Windows daemon → `[PEER] <Windows> connected`, switching
-       works again.
-10. [ ] **Tap timeout.** If you ever see input stall for ~1s then resume, that's the tap
-        being disabled by the OS and re-armed — note how often; occasional is fine, frequent
-        means `translate`/`send` should move off the callback thread.
-
-**Send back:** `flow-daemon-mac-round2.log`, `flow-daemon-windows-round2.log`, the
-pre-flight + checklist results, and specifically: did single-key suppression work, and was
-there any echo/doubling.
+**Send back:** both round-2 logs, the results, and specifically: did single-key suppression
+work, and was there any echo or doubling.
 
 ---
 
 ## What "pass" means
 
-All of Round 0, Round 1, and Round 2 checkboxes green, with the specific emphasis from the
-brief: no stuck keys, no stuck mouse buttons, no duplicate input, no daemon crash, no
-unexplained disconnect, and the UI always reflecting the true master/slave state. Partial
-results are still valuable — report exactly what passed and what didn't, with logs.
+Every box in Rounds 0–2 checked, with the emphasis from ADR 0001: control can always be
+regained from the controller's own keyboard, a controlled machine's input never travels, no
+input leaks into the controller while remote, no stuck keys or buttons, no doubled input, no
+crash, and both UIs always agree on which screen is active. Partial results are still
+valuable: report exactly what passed and what did not, with logs.

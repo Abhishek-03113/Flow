@@ -1,4 +1,4 @@
-//! End-to-end proof that `NoiseChannel` (`docs/tasks/daemon-todos.json` H3) never
+//! End-to-end proof that `NoiseChannel` (`docs/archive/tasks/daemon-todos.json` H3) never
 //! puts a `ChannelMessage`'s plaintext on the wire — this task's own
 //! acceptance criterion, verified by a byte-level packet sniff (a real
 //! TCP relay that records every byte it forwards), not by asserting on
@@ -90,7 +90,7 @@ fn contains_marker(haystack: &[u8]) -> bool {
 
 fn a_marker_event() -> ChannelMessage {
     ChannelMessage::Input {
-        sequence: 1,
+        seq: 1,
         event: InputEvent::Keyboard(KeyboardEvent::KeyDown {
             key: MARKER.to_string(),
             modifiers: vec![],

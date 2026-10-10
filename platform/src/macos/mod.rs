@@ -1,5 +1,5 @@
 //! macOS input adapter, bound to a `CGEventTap` for capture
-//! (`docs/tasks/daemon-todos.json` E4) and `CGEventPost` for injection (E5).
+//! (`docs/archive/tasks/daemon-todos.json` E4) and `CGEventPost` for injection (E5).
 
 mod capture;
 mod inject_translate;
@@ -22,3 +22,16 @@ pub use injector::{MacosInjectError, MacosInputInjector};
 /// is ASCII `"Flow"`; the field defaults to `0`, so a real hardware
 /// event never carries it.
 pub(crate) const FLOW_INJECTED_MARKER: i64 = 0x466C_6F77;
+
+pub(crate) fn screen_size() -> Option<(u32, u32)> {
+    let size = core_graphics::display::CGDisplay::main().bounds().size;
+    (size.width >= 1.0 && size.height >= 1.0).then_some((size.width as u32, size.height as u32))
+}
+
+pub(crate) fn cursor_position() -> Option<(i32, i32)> {
+    use core_graphics::event::CGEvent;
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
+    let location = CGEvent::new(source).ok()?.location();
+    Some((location.x as i32, location.y as i32))
+}

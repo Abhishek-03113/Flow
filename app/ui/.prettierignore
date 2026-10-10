@@ -1,0 +1,8 @@
+dist
+node_modules
+test-results
+playwright-report
+package-lock.json
+../../design-system/tokens/tokens.json
+test-results-live
+playwright-report-live

@@ -1,10 +1,10 @@
-//! End-to-end proof of the IPC contract (`docs/tasks/daemon-todos.json` task C6):
+//! End-to-end proof of the IPC contract (`docs/archive/tasks/daemon-todos.json` task C6):
 //! the real `flow-daemon` service and WebSocket listener, spawned
 //! in-process (not a subprocess), driven by a raw `tokio-tungstenite`
 //! client asserting the exact JSON shape of a full session — connect,
-//! the 6 initial events, one of each of the 11 commands, and at least 2
+//! the 10 initial events, one of each of the 11 commands, and at least 2
 //! error-code paths. The Rust-side equivalent of what track D proves
-//! from the Dart side against a real daemon.
+//! from the UI side against a real daemon.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -26,6 +26,8 @@ const TEST_TOKEN: &str = "ipc-protocol-test-token";
 async fn spawn_daemon() -> SocketAddr {
     let storage = Storage::open_in_memory().await.expect("open in-memory db");
     let service = Arc::new(DaemonService::new_seeded_for_test(storage).await);
+    // A live link to the seeded d2, so it can be switched to.
+    std::mem::forget(service.connect_peer_for_test("d2").await);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local addr");
     let token: Arc<str> = Arc::from(TEST_TOKEN);
@@ -99,7 +101,7 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
     let addr = spawn_daemon().await;
     let mut ws = connect(addr).await;
 
-    // 1. Connect -> exactly 6 initial events, in the fixed order, before
+    // 1. Connect -> exactly 10 initial events, in the fixed order, before
     // anything else — "connecting... is the initial fetch".
     let expected_initial_events = [
         "devices_changed",
@@ -108,6 +110,10 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
         "settings_changed",
         "permission_changed",
         "incoming_pairing_request_changed",
+        "control_state_changed",
+        "remap_rules_changed",
+        "screen_layout_changed",
+        "diagnostics_changed",
     ];
     for expected in expected_initial_events {
         let value = recv_json(&mut ws).await;
@@ -136,7 +142,8 @@ async fn full_session_matches_the_contract_envelope_byte_for_byte() {
         json!({ "device_id": "d2" }),
     )
     .await;
-    let (ack, events) = recv_frames(&mut ws, "req-1", 2).await;
+    // ack + devices_changed + control_state_changed
+    let (ack, events) = recv_frames(&mut ws, "req-1", 3).await;
     assert_eq!(ack, json!({ "id": "req-1", "ok": true }));
     let devices = events
         .iter()

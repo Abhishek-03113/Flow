@@ -1,4 +1,4 @@
-//! Paired-device storage and trust lookups (`docs/tasks/daemon-todos.json` task P4).
+//! Paired-device storage and trust lookups (`docs/archive/tasks/daemon-todos.json` task P4).
 //!
 //! A paired device's stored public key *is* its trust record — there is
 //! no separate trust file. [`DeviceState`] is never persisted: a device
@@ -14,7 +14,7 @@ use super::{parse_rfc3339, Storage};
 
 /// A device row as stored on disk: the contract [`Device`] plus the two
 /// storage-only concerns (trust key, removability) that aren't part of
-/// the Flutter-facing wire contract.
+/// the UI-facing wire contract.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DeviceRecord {
     pub device: Device,
@@ -153,6 +153,9 @@ fn row_to_record(row: &Row) -> rusqlite::Result<DeviceRecord> {
             // connection re-establishes the real state.
             state: DeviceState::Disconnected,
             last_seen: parse_rfc3339(&last_seen),
+            role: None,
+            screen: None,
+            link_error: None,
         },
         public_key: row.get(4)?,
         removable: row.get(5)?,
@@ -192,6 +195,9 @@ mod tests {
                 last_seen: DateTime::parse_from_rfc3339("2026-08-25T06:58:00Z")
                     .unwrap()
                     .with_timezone(&Utc),
+                role: None,
+                screen: None,
+                link_error: None,
             },
             public_key,
             removable: true,

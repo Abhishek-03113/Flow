@@ -2,21 +2,15 @@
 //! (`KBDLLHOOKSTRUCT`/`MSLLHOOKSTRUCT`) to `flow_core`'s
 //! platform-independent [`InputEvent`] (vision.md §11). Isolated from any
 //! hook installation so it's unit-testable without one
-//! (`docs/tasks/daemon-todos.json` E6 acceptance criteria) — though, like the rest
+//! (`docs/archive/tasks/daemon-todos.json` E6 acceptance criteria) — though, like the rest
 //! of this module, the tests here can only actually run on Windows; this
 //! session verified them by cross-compiling only (`daemon/README.md`).
 
 use std::collections::HashSet;
 
-use flow_core::protocol::key_names;
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier, MouseButton, MouseEvent};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    VK_0, VK_9, VK_A, VK_APPS, VK_BACK, VK_CAPITAL, VK_DELETE, VK_DOWN, VK_END, VK_ESCAPE, VK_F1,
-    VK_F24, VK_HELP, VK_HOME, VK_LCONTROL, VK_LEFT, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_NEXT,
-    VK_OEM_1, VK_OEM_2, VK_OEM_3, VK_OEM_4, VK_OEM_5, VK_OEM_6, VK_OEM_7, VK_OEM_COMMA,
-    VK_OEM_MINUS, VK_OEM_PERIOD, VK_OEM_PLUS, VK_PRIOR, VK_RCONTROL, VK_RETURN, VK_RIGHT, VK_RMENU,
-    VK_RSHIFT, VK_RWIN, VK_SPACE, VK_TAB, VK_UP, VK_VOLUME_DOWN, VK_VOLUME_MUTE, VK_VOLUME_UP,
-    VK_Z,
+    VK_LCONTROL, VK_LMENU, VK_LSHIFT, VK_LWIN, VK_RCONTROL, VK_RMENU, VK_RSHIFT, VK_RWIN,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     KBDLLHOOKSTRUCT, MSLLHOOKSTRUCT, WHEEL_DELTA, WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN,
@@ -205,113 +199,21 @@ fn wheel_delta(mouse_data: u32) -> i32 {
     i32::from(high_word) / WHEEL_DELTA as i32
 }
 
-/// Names a virtual-key code using `flow_core::protocol::key_names`'
-/// shared, cross-platform vocabulary wherever one applies, so this
-/// side's output is understood by every other platform's
-/// `inject_translate.rs`, not just Windows' own (`key_names` module doc
-/// comment explains why that used not to be true). Letters and digits
-/// are Windows' own virtual-key values (`VK_A`..`VK_Z` are ASCII
-/// 'A'..'Z', `VK_0`..`VK_9` are ASCII '0'..'9'), and `VK_F1`..`VK_F24`
-/// are contiguous, so both derive their name arithmetically rather than
-/// needing a lookup; `VK_APPS` (the Windows-only menu key) has no
-/// cross-platform equivalent and keeps its own name; anything else
-/// falls back to a hex literal, same as the macOS/Linux sides.
+/// Names a virtual-key code via the host keymap
+/// (`config/keymaps/windows.toml`); unlisted codes become a `0xNN` hex
+/// literal, which `inject_translate` accepts back.
 fn key_name(vk: u16) -> String {
-    if (VK_0.0..=VK_9.0).contains(&vk) || (VK_A.0..=VK_Z.0).contains(&vk) {
-        return (vk as u8 as char).to_string();
-    }
-    if (VK_F1.0..=VK_F24.0).contains(&vk) {
-        return key_names::function_key((vk - VK_F1.0 + 1) as u8);
-    }
-    let name = if vk == VK_RETURN.0 {
-        key_names::RETURN
-    } else if vk == VK_ESCAPE.0 {
-        key_names::ESCAPE
-    } else if vk == VK_SPACE.0 {
-        key_names::SPACE
-    } else if vk == VK_TAB.0 {
-        key_names::TAB
-    } else if vk == VK_BACK.0 {
-        key_names::DELETE
-    } else if vk == VK_DELETE.0 {
-        key_names::FORWARD_DELETE
-    } else if vk == VK_CAPITAL.0 {
-        key_names::CAPS_LOCK
-    } else if vk == VK_HOME.0 {
-        key_names::HOME
-    } else if vk == VK_END.0 {
-        key_names::END
-    } else if vk == VK_PRIOR.0 {
-        key_names::PAGE_UP
-    } else if vk == VK_NEXT.0 {
-        key_names::PAGE_DOWN
-    } else if vk == VK_LEFT.0 {
-        key_names::LEFT_ARROW
-    } else if vk == VK_RIGHT.0 {
-        key_names::RIGHT_ARROW
-    } else if vk == VK_UP.0 {
-        key_names::UP_ARROW
-    } else if vk == VK_DOWN.0 {
-        key_names::DOWN_ARROW
-    } else if vk == VK_APPS.0 {
-        "APPS"
-    } else if vk == VK_LSHIFT.0 {
-        key_names::SHIFT
-    } else if vk == VK_RSHIFT.0 {
-        key_names::RIGHT_SHIFT
-    } else if vk == VK_LCONTROL.0 {
-        key_names::CONTROL
-    } else if vk == VK_RCONTROL.0 {
-        key_names::RIGHT_CONTROL
-    } else if vk == VK_LMENU.0 {
-        key_names::OPTION
-    } else if vk == VK_RMENU.0 {
-        key_names::RIGHT_OPTION
-    } else if vk == VK_LWIN.0 {
-        key_names::COMMAND
-    } else if vk == VK_RWIN.0 {
-        key_names::RIGHT_COMMAND
-    } else if vk == VK_OEM_MINUS.0 {
-        key_names::MINUS
-    } else if vk == VK_OEM_PLUS.0 {
-        key_names::EQUAL
-    } else if vk == VK_OEM_4.0 {
-        key_names::LEFT_BRACKET
-    } else if vk == VK_OEM_6.0 {
-        key_names::RIGHT_BRACKET
-    } else if vk == VK_OEM_1.0 {
-        key_names::SEMICOLON
-    } else if vk == VK_OEM_7.0 {
-        key_names::QUOTE
-    } else if vk == VK_OEM_COMMA.0 {
-        key_names::COMMA
-    } else if vk == VK_OEM_PERIOD.0 {
-        key_names::PERIOD
-    } else if vk == VK_OEM_2.0 {
-        key_names::SLASH
-    } else if vk == VK_OEM_5.0 {
-        key_names::BACKSLASH
-    } else if vk == VK_OEM_3.0 {
-        key_names::GRAVE
-    } else if vk == VK_HELP.0 {
-        key_names::HELP
-    } else if vk == VK_VOLUME_UP.0 {
-        key_names::VOLUME_UP
-    } else if vk == VK_VOLUME_DOWN.0 {
-        key_names::VOLUME_DOWN
-    } else if vk == VK_VOLUME_MUTE.0 {
-        key_names::MUTE
-    } else {
-        return format!("0x{vk:02X}");
-    };
-    name.to_string()
+    crate::keymap::host()
+        .name_for_code(u32::from(vk))
+        .map_or_else(|| format!("0x{vk:02X}"), str::to_owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use flow_core::protocol::key_names;
     use windows::Win32::Foundation::POINT;
-    use windows::Win32::UI::Input::KeyboardAndMouse::VK_5;
+    use windows::Win32::UI::Input::KeyboardAndMouse::{VK_5, VK_A, VK_F1};
 
     fn key_info(vk: u16) -> KBDLLHOOKSTRUCT {
         KBDLLHOOKSTRUCT {
@@ -555,5 +457,17 @@ mod tests {
                 timestamp_ms: 0,
             }))
         );
+    }
+
+    #[test]
+    fn the_embedded_keymap_agrees_with_win32_virtual_key_constants() {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            VK_BACK, VK_LWIN, VK_OEM_PLUS, VK_PRIOR, VK_RMENU,
+        };
+        assert_eq!(key_name(VK_BACK.0), key_names::DELETE);
+        assert_eq!(key_name(VK_LWIN.0), key_names::COMMAND);
+        assert_eq!(key_name(VK_RMENU.0), key_names::RIGHT_OPTION);
+        assert_eq!(key_name(VK_OEM_PLUS.0), key_names::EQUAL);
+        assert_eq!(key_name(VK_PRIOR.0), key_names::PAGE_UP);
     }
 }
