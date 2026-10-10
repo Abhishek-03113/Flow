@@ -141,7 +141,7 @@ jobs:
       - name: Install pinned Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
-      # Runs the OS-pair scenario matrix and writes an HTML/JSON report.
+      # Runs the OS-pair scenario matrix and writes HTML/JSON/JUnit reports (docs/testing/harness.md).
       - run: cargo run -p flow-harness --release -- --report-dir target/harness-report
       - name: Upload harness report
         if: ${{ !cancelled() }}

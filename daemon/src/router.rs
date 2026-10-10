@@ -95,6 +95,10 @@ pub struct RouterStats {
 
 const MAX_LATENCY_SAMPLES: usize = 256;
 
+/// How long, after returning home through an edge, local pointer samples
+/// that don't show the warp yet are treated as stale.
+const WARP_SETTLE: Duration = Duration::from_millis(250);
+
 const DEFAULT_SCREEN: ScreenSize = ScreenSize {
     width: 1920,
     height: 1080,
@@ -128,6 +132,11 @@ struct State {
     /// Where to put this machine's own pointer when edge switching
     /// returns home.
     local_warp: Option<mpsc::UnboundedSender<(i32, i32)>>,
+    /// A warp home that may not have reached the OS yet, and when it was
+    /// asked for. Until a sample shows it (or `WARP_SETTLE` passes), samples
+    /// are stale: the pointer still sits on the edge it left through, and
+    /// acting on it would bounce straight back out.
+    pending_warp: Option<((i32, i32), Instant)>,
     events_forwarded: u64,
     events_dropped: u64,
     switch_latencies_ms: VecDeque<f64>,
@@ -172,6 +181,7 @@ impl InputRouter {
                 cursor: (0, 0),
                 edge_rest: None,
                 local_warp: None,
+                pending_warp: None,
                 events_forwarded: 0,
                 events_dropped: 0,
                 switch_latencies_ms: VecDeque::new(),
@@ -330,6 +340,7 @@ impl InputRouter {
         entry: Option<(i32, i32)>,
     ) {
         st.edge_rest = None;
+        st.pending_warp = None;
         let old = std::mem::replace(&mut st.active, target.clone());
 
         // Leave the old screen: the remote releases everything it holds,
@@ -366,7 +377,9 @@ impl InputRouter {
             ActiveScreen::Local => {
                 self.suppressing.store(false, Ordering::SeqCst);
                 if let (Some(point), Some(warp)) = (entry, &st.local_warp) {
-                    let _ = warp.send(point);
+                    if warp.send(point).is_ok() {
+                        st.pending_warp = Some((point, Instant::now()));
+                    }
                 }
             }
         }
@@ -525,6 +538,12 @@ impl InputRouter {
         if !st.edge_switching || st.active != ActiveScreen::Local {
             st.edge_rest = None;
             return;
+        }
+        if let Some((point, since)) = st.pending_warp {
+            if (x, y) != point && since.elapsed() < WARP_SETTLE {
+                return;
+            }
+            st.pending_warp = None;
         }
         let (w, h) = (st.local_screen.width as i32, st.local_screen.height as i32);
         let (edge, along) = if x <= 0 {
@@ -1186,6 +1205,26 @@ mod tests {
             Some((1918, 300)),
             "home, one pixel inside the edge so the pointer does not bounce back"
         );
+    }
+
+    #[test]
+    fn a_pointer_sample_taken_before_the_warp_home_landed_does_not_bounce_back_out() {
+        let r = edge_router();
+        let (warp_tx, _warps) = mpsc::unbounded_channel();
+        r.set_local_warp(warp_tx);
+        let _p = connect(&r, "p");
+        r.local_cursor(1919, 300);
+        r.on_event(&motion(-3, 0));
+        assert_eq!(r.active(), ActiveScreen::Local);
+
+        // The OS still reports where the pointer was parked when it left.
+        r.local_cursor(1919, 300);
+        assert_eq!(r.active(), ActiveScreen::Local, "stale sample ignored");
+
+        // Once the warp shows, the edge works again.
+        r.local_cursor(1918, 300);
+        r.local_cursor(1919, 300);
+        assert_eq!(r.active(), ActiveScreen::Remote(id("p")));
     }
 
     #[test]

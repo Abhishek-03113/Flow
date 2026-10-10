@@ -1502,10 +1502,12 @@ version = "0.1.0"
 dependencies = [
  "flow-core",
  "flow-daemon",
+ "futures-util",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "toml 0.8.2",
  "tracing-subscriber",
 ]
