@@ -44,7 +44,31 @@ export function HomeView() {
     : activeScreen === 'local'
       ? (me?.id ?? null)
       : activeScreen;
-  const hasLayout = s.screenLayout.screens.length > 1;
+  // A controlled computer only knows its own screen; the arrangement lives on
+  // the controller. Show the controller beside it so the picture isn't one
+  // lonely tile (read-only; where they really sit is set on the controller).
+  const controllerDevice = s.controlState?.controllerDeviceId
+    ? s.devices.find((d) => d.id === s.controlState?.controllerDeviceId)
+    : undefined;
+  const layout = (() => {
+    if (controller || !controllerDevice || !me) return s.screenLayout;
+    if (s.screenLayout.screens.some((r) => r.deviceId === controllerDevice.id)) return s.screenLayout;
+    const mine = s.screenLayout.screens.find((r) => r.deviceId === me.id) ?? {
+      deviceId: me.id,
+      x: 0,
+      y: 0,
+      width: 1920,
+      height: 1080,
+    };
+    const theirs = controllerDevice.screen ?? { width: 1920, height: 1080 };
+    return {
+      screens: [
+        { deviceId: controllerDevice.id, x: 0, y: 0, width: theirs.width, height: theirs.height },
+        { ...mine, x: theirs.width, y: 0 },
+      ],
+    };
+  })();
+  const hasLayout = layout.screens.length > 1;
   const diag = s.diagnostics;
   const settings = s.settings;
   const controllerName =
@@ -63,7 +87,7 @@ export function HomeView() {
           </h2>
           <div className="fl-card">
             <ArrangementEditor
-              layout={s.screenLayout}
+              layout={layout}
               devices={s.devices}
               activeId={activeId}
               editable={controller}
@@ -80,7 +104,7 @@ export function HomeView() {
             <p className="t-callout t-secondary" style={{ marginTop: 'var(--s-3)' }}>
               {controller
                 ? 'Drag computers to match how they sit on your desk. Move the pointer off an edge to cross to the next one.'
-                : 'The computer that shares its keyboard and mouse sets up the arrangement.'}
+                : `${controllerDevice?.name ?? 'The computer that shares its keyboard and mouse'} sets up where the screens sit; open Flow there to change it.`}
             </p>
           </div>
         </section>
