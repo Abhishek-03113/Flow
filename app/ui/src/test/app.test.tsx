@@ -235,9 +235,9 @@ describe('Settings', () => {
     await user.keyboard('[CapsLock]');
     expect(client.getSnapshot().remapRules).toHaveLength(1); // still just the seeded one
     await user.click(within(rule).getByRole('button', { name: 'Becomes' }));
-    await user.keyboard('{Control}');
+    await user.keyboard('{End}');
     await waitFor(() => expect(client.getSnapshot().remapRules).toHaveLength(2));
-    expect(client.getSnapshot().remapRules[1]).toEqual({ from: 'CapsLock', to: 'Ctrl', whenTargetOs: null });
+    expect(client.getSnapshot().remapRules[1]).toEqual({ from: 'CapsLock', to: 'End', whenTargetOs: null });
   });
 
   it('General: appearance is applied to <html> and persisted', async () => {

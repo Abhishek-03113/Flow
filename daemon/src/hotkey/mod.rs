@@ -85,8 +85,10 @@ impl SwitchKeyMatcher {
     }
 }
 
+/// Binding tokens are the UI's (`Esc`, `Up`, `CapsLock`), events carry wire
+/// names (`ESCAPE`, `UP_ARROW`, `CAPS_LOCK`): compare both as wire names.
 fn canonicalize(key: &str) -> String {
-    key.to_ascii_uppercase()
+    flow_core::protocol::key_names::canonical(key).unwrap_or_else(|| key.to_ascii_uppercase())
 }
 
 /// The one place binding tokens are normalised: users (and the UI) write
@@ -120,6 +122,15 @@ mod tests {
             modifiers: vec![],
             timestamp_ms: 0,
         })
+    }
+
+    #[test]
+    fn ui_tokens_match_wire_key_names() {
+        let mut m = SwitchKeyMatcher::new(SwitchKeyBinding {
+            label: "Ctrl Up".to_string(),
+            keys: vec!["Ctrl".to_string(), "Up".to_string()],
+        });
+        assert!(m.feed(&key_down("UP_ARROW", vec![Modifier::Ctrl])));
     }
 
     #[test]

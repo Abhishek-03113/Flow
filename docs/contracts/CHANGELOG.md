@@ -4,6 +4,8 @@
 
 - **Refused links are `error`, not `reconnecting`**: a link refused for `role_conflict` or `protocol_mismatch` sets the link state to `error` (the device's `link_error` says why) and the engine stops dialling that peer until this device's role changes; the peer, when its role changes, dials back and the link comes up with no `retry_connection`. A controlled device refusing a second controller is the exception: that controller keeps dialling, since the controlled device may accept it once its current controller leaves.
 - **`Device.role` / `os` follow the refused `Hello`**: a peer that changed its role shows its new role even though no link came up.
+- **Key tokens**: switch keys and remap rules accept the UI's key tokens (`Space`, `Esc`, `Enter`, `Backspace`, `Delete` = forward delete, `CapsLock`, `PageUp`, `Up`, `` ` ``, `-`, ...) as well as wire key names (`ESCAPE`, `UP_ARROW`, ...); both name the same key. Before, a named key recorded in the UI never matched (`Ctrl + Up` did not switch) and remap rules with one were refused as `invalid_remap_rule`.
+- **`get_keymap`** answers the keymap file `{ version, os, keys: [{ name, code }] }` (as documented); the UI had assumed `{ os, entries }`.
 - **Incoming pairing requests are withdrawn** when the initiator cancels (its connection closes): `incoming_pairing_request_changed` goes back to `null`.
 
 ## 0.2.1 — embedded engine and honest permissions (additive, one rename)

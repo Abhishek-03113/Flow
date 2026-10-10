@@ -183,10 +183,12 @@ describe('MockEngine', () => {
     await expect(client.setRemapRules([{ from: '', to: 'Ctrl', whenTargetOs: null }])).rejects.toMatchObject({
       code: 'invalid_remap_rule',
     });
-    await client.setRemapRules([{ from: 'CapsLock', to: 'Ctrl', whenTargetOs: 'macos' }]);
-    expect(client.getSnapshot().remapRules).toEqual([
-      { from: 'CapsLock', to: 'Ctrl', whenTargetOs: 'macos' },
-    ]);
+    // Like the engine: a key becomes a key, a modifier a modifier.
+    await expect(
+      client.setRemapRules([{ from: 'CapsLock', to: 'Ctrl', whenTargetOs: 'macos' }]),
+    ).rejects.toMatchObject({ code: 'invalid_remap_rule' });
+    await client.setRemapRules([{ from: 'CapsLock', to: 'End', whenTargetOs: 'macos' }]);
+    expect(client.getSnapshot().remapRules).toEqual([{ from: 'CapsLock', to: 'End', whenTargetOs: 'macos' }]);
   });
 
   it('retry_connection is only valid when disconnected/error and ends connected', async () => {

@@ -1,7 +1,7 @@
 import { FolderOpen, Plus, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
-import type { HostOs, RemapRule } from '../../client/types';
-import { friendlyError } from '../../copy';
+import type { HostOs, Keymap, RemapRule } from '../../client/types';
+import { friendlyError, osName } from '../../copy';
 import {
   Button,
   Row,
@@ -92,6 +92,57 @@ function RuleEditor({
         />
       </Tooltip>
     </div>
+  );
+}
+
+/** The keys Flow knows on an OS (`get_keymap`): wire name and that OS's native code. */
+function KeymapSection({ os }: { os: HostOs }) {
+  const client = useClient();
+  const [shown, setShown] = useState<HostOs>(os);
+  const [keymap, setKeymap] = useState<Keymap | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setFailed(false);
+    client
+      .getKeymap(shown)
+      .then((k) => live && setKeymap(k))
+      .catch(() => live && setFailed(true));
+    return () => {
+      live = false;
+    };
+  }, [client, shown]);
+  const current = keymap?.os === shown ? keymap : null;
+  return (
+    <Section
+      title="Key map"
+      footer="How Flow names each key and the code that operating system uses for it. Override it in the keymap folder."
+    >
+      <Row
+        title="Show keys for"
+        subtitle={current ? `${current.keys.length} keys` : failed ? 'Not available' : 'Loading…'}
+        trailing={
+          <Select<HostOs>
+            label="Show keys for"
+            value={shown}
+            onChange={setShown}
+            options={(['macos', 'windows', 'linux'] as HostOs[]).map((o) => ({ value: o, label: osName(o) }))}
+          />
+        }
+      />
+      {current && (
+        <li className="fl-row-wrap">
+          <div className="fl-keymap" data-testid="keymap" aria-label={`Keys on ${osName(shown)}`}>
+            {current.keys.map((k) => (
+              <span key={k.name} className="fl-keymap__key">
+                <span className="fl-keymap__name">{k.name}</span>
+                <code className="t-secondary">0x{k.code.toString(16).toUpperCase().padStart(2, '0')}</code>
+              </span>
+            ))}
+          </div>
+        </li>
+      )}
+    </Section>
   );
 }
 
@@ -249,6 +300,8 @@ export function ShortcutsView() {
           }
         />
       </Section>
+
+      <KeymapSection os={os} />
 
       <Section title="Advanced">
         <Row

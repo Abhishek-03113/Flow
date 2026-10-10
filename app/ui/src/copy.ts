@@ -17,7 +17,7 @@ const ERRORS: Record<string, string> = {
   not_controller: 'Only the computer that shares its keyboard and mouse can switch screens.',
   not_controlled: 'Nothing is controlling this computer right now.',
   invalid_layout: "Screens can't overlap. Try placing it next to another screen.",
-  invalid_remap_rule: 'Choose both keys for the rule.',
+  invalid_remap_rule: 'A key can only become another key, and a modifier another modifier.',
   invalid_payload: "That value isn't allowed.",
   connection_closed: "Flow isn't responding.",
   engine_not_embedded: 'Flow is still starting up.',

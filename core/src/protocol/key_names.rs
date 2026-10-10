@@ -156,6 +156,52 @@ pub fn all() -> Vec<String> {
     names
 }
 
+/// The wire name for a key token as the UI writes it in a switch key or a
+/// remap rule (`docs/contracts/data-model.md` `SwitchKeyBinding`: `Space`,
+/// `Esc`, `CapsLock`, `Up`, `` ` `` ...), or a wire name itself (any case).
+/// `None` for a token outside the shared vocabulary.
+pub fn canonical(token: &str) -> Option<String> {
+    // The UI's `Delete` is the forward-delete key; the wire's `DELETE` is
+    // macOS's delete, i.e. backspace (the UI's `Backspace`).
+    if token == "Delete" {
+        return Some(FORWARD_DELETE.to_string());
+    }
+    if is_known(token) {
+        return Some(token.to_string());
+    }
+    let upper = token.to_ascii_uppercase();
+    if is_known(&upper) {
+        return Some(upper);
+    }
+    let alias = match upper.as_str() {
+        "ENTER" => RETURN,
+        "BACKSPACE" => DELETE,
+        "DEL" | "FORWARDDELETE" => FORWARD_DELETE,
+        "ESC" => ESCAPE,
+        "CAPSLOCK" => CAPS_LOCK,
+        "SCROLL_LOCK" => SCROLLLOCK,
+        "PAGEUP" => PAGE_UP,
+        "PAGEDOWN" => PAGE_DOWN,
+        "UP" | "ARROWUP" => UP_ARROW,
+        "DOWN" | "ARROWDOWN" => DOWN_ARROW,
+        "LEFT" | "ARROWLEFT" => LEFT_ARROW,
+        "RIGHT" | "ARROWRIGHT" => RIGHT_ARROW,
+        "`" => GRAVE,
+        "-" => MINUS,
+        "=" => EQUAL,
+        "[" => LEFT_BRACKET,
+        "]" => RIGHT_BRACKET,
+        "\\" => BACKSLASH,
+        ";" => SEMICOLON,
+        "'" => QUOTE,
+        "," => COMMA,
+        "." => PERIOD,
+        "/" => SLASH,
+        _ => return None,
+    };
+    Some(alias.to_string())
+}
+
 /// Whether `name` is part of the shared vocabulary ([`all`]). Keymap files
 /// are validated against this so a typo can't silently drop a key.
 pub fn is_known(name: &str) -> bool {
@@ -164,4 +210,34 @@ pub fn is_known(name: &str) -> bool {
     KNOWN
         .get_or_init(|| all().into_iter().collect())
         .contains(name)
+}
+
+#[cfg(test)]
+mod canonical_tests {
+    use super::*;
+
+    #[test]
+    fn ui_tokens_name_wire_keys() {
+        for (token, wire) in [
+            ("Space", SPACE),
+            ("Esc", ESCAPE),
+            ("Enter", RETURN),
+            ("Backspace", DELETE),
+            ("Delete", FORWARD_DELETE),
+            ("DELETE", DELETE),
+            ("CapsLock", CAPS_LOCK),
+            ("ScrollLock", SCROLLLOCK),
+            ("Pause", PAUSE),
+            ("PageUp", PAGE_UP),
+            ("Up", UP_ARROW),
+            ("`", GRAVE),
+            ("\\", BACKSLASH),
+            ("a", "A"),
+            ("F13", "F13"),
+            ("CAPS_LOCK", CAPS_LOCK),
+        ] {
+            assert_eq!(canonical(token).as_deref(), Some(wire), "{token}");
+        }
+        assert_eq!(canonical("NumLock"), None);
+    }
 }

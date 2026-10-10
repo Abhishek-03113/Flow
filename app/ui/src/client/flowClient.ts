@@ -5,7 +5,7 @@ import type {
   ControlState,
   FlowState,
   HostOs,
-  KeymapEntry,
+  Keymap,
   RemapRule,
   Role,
   ScreenLayout,
@@ -186,7 +186,7 @@ export class FlowClient {
     this.cmd('open_main_window', target);
   setScreenLayout = (layout: ScreenLayout) => this.cmd('set_screen_layout', { layout });
   setRole = (role: Role) => this.cmd('set_role', { role });
-  getKeymap = (os: HostOs) => this.cmd<{ os: HostOs; entries: KeymapEntry[] }>('get_keymap', { os });
+  getKeymap = (os: HostOs) => this.cmd<Keymap>('get_keymap', { os });
   setRemapRules = (rules: RemapRule[]) => this.cmd('set_remap_rules', { rules });
   revealConfigDir = () => this.cmd('reveal_config_dir');
   /** Resolves with the saved file path, when the engine reports one. */
