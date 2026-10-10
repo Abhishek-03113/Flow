@@ -549,10 +549,18 @@ impl Runtime {
     /// already-trusted peers get a pipeline.
     async fn handle_incoming_peer_stream(&self, stream: TcpStream) {
         let peer_addr = stream.peer_addr().ok();
-        let channel: Box<dyn Channel> = match TcpChannel::accept(stream).await {
-            Ok(channel) => Box::new(channel),
-            Err(err) => {
+        let upgrade = tokio::time::timeout(
+            crate::service::INBOUND_HANDSHAKE_TIMEOUT,
+            TcpChannel::accept(stream),
+        );
+        let channel: Box<dyn Channel> = match upgrade.await {
+            Ok(Ok(channel)) => Box::new(channel),
+            Ok(Err(err)) => {
                 tracing::debug!("peer connection failed the WebSocket handshake: {err}");
+                return;
+            }
+            Err(_) => {
+                tracing::debug!("peer connection timed out in the WebSocket handshake");
                 return;
             }
         };
