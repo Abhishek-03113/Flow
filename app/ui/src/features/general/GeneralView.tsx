@@ -1,6 +1,6 @@
 import { Monitor, Moon, ShieldAlert, ShieldCheck, Sun } from 'lucide-react';
 import { useState } from 'react';
-import type { Role } from '../../client/types';
+import type { PointerSensitivity, Role } from '../../client/types';
 import { trayName } from '../../copy';
 import {
   Alert,
@@ -55,6 +55,51 @@ export function GeneralView() {
           You can change this at any time.
         </p>
       </section>
+
+      {role === 'controller' && (
+        <Section
+          title="Sharing"
+          footer="Turn one off to keep it on this computer while you work on another one."
+        >
+          <Row
+            title="Share keyboard"
+            subtitle="Typing goes to the computer you moved to."
+            trailing={
+              <Toggle
+                label="Share keyboard"
+                checked={settings.shareKeyboard}
+                onChange={(v) => set({ shareKeyboard: v })}
+              />
+            }
+          />
+          <Row
+            title="Share mouse"
+            subtitle="The pointer, clicks and scrolling go to the computer you moved to."
+            trailing={
+              <Toggle
+                label="Share mouse"
+                checked={settings.shareMouse}
+                onChange={(v) => set({ shareMouse: v })}
+              />
+            }
+          />
+          <Row
+            title="Pointer speed on other computers"
+            trailing={
+              <SegmentedControl<PointerSensitivity>
+                label="Pointer speed on other computers"
+                value={settings.pointerSensitivity}
+                onChange={(v) => set({ pointerSensitivity: v })}
+                options={[
+                  { value: 'low', label: 'Slower' },
+                  { value: 'normal', label: 'Normal' },
+                  { value: 'high', label: 'Faster' },
+                ]}
+              />
+            }
+          />
+        </Section>
+      )}
 
       <Section title="Startup">
         <Row
