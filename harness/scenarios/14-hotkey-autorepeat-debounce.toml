@@ -1,0 +1,35 @@
+name = "hotkey-autorepeat-debounce"
+description = """
+Holding the hotkey (key autorepeat sends repeated presses) switches once, not once per repeat, so a long
+press cannot flip the controller back and forth."""
+
+[world]
+debounce_ms = 400
+
+[[steps]]
+do = "repeat"
+times = 4
+steps = [{ do = "press", on = "ctl", key = "SCROLLLOCK", when = "ctl!=macos" }, { do = "press", on = "ctl", key = "F13", when = "ctl=macos" }]
+[[steps]]
+do = "release"
+on = "ctl"
+key = "SCROLLLOCK"
+when = "ctl!=macos"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "F13"
+when = "ctl=macos"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "SCROLLLOCK"
+[[steps]]
+do = "expect"
+that = "key_never_seen"
+key = "F13"

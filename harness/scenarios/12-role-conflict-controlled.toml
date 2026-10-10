@@ -1,0 +1,71 @@
+name = "role-conflict-controlled"
+description = """
+Two controlled devices cannot be linked either (neither could ever send input): refused with role_conflict,
+no control commands work between them, and neither captures anything."""
+
+[[devices]]
+name = "one"
+os = "$a"
+role = "controlled"
+[[devices]]
+name = "two"
+os = "$b"
+role = "controlled"
+
+[[links]]
+a = "one"
+b = "two"
+expect = "refused:role_conflict"
+
+[[steps]]
+do = "expect"
+that = "link_error"
+on = "one"
+peer = "two"
+is = "role_conflict"
+[[steps]]
+do = "expect"
+that = "link_error"
+on = "two"
+peer = "one"
+is = "role_conflict"
+[[steps]]
+do = "switch_to"
+on = "one"
+target = "two"
+expect_error = "not_controller"
+[[steps]]
+do = "release_request"
+on = "one"
+expect_error = "no_controller"
+[[steps]]
+do = "type"
+on = "one"
+text = "ab"
+[[steps]]
+do = "type"
+on = "two"
+text = "cd"
+[[steps]]
+do = "expect"
+that = "no_forwarding"
+on = "one"
+[[steps]]
+do = "expect"
+that = "no_forwarding"
+on = "two"
+[[steps]]
+do = "expect"
+that = "capturing"
+on = "one"
+is = false
+[[steps]]
+do = "expect"
+that = "capturing"
+on = "two"
+is = false
+[[steps]]
+do = "expect"
+that = "entered"
+on = "one"
+is = false

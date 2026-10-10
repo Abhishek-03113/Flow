@@ -1271,6 +1271,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "flow-harness"
+version = "0.1.0"
+dependencies = [
+ "flow-core",
+ "flow-daemon",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml 0.8.2",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "flow-platform"
 version = "0.1.0"
 dependencies = [

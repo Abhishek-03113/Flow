@@ -1,0 +1,111 @@
+name = "sharing-settings"
+description = """
+share_keyboard and share_mouse: with one off, that device class stays on the controller even while a remote
+screen is active, and the other is still forwarded and hidden locally. Turning them back on restores
+forwarding."""
+
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+
+# Keyboard not shared.
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "share_keyboard"
+value = false
+[[steps]]
+do = "clear"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "k"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 7
+dy = 2
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down K", "up K"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["move 7 2"]
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+kinds = ["move"]
+events = []
+
+# Mouse not shared, keyboard back on.
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "share_keyboard"
+value = true
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "share_mouse"
+value = false
+[[steps]]
+do = "clear"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "m"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 3
+dy = 3
+[[steps]]
+do = "click"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down M", "up M"]
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["move 3 3", "button_down left", "button_up left"]
+
+# Both back on.
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "share_mouse"
+value = true
+[[steps]]
+do = "clear"
+[[steps]]
+do = "type"
+on = "ctl"
+text = "n"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 1
+dy = 1
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down N", "up N", "move 1 1"]
+[[steps]]
+do = "expect"
+that = "no_local_leak"
+on = "ctl"

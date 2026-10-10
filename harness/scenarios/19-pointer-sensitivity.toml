@@ -1,0 +1,87 @@
+name = "pointer-sensitivity"
+description = """
+Pointer sensitivity scales the motion forwarded to the controlled machine (low 0.6x, normal 1x, high 1.6x)
+without losing fractions: slow movement still adds up."""
+
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+
+[[steps]]
+do = "clear"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 10
+dy = -10
+times = 10
+[[steps]]
+do = "expect"
+that = "pointer_moved"
+on = "ctd"
+dx = 100
+dy = -100
+
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "pointer_sensitivity"
+value = "high"
+[[steps]]
+do = "clear"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 10
+dy = -10
+times = 10
+[[steps]]
+do = "expect"
+that = "pointer_moved"
+on = "ctd"
+dx = 160
+dy = -160
+tolerance = 1
+
+[[steps]]
+do = "set_setting"
+on = "ctl"
+key = "pointer_sensitivity"
+value = "low"
+[[steps]]
+do = "clear"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 10
+dy = -10
+times = 10
+[[steps]]
+do = "expect"
+that = "pointer_moved"
+on = "ctd"
+dx = 60
+dy = -60
+tolerance = 1
+
+# One-pixel nudges survive scaling (0.6 px per event adds up).
+[[steps]]
+do = "clear"
+[[steps]]
+do = "move"
+on = "ctl"
+dx = 1
+dy = 0
+times = 50
+[[steps]]
+do = "expect"
+that = "pointer_moved"
+on = "ctd"
+dx = 30
+dy = 0
+tolerance = 1

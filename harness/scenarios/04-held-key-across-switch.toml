@@ -1,0 +1,103 @@
+name = "held-key-across-switch"
+description = """
+Up follows down: a key released after a switch goes to the side it was pressed on. Pressed at home and
+released while remote, the release stays at home; pressed remotely and still held when control returns, the
+controlled machine releases it itself and the physical release is swallowed."""
+
+# Held at home, released after switching away: the OS that saw the press sees the release.
+[[steps]]
+do = "press"
+on = "ctl"
+key = "H"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "ctd"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "H"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = ["down H", "up H"]
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = []
+
+# Held remotely, still down when control returns.
+[[steps]]
+do = "clear"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "J"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down J"]
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "expect"
+that = "active"
+on = "ctl"
+is = "local"
+[[steps]]
+do = "expect"
+that = "injected"
+on = "ctd"
+events = ["down J", "up J"]
+[[steps]]
+do = "release"
+on = "ctl"
+key = "J"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"
+
+# Autorepeat: a key repeatedly "pressed" while held is released exactly once.
+[[steps]]
+do = "clear"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "K"
+[[steps]]
+do = "press"
+on = "ctl"
+key = "K"
+[[steps]]
+do = "hotkey"
+on = "ctl"
+[[steps]]
+do = "release"
+on = "ctl"
+key = "K"
+[[steps]]
+do = "expect"
+that = "nothing_stuck"
+on = "ctd"
+[[steps]]
+do = "expect"
+that = "delivered"
+on = "ctl"
+events = []
