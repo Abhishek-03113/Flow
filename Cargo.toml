@@ -15,3 +15,10 @@ unsafe_op_in_unsafe_fn = "warn"
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+
+# Keep dev builds small: full debug info for dependencies costs gigabytes and is rarely needed.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
