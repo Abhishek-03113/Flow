@@ -139,3 +139,73 @@ test('every link state shows a banner; healthy shows none', async ({ page }) => 
   await expect(page.getByTestId('status-title')).toBeVisible();
   await expect(page.getByTestId('banner')).toHaveCount(0);
 });
+
+test('a typing key on its own is refused as the switch shortcut', async ({ page }) => {
+  await page.goto(url('scenario=two-devices', '#/shortcuts'));
+  await page.getByRole('button', { name: 'Switch shortcut' }).click();
+  await page.keyboard.press('a');
+  await expect(page.getByTestId('toasts')).toContainText('That key is used for typing');
+  await expect(page.getByRole('combobox', { name: 'Shortcut preset' })).toHaveValue('ScrollLock');
+  // With a modifier it is fine.
+  await page.getByRole('button', { name: 'Switch shortcut' }).click();
+  await page.keyboard.press('Control+Alt+K');
+  await expect(page.getByTestId('toasts')).toContainText('Shortcut updated');
+});
+
+test('the return-home shortcut cannot repeat the switch shortcut', async ({ page }) => {
+  await page.goto(url('scenario=two-devices', '#/shortcuts'));
+  await page.getByRole('combobox', { name: 'Shortcut preset' }).selectOption('Ctrl+Shift+Space');
+  await page.getByRole('button', { name: 'Return home shortcut' }).click();
+  await page.keyboard.press('Control+Shift+Space');
+  await expect(page.getByTestId('toasts')).toContainText('need different keys');
+  await expect(page.getByRole('button', { name: 'Return home shortcut' })).toContainText('Not set');
+});
+
+test('a second remap rule for the same key is refused and stays an unsaved draft', async ({ page }) => {
+  await page.goto(url('scenario=two-devices', '#/shortcuts'));
+  const saved = await page.getByTestId('remap-rule').count();
+  for (const to of ['F11', 'F12']) {
+    await page.getByRole('button', { name: 'Add Rule' }).click();
+    const rule = page.getByTestId('remap-rule').last();
+    await rule.getByRole('button', { name: 'Key to remap' }).click();
+    await page.keyboard.press('CapsLock');
+    await rule.getByRole('button', { name: 'Becomes' }).click();
+    await page.keyboard.press(to);
+  }
+  await expect(page.getByTestId('toasts')).toContainText('already a rule for that key');
+  await expect(page.getByText('Becomes: F12')).toHaveCount(0);
+  // Leaving the page drops the draft; the engine kept only the first rule.
+  await page.keyboard.press('Control+1');
+  await page.keyboard.press('Control+3');
+  await expect(page.getByTestId('remap-rule')).toHaveCount(saved + 1);
+});
+
+test('double-clicking Switch to … stays switched', async ({ page }) => {
+  await page.goto(url('scenario=three-devices', '#/home'));
+  await page.getByRole('button', { name: 'Switch to Office PC' }).dblclick();
+  await expect(page.getByTestId('status-title')).toHaveText('Controlling Office PC');
+  await page.waitForTimeout(300);
+  await expect(page.getByTestId('status-title')).toHaveText('Controlling Office PC');
+});
+
+test('screen tiles never overlap, even at the smallest window size', async ({ page }) => {
+  type Box = { x: number; y: number; width: number; height: number };
+  const overlap = (p: Box, q: Box) =>
+    Math.min(p.x + p.width, q.x + q.width) - Math.max(p.x, q.x) > 1 &&
+    Math.min(p.y + p.height, q.y + q.height) - Math.max(p.y, q.y) > 1;
+  for (const width of [760, 900, 1100]) {
+    await page.setViewportSize({ width, height: 600 });
+    await page.goto(url('scenario=three-devices', '#/home'));
+    await expect(page.getByTestId('tile-d3')).toBeVisible();
+    const boxes = (await Promise.all(
+      ['d1', 'd2', 'd3'].map((id) => page.getByTestId(`tile-${id}`).boundingBox()),
+    )) as Box[];
+    const pairs = [
+      [0, 1],
+      [1, 2],
+      [0, 2],
+    ] as const;
+    for (const [i, j] of pairs)
+      expect(overlap(boxes[i]!, boxes[j]!), `${width}px: tiles ${i}/${j}`).toBe(false);
+  }
+});

@@ -11,6 +11,9 @@ export const ERRORS: Record<string, string> = {
   pairing_not_ready: "Flow isn't ready to connect yet. Try again in a moment.",
   candidate_not_found: "That computer isn't nearby any more.",
   invalid_switch_key: 'Choose at least one key for the shortcut.',
+  switch_key_needs_modifier:
+    'That key is used for typing. Add Control, Option/Alt or Command, or choose Scroll Lock, Pause or a function key.',
+  switch_key_conflict: 'The switch and return-home shortcuts need different keys.',
   permission_already_granted: 'Flow already has permission.',
   link_not_recoverable: 'Flow is already connected.',
   pairing_request_not_found: 'That request has expired.',
@@ -21,6 +24,7 @@ export const ERRORS: Record<string, string> = {
   not_controlled: 'Nothing is controlling this computer right now.',
   invalid_layout: "Screens can't overlap. Try placing it next to another screen.",
   invalid_remap_rule: 'A key can only become another key, and a modifier another modifier.',
+  duplicate_remap_rule: 'There’s already a rule for that key on that computer. Change or remove it first.',
   invalid_payload: "That value isn't allowed.",
   connection_closed: "Flow isn't responding.",
   engine_not_embedded: 'Flow is still starting up.',

@@ -110,9 +110,9 @@
   touch-action: none;
 }
 
+/* Tiles keep their scaled size so neighbours never overlap; long names ellipsize. */
 .fl-tile {
   position: absolute;
-  min-width: 112px;
   display: flex;
   flex-direction: column;
   align-items: center;

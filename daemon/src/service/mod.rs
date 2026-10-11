@@ -21,7 +21,7 @@ use flow_core::control::layout::{Placement, ScreenLayout};
 use flow_core::control::{ActiveScreen, ControlState, Diagnostics, Role};
 use flow_core::device::{Device, DeviceId, DeviceState, HostOs, ScreenSize};
 use flow_core::error::FlowError;
-use flow_core::keymap::remap::RemapRule;
+use flow_core::keymap::remap::{RemapError, RemapRule};
 use flow_core::link::{link_error, DaemonLinkState};
 use flow_core::pairing::{
     IncomingPairingRequest, PairingCandidate, PairingDecision, PairingRequest, PairingSession,
@@ -30,7 +30,7 @@ use flow_core::pairing::{
 use flow_core::permission::PermissionStatus;
 use flow_core::protocol::InputEvent;
 use flow_core::settings::{FlowSettings, SettingsPatch};
-use flow_core::switch_key::SwitchKeyBinding;
+use flow_core::switch_key::{BindingProblem, SwitchKeyBinding};
 use tokio::sync::{oneshot, watch, Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
@@ -760,7 +760,7 @@ impl DaemonService {
             role: Some(role),
             ..Default::default()
         })
-        .await;
+        .await?;
         self.control_tx.send_modify(|control| {
             *control = ControlState::idle(role);
         });
@@ -793,10 +793,10 @@ impl DaemonService {
     /// immediately.
     #[tracing::instrument(skip(self))]
     pub async fn set_remap_rules(&self, rules: Vec<RemapRule>) -> Result<(), FlowError> {
-        for rule in &rules {
-            rule.validate()
-                .map_err(|err| FlowError::InvalidRemapRule(err.to_string()))?;
-        }
+        flow_core::keymap::remap::validate_rules(&rules).map_err(|err| match err {
+            RemapError::Duplicate { .. } => FlowError::DuplicateRemapRule(err.to_string()),
+            _ => FlowError::InvalidRemapRule(err.to_string()),
+        })?;
         if let Some(dir) = &self.keymap_dir {
             let text = flow_core::keymap::remap::rules_to_toml(&rules);
             let path = dir.join("remap.toml");
@@ -2140,29 +2140,27 @@ impl DaemonService {
         }
     }
 
-    /// Sets the switch-key binding. Requires at least one key token.
+    /// Sets the switch-key binding. It must be usable on its own
+    /// ([`SwitchKeyBinding::check`]) and differ from the return-home key.
     #[tracing::instrument(skip(self))]
     pub async fn set_switch_key(&self, binding: SwitchKeyBinding) -> Result<(), FlowError> {
-        if binding.keys.is_empty() {
-            return Err(FlowError::InvalidSwitchKey);
-        }
         self.apply_settings_patch(SettingsPatch {
             switch_key: Some(binding),
             ..Default::default()
         })
-        .await;
-        Ok(())
+        .await
     }
 
     /// Merges `patch` into the current settings (only the `Some` fields
     /// change), matching `FlowSettings::apply_patch`.
     #[tracing::instrument(skip(self))]
     pub async fn update_settings(&self, mut patch: SettingsPatch) -> Result<(), FlowError> {
+        // Refuse a bad shortcut before the role changes, not halfway through.
+        check_shortcuts(&self.state.read().await.settings, &patch)?;
         if let Some(role) = patch.role.take() {
             self.set_role(role).await?;
         }
-        self.apply_settings_patch(patch).await;
-        Ok(())
+        self.apply_settings_patch(patch).await
     }
 
     /// Restores [`FlowSettings::defaults`] exactly (the read-only keymap
@@ -2184,15 +2182,17 @@ impl DaemonService {
         Ok(())
     }
 
-    async fn apply_settings_patch(&self, patch: SettingsPatch) {
+    async fn apply_settings_patch(&self, patch: SettingsPatch) -> Result<(), FlowError> {
         let settings = {
             let mut state = self.state.write().await;
+            check_shortcuts(&state.settings, &patch)?;
             state.settings.apply_patch(patch);
             state.settings.clone()
         };
         self.persist_settings(settings.clone()).await;
         self.router.apply_settings(&settings);
         self.settings_tx.send_replace(settings);
+        Ok(())
     }
 
     /// Reissues a connection attempt after the link has been given up on
@@ -2417,6 +2417,37 @@ fn mock_parity_candidates() -> Vec<PairingCandidate> {
     ]
 }
 
+/// The shortcuts `patch` sets must each be usable
+/// ([`SwitchKeyBinding::check`]), and the return-home key it leaves in
+/// place must differ from the switch key (otherwise the switch key never
+/// switches). Bindings the patch doesn't touch aren't re-checked, so a
+/// binding stored by an older version never blocks an unrelated change.
+fn check_shortcuts(current: &FlowSettings, patch: &SettingsPatch) -> Result<(), FlowError> {
+    let usable = |binding: &SwitchKeyBinding| {
+        binding.check().map_err(|problem| match problem {
+            BindingProblem::Empty => FlowError::InvalidSwitchKey,
+            BindingProblem::NeedsModifier => FlowError::SwitchKeyNeedsModifier,
+        })
+    };
+    if let Some(switch) = &patch.switch_key {
+        usable(switch)?;
+    }
+    if let Some(Some(home)) = &patch.return_home_key {
+        usable(home)?;
+    }
+    if patch.switch_key.is_none() && !matches!(patch.return_home_key, Some(Some(_))) {
+        return Ok(());
+    }
+    let switch = patch.switch_key.as_ref().unwrap_or(&current.switch_key);
+    let home = match &patch.return_home_key {
+        Some(home) => home.as_ref(),
+        None => current.return_home_key.as_ref(),
+    };
+    if home.is_some_and(|home| home.same_keys(switch)) {
+        return Err(FlowError::SwitchKeyConflict);
+    }
+    Ok(())
+}
 #[cfg(test)]
 mod tests {
     #[tokio::test]
@@ -3235,6 +3266,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_remap_rules_for_one_key_are_refused() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        let caps = |to: &str| RemapRule {
+            from: "CapsLock".to_string(),
+            to: to.to_string(),
+            when_target_os: None,
+        };
+        assert!(matches!(
+            service
+                .set_remap_rules(vec![caps("F11"), caps("F12")])
+                .await,
+            Err(FlowError::DuplicateRemapRule(_))
+        ));
+        assert!(service.watch_remap_rules().borrow().is_empty());
+    }
+
+    #[tokio::test]
     async fn remap_rules_are_validated_applied_and_persisted() {
         let dir = tempfile::tempdir().unwrap();
         let storage = Storage::open_in_memory().await.expect("open db");
@@ -3488,6 +3537,107 @@ mod tests {
             service.set_switch_key(empty).await,
             Err(FlowError::InvalidSwitchKey)
         );
+    }
+
+    fn binding(keys: &[&str]) -> SwitchKeyBinding {
+        SwitchKeyBinding {
+            label: keys.join(" + "),
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_typing_key_without_ctrl_alt_or_meta_is_not_a_shortcut() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        let before = service.watch_settings().borrow().clone();
+
+        for keys in [&["A"][..], &["Shift", "A"], &["Space"]] {
+            assert_eq!(
+                service.set_switch_key(binding(keys)).await,
+                Err(FlowError::SwitchKeyNeedsModifier),
+                "{keys:?}"
+            );
+            assert_eq!(
+                service
+                    .update_settings(SettingsPatch {
+                        return_home_key: Some(Some(binding(keys))),
+                        ..Default::default()
+                    })
+                    .await,
+                Err(FlowError::SwitchKeyNeedsModifier),
+                "{keys:?}"
+            );
+        }
+        assert_eq!(*service.watch_settings().borrow(), before);
+
+        service
+            .set_switch_key(binding(&["Ctrl", "A"]))
+            .await
+            .unwrap();
+        service.set_switch_key(binding(&["F13"])).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_return_home_key_cannot_repeat_the_switch_key() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        service.set_switch_key(binding(&["Pause"])).await.unwrap();
+
+        let home_is_switch = SettingsPatch {
+            return_home_key: Some(Some(binding(&["PAUSE"]))),
+            ..Default::default()
+        };
+        assert_eq!(
+            service.update_settings(home_is_switch).await,
+            Err(FlowError::SwitchKeyConflict)
+        );
+
+        service
+            .update_settings(SettingsPatch {
+                return_home_key: Some(Some(binding(&["F13"]))),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        // ...and the switch key cannot then take the return-home key.
+        assert_eq!(
+            service.set_switch_key(binding(&["F13"])).await,
+            Err(FlowError::SwitchKeyConflict)
+        );
+        // Changing both at once is checked against each other.
+        service
+            .update_settings(SettingsPatch {
+                switch_key: Some(binding(&["F13"])),
+                return_home_key: Some(Some(binding(&["Pause"]))),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        let settings = service.watch_settings().borrow().clone();
+        assert_eq!(settings.switch_key.keys, vec!["F13"]);
+        assert_eq!(settings.return_home_key.unwrap().keys, vec!["Pause"]);
+    }
+
+    #[tokio::test]
+    async fn a_bad_shortcut_leaves_the_role_unchanged() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        let role = service.watch_settings().borrow().role;
+        let other = match role {
+            Role::Controller => Role::Controlled,
+            Role::Controlled => Role::Controller,
+        };
+        let patch = SettingsPatch {
+            role: Some(other),
+            switch_key: Some(binding(&["A"])),
+            ..Default::default()
+        };
+        assert_eq!(
+            service.update_settings(patch).await,
+            Err(FlowError::SwitchKeyNeedsModifier)
+        );
+        assert_eq!(service.watch_settings().borrow().role, role);
     }
 
     #[tokio::test]

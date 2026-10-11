@@ -1,5 +1,12 @@
 # Contract Changelog
 
+## 0.2.5 — shortcut and remap-rule checks (no shape changes)
+
+- **A shortcut with a typing key needs `Ctrl`, `Alt` or `Meta`**: `set_switch_key`, and `update_settings` setting `switch_key` or `return_home_key`, refuse a binding like `A`, `Space` or `Shift + A` with the new code `switch_key_needs_modifier`. Before, such a binding was accepted and swallowed that key every time it was typed. `ScrollLock`, `Pause` and `F1`–`F24` still work on their own.
+- **`return_home_key` must differ from `switch_key`**: new code `switch_key_conflict`. Before, both were stored and the switch key stopped switching.
+- **One remap rule per key and target OS**: `set_remap_rules` refuses a second rule for the same `from` and `when_target_os` with the new code `duplicate_remap_rule`. Before, it was saved, but only the first rule ever applied.
+- `update_settings` checks shortcuts before anything else, so a refused patch leaves every field (including `role`) unchanged.
+
 ## 0.2.4 — the controller's arrangement reaches a controlled device (no shape changes)
 
 - **`screen_layout_changed` on a controlled device is the controller's arrangement**, read-only. The controller sends where the two screens sit (new daemon-to-daemon message `Arrangement`, `PROTOCOL_VERSION = 3`) when the link comes up and whenever its layout changes. The controlled device announces it as a two-screen `ScreenLayout`: `d1` (this computer) and the controller's device id, at the controller's coordinates. It is not persisted, is ignored if invalid, and reverts to just `d1` when the link ends. Before it arrives the layout holds only `d1`, and UIs may fall back to a guess. `set_screen_layout` still answers `not_controller`.

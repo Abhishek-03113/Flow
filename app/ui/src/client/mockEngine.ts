@@ -10,7 +10,17 @@ import {
   type EngineDevice,
   type EngineState,
 } from './mockScenarios';
-import type { HostOs, Keymap, LinkState, RemapRule, Role, ScreenLayout, SettingsPatch } from './types';
+import { bindingProblem, remapKey, sameKeys } from './shortcutRules';
+import type {
+  HostOs,
+  Keymap,
+  LinkState,
+  RemapRule,
+  Role,
+  ScreenLayout,
+  SettingsPatch,
+  SwitchKeyBinding,
+} from './types';
 
 export interface MockOptions {
   scenario?: string;
@@ -367,16 +377,31 @@ export class MockEngine {
   }
 
   // --- settings ---------------------------------------------------------------
+  /** Like the engine's `check_shortcuts`: usable bindings, and return-home ≠ switch. */
+  private checkShortcuts(p: { switchKey?: SwitchKeyBinding; returnHomeKey?: SwitchKeyBinding | null }): void {
+    for (const b of [p.switchKey, p.returnHomeKey]) {
+      if (!b) continue;
+      const problem = bindingProblem(b.keys ?? []);
+      if (problem === 'empty') throw err('invalid_switch_key', 'A shortcut needs at least one key.');
+      if (problem) throw err('switch_key_needs_modifier', 'A typing key needs Ctrl, Alt or Meta.');
+    }
+    if (p.switchKey === undefined && !p.returnHomeKey) return;
+    const sw = p.switchKey ?? this.s.settings.switchKey;
+    const home = p.returnHomeKey !== undefined ? p.returnHomeKey : this.s.settings.returnHomeKey;
+    if (home && sameKeys(home.keys, sw.keys)) {
+      throw err('switch_key_conflict', 'The return-home shortcut is the same as the switch shortcut.');
+    }
+  }
+
   private setSwitchKey(b: { label: string; keys: string[] }): void {
-    if (!b.keys?.length) throw err('invalid_switch_key', 'A shortcut needs at least one key.');
+    this.checkShortcuts({ switchKey: b });
     this.s.settings = { ...this.s.settings, switchKey: { label: b.label, keys: b.keys } };
     this.pushSettings();
   }
 
   private updateSettings(patch: SettingsPatch): void {
     const { role, ...rest } = patch;
-    if (rest.switchKey && !rest.switchKey.keys.length)
-      throw err('invalid_switch_key', 'A shortcut needs at least one key.');
+    this.checkShortcuts(rest);
     if (
       rest.edgeSwitchDelayMs !== undefined &&
       (rest.edgeSwitchDelayMs < 0 || rest.edgeSwitchDelayMs > 2000)
@@ -511,6 +536,13 @@ export class MockEngine {
       const mod = (t: string) => ['Ctrl', 'Alt', 'Shift', 'Meta'].includes(t);
       if (mod(r.from) !== mod(r.to))
         throw err('invalid_remap_rule', 'cannot map a modifier to a key or the reverse');
+    }
+    // Like the engine: only the first rule for a key and computer would apply.
+    const seen = new Set<string>();
+    for (const r of rules) {
+      const k = `${remapKey(r.from)}|${r.whenTargetOs ?? '*'}`;
+      if (seen.has(k)) throw err('duplicate_remap_rule', `more than one rule for ${r.from}`);
+      seen.add(k);
     }
     this.s.remapRules = rules;
     this.push('remap_rules_changed', rules);

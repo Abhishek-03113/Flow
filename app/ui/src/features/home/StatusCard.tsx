@@ -1,5 +1,5 @@
 import { ArrowLeftRight, Keyboard, Laptop, MonitorCheck, Undo2, Unplug } from 'lucide-react';
-import type { ReactNode } from 'react';
+import type { MouseEvent, ReactNode } from 'react';
 import { cx, Button, EmptyState, KeyCombo } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { localDevice, localOs, remoteDevices, situation, switchTargets } from '../../state/selectors';
@@ -7,6 +7,15 @@ import { useAction } from '../../state/useAction';
 import { useUi } from '../../state/ui';
 
 const ICON = { size: 30, strokeWidth: 1.5, 'aria-hidden': true } as const;
+
+/**
+ * Only the first click of a double-click counts: after a switch the card
+ * puts a different button (Return) where the clicked one was, and the
+ * second click would land on it and undo the switch.
+ */
+const firstClick = (fn: () => void) => (e: MouseEvent) => {
+  if (e.detail <= 1) fn();
+};
 
 /** "Who controls what" — the single most important thing on screen. */
 export function StatusCard() {
@@ -34,7 +43,7 @@ export function StatusCard() {
         key={d.id}
         icon={<ArrowLeftRight size={14} strokeWidth={1.8} />}
         disabled={busy}
-        onClick={() => void run(() => client.switchTo(d.id))}
+        onClick={firstClick(() => void run(() => client.switchTo(d.id)))}
       >
         Switch to {d.name}
       </Button>
@@ -92,7 +101,7 @@ export function StatusCard() {
             variant="prominent"
             icon={<Undo2 size={14} strokeWidth={1.8} />}
             disabled={busy}
-            onClick={() => void run(() => client.switchTo('local'))}
+            onClick={firstClick(() => void run(() => client.switchTo('local')))}
           >
             Return to this computer
           </Button>
@@ -111,7 +120,7 @@ export function StatusCard() {
           variant="prominent"
           icon={<Undo2 size={14} strokeWidth={1.8} />}
           disabled={busy}
-          onClick={() => void run(() => client.releaseControl())}
+          onClick={firstClick(() => void run(() => client.releaseControl()))}
         >
           Release control
         </Button>
