@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Flow — One keyboard. One mouse. Every computer.</title>
+    <meta
+      name="description"
+      content="Flow lets one keyboard and mouse move between all the computers on your desk. Press a key or glide past the edge of the screen. Fewer peripherals, fewer cables, a cleaner desk."
+    />
+    <meta name="theme-color" content="#eff1f5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
+    <meta property="og:title" content="Flow — One keyboard. One mouse. Every computer." />
+    <meta
+      property="og:description"
+      content="Move between every computer on your desk with the keyboard and mouse you already own."
+    />
+    <meta property="og:image" content="assets/shots/home-light.webp" />
+    <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+
+    <!-- Global navigation: a translucent bar, like a system toolbar. -->
+    <header class="nav" data-nav>
+      <div class="nav-inner">
+        <a class="brand" href="#top" aria-label="Flow home">
+          <img src="favicon.svg" alt="" width="28" height="28" />
+          <span>Flow</span>
+        </a>
+        <nav class="nav-links" aria-label="Sections">
+          <a href="#overview">Overview</a>
+          <a href="#features">Features</a>
+          <a href="#technology">Technology</a>
+        </nav>
+        <a class="pill pill-small" href="https://github.com/Abhishek-03113/Flow" data-get>Get Flow</a>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ───────────────────────────── Hero ───────────────────────────── -->
+      <section class="hero" id="top">
+        <div class="hero-copy">
+          <p class="eyebrow reveal">Flow</p>
+          <h1 class="hero-title reveal">
+            One keyboard.<br />
+            One mouse.<br />
+            <span class="gradient-text">Every computer.</span>
+          </h1>
+          <p class="hero-sub reveal">
+            Move between every computer on your desk with the keyboard and mouse you already own.
+            Press a key, or simply glide past the edge of the screen.
+          </p>
+          <div class="hero-cta reveal">
+            <a class="pill" href="https://github.com/Abhishek-03113/Flow" data-get>Get Flow</a>
+            <a class="link-arrow" href="#overview">See how it works</a>
+          </div>
+          <p class="platforms reveal" aria-label="Available for macOS, Windows and Linux">
+            <span>macOS</span><span aria-hidden="true">·</span><span>Windows</span
+            ><span aria-hidden="true">·</span><span>Linux</span>
+          </p>
+        </div>
+
+        <!-- Animated desk: one keyboard and mouse, the pointer flows between two displays. -->
+        <div class="desk reveal" aria-hidden="true">
+          <svg class="desk-svg" viewBox="0 0 1200 560" role="presentation">
+            <defs>
+              <linearGradient id="screenGlow" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" style="stop-color: var(--grad-a)" />
+                <stop offset="1" style="stop-color: var(--grad-b)" />
+              </linearGradient>
+              <linearGradient id="screenGlowSoft" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" style="stop-color: var(--grad-a)" stop-opacity=".22" />
+                <stop offset="1" style="stop-color: var(--grad-b)" stop-opacity=".22" />
+              </linearGradient>
+              <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+                <feGaussianBlur stdDeviation="18" />
+              </filter>
+            </defs>
+
+            <!-- Left: laptop -->
+            <g class="dev dev-left">
+              <rect class="glow" x="120" y="96" width="420" height="270" rx="22" fill="url(#screenGlow)" filter="url(#soft)" />
+              <rect class="bezel" x="120" y="96" width="420" height="270" rx="22" />
+              <rect class="screen" x="136" y="112" width="388" height="238" rx="12" />
+              <rect class="screen-on" x="136" y="112" width="388" height="238" rx="12" fill="url(#screenGlowSoft)" />
+              <g class="ui-lines">
+                <rect x="160" y="140" width="120" height="12" rx="6" />
+                <rect x="160" y="166" width="220" height="10" rx="5" />
+                <rect x="160" y="186" width="180" height="10" rx="5" />
+                <rect x="160" y="230" width="150" height="92" rx="10" />
+                <rect x="326" y="230" width="174" height="92" rx="10" />
+              </g>
+              <path class="bezel" d="M80 372 h500 a8 8 0 0 1 -8 12 h-484 a8 8 0 0 1 -8 -12z" />
+            </g>
+
+            <!-- Right: desktop display -->
+            <g class="dev dev-right">
+              <rect class="glow" x="660" y="64" width="440" height="290" rx="22" fill="url(#screenGlow)" filter="url(#soft)" />
+              <rect class="bezel" x="660" y="64" width="440" height="290" rx="22" />
+              <rect class="screen" x="676" y="80" width="408" height="258" rx="12" />
+              <rect class="screen-on" x="676" y="80" width="408" height="258" rx="12" fill="url(#screenGlowSoft)" />
+              <g class="ui-lines">
+                <rect x="700" y="108" width="140" height="12" rx="6" />
+                <rect x="700" y="134" width="260" height="10" rx="5" />
+                <rect x="700" y="154" width="210" height="10" rx="5" />
+                <rect x="700" y="196" width="364" height="118" rx="10" />
+              </g>
+              <rect class="stand" x="856" y="354" width="48" height="34" />
+              <rect class="bezel" x="806" y="384" width="148" height="10" rx="5" />
+            </g>
+
+            <!-- The single keyboard and mouse -->
+            <g class="kbd">
+              <rect class="kbd-body" x="372" y="440" width="380" height="74" rx="14" />
+              <g class="keys">
+                <rect x="392" y="456" width="26" height="16" rx="4" /><rect x="424" y="456" width="26" height="16" rx="4" />
+                <rect x="456" y="456" width="26" height="16" rx="4" /><rect x="488" y="456" width="26" height="16" rx="4" />
+                <rect x="520" y="456" width="26" height="16" rx="4" /><rect x="552" y="456" width="26" height="16" rx="4" />
+                <rect x="584" y="456" width="26" height="16" rx="4" /><rect x="616" y="456" width="26" height="16" rx="4" />
+                <rect x="648" y="456" width="26" height="16" rx="4" /><rect x="680" y="456" width="26" height="16" rx="4" />
+                <rect class="hotkey" x="712" y="456" width="26" height="16" rx="4" />
+                <rect x="392" y="480" width="40" height="16" rx="4" /><rect x="438" y="480" width="200" height="16" rx="4" />
+                <rect x="644" y="480" width="40" height="16" rx="4" /><rect x="690" y="480" width="48" height="16" rx="4" />
+              </g>
+            </g>
+            <g class="mouse">
+              <rect class="mouse-body" x="800" y="446" width="44" height="66" rx="22" />
+              <line class="mouse-line" x1="822" y1="452" x2="822" y2="474" />
+            </g>
+
+            <!-- Switch HUD -->
+            <g class="hud">
+              <rect x="730" y="168" width="300" height="56" rx="16" />
+              <circle cx="760" cy="196" r="12" fill="url(#screenGlow)" />
+              <text x="784" y="202">Now on Office PC</text>
+            </g>
+
+            <!-- Pointer -->
+            <g class="pointer">
+              <path d="M0 0 L0 30 L8 23 L13 35 L19 32 L14 21 L25 21 Z" />
+            </g>
+          </svg>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── Product window, scroll-driven ─────────────────────── -->
+      <section class="showcase" id="overview" data-scroll>
+        <div class="showcase-stage">
+          <div class="window">
+            <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+            <video
+              class="themed"
+              data-src="assets/motion/switch-{t}.mp4"
+              data-poster="assets/motion/switch-{t}-poster.webp"
+              muted
+              playsinline
+              loop
+              preload="metadata"
+              aria-label="Flow switching control between a MacBook Pro, an Office PC and a Studio Mac mini"
+            ></video>
+          </div>
+        </div>
+        <div class="showcase-caption">
+          <h2 class="section-title reveal">Your desk, finally in sync.</h2>
+          <p class="lead reveal">
+            Flow puts every computer within reach of a single keyboard and mouse. You decide where they go — Flow
+            takes care of the rest, quietly, in the background.
+          </p>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── Declutter, scroll-driven ─────────────────────── -->
+      <section class="declutter" data-scroll aria-labelledby="declutter-title">
+        <div class="declutter-sticky">
+          <div class="declutter-copy">
+            <p class="eyebrow">A cleaner desk</p>
+            <h2 id="declutter-title" class="section-title">
+              <span class="swap swap-a">Two keyboards. Two mice.<br />A tangle of cables.</span>
+              <span class="swap swap-b">One of each.<br /><span class="gradient-text">Nothing else.</span></span>
+            </h2>
+            <p class="lead">
+              No switch boxes, no dongles to swap, no second set of peripherals. Flow works with the keyboard and
+              mouse you love — and lets everything else leave the desk.
+            </p>
+          </div>
+          <div class="topdown" aria-hidden="true">
+            <svg viewBox="0 0 900 520">
+              <!-- desk mat -->
+              <rect class="mat" x="40" y="40" width="820" height="440" rx="36" />
+              <!-- cables that retract -->
+              <path class="cable c1" d="M210 300 C 210 180, 120 160, 90 60" />
+              <path class="cable c2" d="M330 360 C 360 250, 250 130, 260 50" />
+              <path class="cable c3" d="M610 300 C 620 190, 760 170, 790 60" />
+              <path class="cable c4" d="M740 360 C 760 260, 690 120, 680 50" />
+              <!-- extra pair (leaves the desk) -->
+              <g class="extra">
+                <rect class="k" x="110" y="290" width="260" height="96" rx="14" />
+                <g class="kk">
+                  <rect x="130" y="306" width="220" height="14" rx="4" /><rect x="130" y="328" width="220" height="14" rx="4" />
+                  <rect x="130" y="350" width="220" height="14" rx="4" />
+                </g>
+                <rect class="m" x="300" y="402" width="44" height="64" rx="22" />
+              </g>
+              <!-- the pair that stays -->
+              <g class="keep">
+                <rect class="k" x="520" y="290" width="260" height="96" rx="14" />
+                <g class="kk">
+                  <rect x="540" y="306" width="220" height="14" rx="4" /><rect x="540" y="328" width="220" height="14" rx="4" />
+                  <rect x="540" y="350" width="220" height="14" rx="4" />
+                </g>
+                <rect class="m" x="720" y="402" width="44" height="64" rx="22" />
+              </g>
+              <!-- switch box that disappears -->
+              <g class="box">
+                <rect x="410" y="90" width="80" height="52" rx="10" />
+                <circle cx="434" cy="116" r="6" /><circle cx="466" cy="116" r="6" />
+              </g>
+              <!-- plant: the reward -->
+              <g class="plant">
+                <rect x="110" y="96" width="70" height="70" rx="20" />
+                <circle cx="145" cy="98" r="30" /><circle cx="122" cy="110" r="20" /><circle cx="170" cy="112" r="20" />
+              </g>
+            </svg>
+          </div>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── Feature stories ─────────────────────── -->
+      <section class="stories" id="features" aria-label="Features">
+        <article class="story">
+          <div class="story-copy">
+            <p class="eyebrow">Switch</p>
+            <h2 class="section-title reveal">One key.<br />Next computer.</h2>
+            <p class="lead reveal">
+              Tap <kbd>Scroll Lock</kbd> — or any shortcut you like — and your keyboard and mouse are instantly on the
+              next machine. A second shortcut brings you straight back home, wherever you are.
+            </p>
+            <ul class="ticks reveal">
+              <li>Works even while another computer is in use</li>
+              <li>Optional “come back” shortcut</li>
+              <li>A subtle on-screen badge confirms where you are</li>
+            </ul>
+          </div>
+          <figure class="story-media reveal">
+            <div class="window">
+              <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+              <picture>
+                <source srcset="assets/shots/home-dark.webp" media="(prefers-color-scheme: dark)" />
+                <img src="assets/shots/home-light.webp" alt="Flow Home: the keyboard and mouse are on MacBook Pro, with buttons to switch to Office PC or Studio Mac mini" loading="lazy" width="2200" height="1440" />
+              </picture>
+            </div>
+          </figure>
+        </article>
+
+        <article class="story story-flip">
+          <div class="story-copy">
+            <p class="eyebrow">Arrange</p>
+            <h2 class="section-title reveal">Glide right off<br />the edge.</h2>
+            <p class="lead reveal">
+              Drag your screens into place to match how they sit on your desk. Then just keep moving the pointer —
+              past the edge of one display and onto the next. Add a gentle delay so it only happens when you mean it.
+            </p>
+          </div>
+          <figure class="story-media reveal">
+            <div class="window">
+              <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+              <video
+                class="themed"
+                data-src="assets/motion/arrange-{t}.mp4"
+                data-poster="assets/motion/arrange-{t}-poster.webp"
+                muted
+                playsinline
+                loop
+                preload="metadata"
+                aria-label="Dragging Studio Mac mini below the other screens in Flow's screen arrangement"
+              ></video>
+            </div>
+          </figure>
+        </article>
+
+        <article class="story">
+          <div class="story-copy">
+            <p class="eyebrow">Pair</p>
+            <h2 class="section-title reveal">Add a computer<br />in seconds.</h2>
+            <p class="lead reveal">
+              Flow finds the computers around you on its own. Choose one, check that the code matches on both screens,
+              and you’re connected. Once paired, they find each other again every time.
+            </p>
+          </div>
+          <figure class="story-media reveal">
+            <div class="window">
+              <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+              <video
+                class="themed"
+                data-src="assets/motion/pair-{t}.mp4"
+                data-poster="assets/motion/pair-{t}-poster.webp"
+                muted
+                playsinline
+                loop
+                preload="metadata"
+                aria-label="Adding Living Room PC: Flow lists nearby computers, shows a confirmation code, then connects"
+              ></video>
+            </div>
+          </figure>
+        </article>
+      </section>
+
+      <!-- ─────────────────────── Everything else (bento) ─────────────────────── -->
+      <section class="bento-section" aria-labelledby="more-title">
+        <div class="section-head">
+          <p class="eyebrow reveal">And so much more</p>
+          <h2 id="more-title" class="section-title reveal">Thoughtful down to every key.</h2>
+        </div>
+
+        <div class="bento">
+          <article class="tile tile-wide reveal">
+            <div class="tile-copy">
+              <h3>Speaks every computer’s language.</h3>
+              <p>
+                Remap keys for each machine you control, so <kbd>⌘</kbd> becomes <kbd>Ctrl</kbd> the moment you
+                land on Windows. Your muscle memory stays exactly where it is.
+              </p>
+            </div>
+            <div class="remap" aria-hidden="true">
+              <span class="keycap">⌘</span>
+              <span class="remap-arrow"></span>
+              <span class="keycap keycap-accent">Ctrl</span>
+            </div>
+          </article>
+
+          <article class="tile tile-tall reveal">
+            <div class="tile-copy">
+              <h3>Always one click away.</h3>
+              <p>See every computer and jump between them right from the menu bar or system tray.</p>
+            </div>
+            <picture class="tile-shot tray-shot">
+              <source srcset="assets/shots/tray-dark.webp" media="(prefers-color-scheme: dark)" />
+              <img src="assets/shots/tray-light.webp" alt="Flow in the menu bar: controlling Office PC, with a button to return to this computer" loading="lazy" width="720" height="600" />
+            </picture>
+          </article>
+
+          <article class="tile reveal">
+            <span class="glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h10M4 17h7" /><circle cx="18" cy="16" r="3" /></svg>
+            </span>
+            <h3>Share only what you want.</h3>
+            <p>Send the keyboard, the mouse, or both — and tune pointer speed on every other computer.</p>
+          </article>
+
+          <article class="tile reveal">
+            <span class="glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66" /><path d="M20 4v5h-5" /></svg>
+            </span>
+            <h3>Recovers on its own.</h3>
+            <p>Dropped Wi-Fi or a computer asleep? Flow reconnects the moment it can, without asking.</p>
+          </article>
+
+          <article class="tile reveal">
+            <span class="glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3v9" /><path d="M6.3 7.3a8 8 0 1 0 11.4 0" /></svg>
+            </span>
+            <h3>Starts with you.</h3>
+            <p>Opens quietly at login and waits in the background. You’ll forget it’s even there.</p>
+          </article>
+
+          <article class="tile tile-wide tile-stack reveal">
+            <div class="tile-copy">
+              <h3>A connection you can see.</h3>
+              <p>
+                Health, switch time and uptime at a glance. Need help? Export a report in a click — it includes
+                what Flow is doing, never what you type.
+              </p>
+            </div>
+            <picture class="tile-shot">
+              <source srcset="assets/shots/stats-dark.webp" media="(prefers-color-scheme: dark)" />
+              <img src="assets/shots/stats-light.webp" alt="Flow Diagnostics: typical and slowest switch time, time running, inputs sent and inputs dropped" loading="lazy" width="1600" height="440" />
+            </picture>
+          </article>
+
+          <article class="tile reveal">
+            <span class="glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="2" y="5" width="8" height="6" rx="1.5" /><rect x="14" y="5" width="8" height="6" rx="1.5" /><rect x="8" y="14" width="8" height="6" rx="1.5" /></svg>
+            </span>
+            <h3>Two computers. Or three.</h3>
+            <p>Bring a laptop, a desktop and a mini into the same flow. Lay them out however your desk does.</p>
+          </article>
+
+          <article class="tile reveal">
+            <span class="glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 0 0 16z" class="fill" /></svg>
+            </span>
+            <h3>Light and dark.</h3>
+            <p>Follows your system appearance, and feels at home on every platform it runs on.</p>
+          </article>
+
+          <article class="tile reveal">
+            <span class="glyph" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M7 7l-4 5 4 5M17 7l4 5-4 5" /></svg>
+            </span>
+            <h3>Mix and match.</h3>
+            <p>Mac to PC, PC to Linux, Linux to Mac. Flow doesn’t care which logo is on the lid.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── Setup ─────────────────────── -->
+      <section class="setup" aria-labelledby="setup-title">
+        <div class="section-head">
+          <p class="eyebrow reveal">Setup</p>
+          <h2 id="setup-title" class="section-title reveal">Ready before your coffee is.</h2>
+          <p class="lead reveal center">
+            Choose what each computer does, allow access once, and pick a computer to connect. That’s the whole
+            setup.
+          </p>
+        </div>
+        <ol class="steps reveal" aria-label="Setup steps">
+          <li><span>1</span>Install Flow on each computer</li>
+          <li><span>2</span>Choose who shares the keyboard</li>
+          <li><span>3</span>Connect, and you’re done</li>
+        </ol>
+        <figure class="setup-media reveal">
+          <div class="window">
+            <div class="window-bar" aria-hidden="true"><i></i><i></i><i></i></div>
+            <video
+              class="themed"
+              data-src="assets/motion/onboard-{t}.mp4"
+              data-poster="assets/motion/onboard-{t}-poster.webp"
+              muted
+              playsinline
+              loop
+              preload="metadata"
+              aria-label="Flow's first-run setup: welcome, choose a role, allow access, connect a computer"
+            ></video>
+          </div>
+        </figure>
+      </section>
+
+      <!-- ─────────────────────── Technology ─────────────────────── -->
+      <section class="tech" id="technology" aria-labelledby="tech-title">
+        <div class="section-head">
+          <p class="eyebrow reveal">Technology</p>
+          <h2 id="tech-title" class="section-title reveal">Engineered to disappear.</h2>
+          <p class="lead reveal center">
+            Everything that makes Flow feel effortless happens underneath — private, native and built to stay out of
+            your way.
+          </p>
+        </div>
+
+        <div class="marquee" aria-hidden="true">
+          <div class="marquee-track">
+            <span>End-to-end sealed</span><span>Device identity</span><span>Native core</span><span>Memory-safe</span>
+            <span>Local network</span><span>No account</span><span>No cloud</span><span>Low latency</span>
+            <span>Always-on engine</span><span>Cross-platform</span>
+            <span>End-to-end sealed</span><span>Device identity</span><span>Native core</span><span>Memory-safe</span>
+            <span>Local network</span><span>No account</span><span>No cloud</span><span>Low latency</span>
+            <span>Always-on engine</span><span>Cross-platform</span>
+          </div>
+        </div>
+
+        <div class="tech-grid">
+          <article class="tech-card reveal">
+            <span class="tech-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2.5" /><path d="M8 10V7a4 4 0 0 1 8 0v3" /></svg>
+            </span>
+            <h3>Sealed connections</h3>
+            <p>Every keystroke and movement travels end-to-end encrypted, from one of your computers to another.</p>
+          </article>
+          <article class="tech-card reveal">
+            <span class="tech-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z" /><path d="M9 12l2 2 4-4" /></svg>
+            </span>
+            <h3>Trusted pairing</h3>
+            <p>Each computer carries its own unique identity. Only the ones you’ve approved can ever connect.</p>
+          </article>
+          <article class="tech-card reveal">
+            <span class="tech-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M13 2L4 14h7l-1 8 9-12h-7z" /></svg>
+            </span>
+            <h3>Native core</h3>
+            <p>A compact, memory-safe engine purpose-built for input — fast to respond, light on your machine.</p>
+          </article>
+          <article class="tech-card reveal">
+            <span class="tech-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M5 12.5a10 10 0 0 1 14 0M8 15.5a6 6 0 0 1 8 0" /><circle cx="12" cy="19" r="1.4" class="fill" /></svg>
+            </span>
+            <h3>Local by design</h3>
+            <p>Your computers talk directly to each other. No account to create, no cloud in the middle.</p>
+          </article>
+          <article class="tech-card reveal">
+            <span class="tech-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M12 8v4l3 2" /></svg>
+            </span>
+            <h3>Always on, never in the way</h3>
+            <p>The engine keeps working with the window closed, so switching is ready the moment you reach for it.</p>
+          </article>
+          <article class="tech-card reveal">
+            <span class="tech-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" /></svg>
+            </span>
+            <h3>One engine, every platform</h3>
+            <p>The same core on macOS, Windows and Linux, wrapped in an app that feels native on each.</p>
+          </article>
+        </div>
+      </section>
+
+      <!-- ─────────────────────── Final call to action ─────────────────────── -->
+      <section class="final" aria-labelledby="final-title">
+        <img class="final-logo reveal" src="favicon.svg" alt="" width="112" height="112" />
+        <h2 id="final-title" class="final-title reveal">Clear your desk.<br /><span class="gradient-text">Keep your flow.</span></h2>
+        <p class="lead reveal center">Available for macOS, Windows and Linux.</p>
+        <div class="hero-cta reveal center">
+          <a class="pill pill-large" href="https://github.com/Abhishek-03113/Flow" data-get>Get Flow</a>
+        </div>
+        <p class="release-note reveal" data-release-note>&nbsp;</p>
+      </section>
+    </main>
+
+    <!-- Credit strip pinned to the bottom of the viewport (same design as Picky's credit footer). -->
+    <footer class="credit-footer">
+      <span data-year>2026</span>
+      <span class="credit-footer-divider" aria-hidden="true">|</span>
+      <span>created by <a href="https://abhishek-3113.vercel.app/" target="_blank" rel="noreferrer">AP3X</a> with ❤️</span>
+      <span class="credit-footer-divider" aria-hidden="true">|</span>
+      <a class="credit-footer-github" href="https://github.com/Abhishek-03113" target="_blank" rel="noreferrer" aria-label="GitHub">
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+        </svg>
+      </a>
+    </footer>
+
+    <script src="main.js" defer></script>
+  </body>
+</html>
