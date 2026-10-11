@@ -36,6 +36,12 @@ pub enum FlowError {
     #[error("switch key binding must have at least one key")]
     InvalidSwitchKey,
 
+    #[error("a shortcut with a typing key needs Ctrl, Alt or Meta")]
+    SwitchKeyNeedsModifier,
+
+    #[error("the return-home shortcut is the same as the switch shortcut")]
+    SwitchKeyConflict,
+
     #[error("permission already granted")]
     PermissionAlreadyGranted,
 
@@ -56,6 +62,9 @@ pub enum FlowError {
 
     #[error("invalid remap rule: {0}")]
     InvalidRemapRule(String),
+
+    #[error("two remap rules for the same key and computer: {0}")]
+    DuplicateRemapRule(String),
 
     #[error("invalid screen layout: {0}")]
     InvalidLayout(String),
@@ -83,6 +92,8 @@ impl FlowError {
             FlowError::PairingNotReady => "pairing_not_ready",
             FlowError::CandidateNotFound(_) => "candidate_not_found",
             FlowError::InvalidSwitchKey => "invalid_switch_key",
+            FlowError::SwitchKeyNeedsModifier => "switch_key_needs_modifier",
+            FlowError::SwitchKeyConflict => "switch_key_conflict",
             FlowError::PermissionAlreadyGranted => "permission_already_granted",
             FlowError::LinkNotRecoverable(_) => "link_not_recoverable",
             FlowError::PairingRequestNotFound => "pairing_request_not_found",
@@ -90,6 +101,7 @@ impl FlowError {
             FlowError::NotControlled => "not_controlled",
             FlowError::NoController => "no_controller",
             FlowError::InvalidRemapRule(_) => "invalid_remap_rule",
+            FlowError::DuplicateRemapRule(_) => "duplicate_remap_rule",
             FlowError::InvalidLayout(_) => "invalid_layout",
             FlowError::PermissionNotFound(_) => "permission_not_found",
             FlowError::NotReconnecting(_) => "not_reconnecting",
@@ -125,6 +137,15 @@ mod tests {
             "candidate_not_found"
         );
         assert_eq!(FlowError::InvalidSwitchKey.code(), "invalid_switch_key");
+        assert_eq!(
+            FlowError::SwitchKeyNeedsModifier.code(),
+            "switch_key_needs_modifier"
+        );
+        assert_eq!(FlowError::SwitchKeyConflict.code(), "switch_key_conflict");
+        assert_eq!(
+            FlowError::DuplicateRemapRule("x".to_string()).code(),
+            "duplicate_remap_rule"
+        );
         assert_eq!(
             FlowError::PermissionAlreadyGranted.code(),
             "permission_already_granted"

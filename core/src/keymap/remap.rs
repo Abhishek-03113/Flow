@@ -39,6 +39,8 @@ pub enum RemapError {
         to: String,
         reason: &'static str,
     },
+    #[error("more than one rule for {from:?} on the same computer")]
+    Duplicate { from: String },
 }
 
 enum Target {
@@ -84,6 +86,29 @@ impl RemapRule {
             _ => Ok(()),
         }
     }
+}
+
+/// Validates a whole rule set: every rule on its own, and no two rules for
+/// the same key or modifier and the same `when_target_os` (only the first
+/// would ever apply).
+pub fn validate_rules(rules: &[RemapRule]) -> Result<(), RemapError> {
+    let mut seen: Vec<(String, Option<HostOs>)> = Vec::with_capacity(rules.len());
+    for rule in rules {
+        rule.validate()?;
+        let from = match classify(&rule.from) {
+            Some(Target::Modifier(m)) => format!("{m:?}"),
+            Some(Target::Key(k)) => k,
+            None => rule.from.clone(),
+        };
+        let key = (from, rule.when_target_os);
+        if seen.contains(&key) {
+            return Err(RemapError::Duplicate {
+                from: rule.from.clone(),
+            });
+        }
+        seen.push(key);
+    }
+    Ok(())
 }
 
 /// Parses a `remap.toml` and validates every rule.
@@ -201,6 +226,36 @@ mod tests {
             panic!("still a key down");
         };
         assert_eq!(key, key_names::ESCAPE);
+    }
+
+    #[test]
+    fn two_rules_for_one_key_and_computer_are_refused() {
+        let caps = |to: &str, os| rule("CapsLock", to, os);
+        assert!(matches!(
+            validate_rules(&[caps("F11", None), caps("F12", None)]),
+            Err(RemapError::Duplicate { .. })
+        ));
+        // `CAPS_LOCK` is the same key as `CapsLock`.
+        assert!(matches!(
+            validate_rules(&[caps("F11", None), rule("CAPS_LOCK", "F12", None)]),
+            Err(RemapError::Duplicate { .. })
+        ));
+        assert!(matches!(
+            validate_rules(&[rule("Ctrl", "Meta", None), rule("Ctrl", "Alt", None)]),
+            Err(RemapError::Duplicate { .. })
+        ));
+        // A different target OS is a different rule.
+        assert!(validate_rules(&[
+            caps("F11", None),
+            caps("F12", Some(HostOs::Windows)),
+            caps("End", Some(HostOs::Macos)),
+        ])
+        .is_ok());
+        // Invalid rules are still reported as invalid.
+        assert!(matches!(
+            validate_rules(&[rule("Ctrl", "A", None)]),
+            Err(RemapError::Invalid { .. })
+        ));
     }
 
     #[test]

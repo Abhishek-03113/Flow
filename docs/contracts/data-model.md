@@ -93,6 +93,8 @@ The shortcut that switches the active device (`docs/product/vision.md` §12).
 
 `keys` tokens are platform-neutral strings (`"Ctrl"`, `"Alt"`, `"Shift"`, `"Meta"`, `"ScrollLock"`, `"Pause"`, `"F13"`, single characters, …). Rendering a platform-correct glyph (e.g. `⌘` on macOS for `"Meta"`) is a UI concern, not part of the contract. The four built-in presets are `Scroll Lock`, `Pause`, `F13`, `Ctrl + Shift + Space`; a custom binding is recorded live and carries whatever tokens were pressed.
 
+A binding (switch or return-home) must have at least one key (`invalid_switch_key`). If any of its keys is used for typing (a letter, digit, `Space`, punctuation, ...), it must also hold `Ctrl`, `Alt` or `Meta`; `Shift` alone doesn't count (`switch_key_needs_modifier`). `ScrollLock`, `Pause` and `F1`–`F24` work on their own. `return_home_key` must not press the same keys as `switch_key`, in any order or spelling (`switch_key_conflict`). Only the bindings a command sets are checked, so a binding stored by an older version keeps working.
+
 ## `FlowSettings`
 
 ```json

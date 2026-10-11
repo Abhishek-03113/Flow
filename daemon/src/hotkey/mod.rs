@@ -12,7 +12,7 @@ pub mod debounce;
 use std::collections::HashSet;
 
 use flow_core::protocol::{InputEvent, KeyboardEvent, Modifier};
-use flow_core::switch_key::SwitchKeyBinding;
+use flow_core::switch_key::{key_for_token, modifier_for_token, SwitchKeyBinding};
 
 /// A stateful matcher for one [`SwitchKeyBinding`], fed the raw capture
 /// stream one event at a time.
@@ -64,11 +64,11 @@ impl SwitchKeyMatcher {
         };
         match keyboard_event {
             KeyboardEvent::KeyDown { key, modifiers, .. } => {
-                self.held.insert(canonicalize(key));
+                self.held.insert(key_for_token(key));
                 self.matches(modifiers)
             }
             KeyboardEvent::KeyUp { key, .. } => {
-                self.held.remove(&canonicalize(key));
+                self.held.remove(&key_for_token(key));
                 false
             }
         }
@@ -79,27 +79,9 @@ impl SwitchKeyMatcher {
             if let Some(modifier) = modifier_for_token(token) {
                 current_modifiers.contains(&modifier)
             } else {
-                self.held.contains(&canonicalize(token))
+                self.held.contains(&key_for_token(token))
             }
         })
-    }
-}
-
-/// Binding tokens are the UI's (`Esc`, `Up`, `CapsLock`), events carry wire
-/// names (`ESCAPE`, `UP_ARROW`, `CAPS_LOCK`): compare both as wire names.
-fn canonicalize(key: &str) -> String {
-    flow_core::protocol::key_names::canonical(key).unwrap_or_else(|| key.to_ascii_uppercase())
-}
-
-/// The one place binding tokens are normalised: users (and the UI) write
-/// `Cmd`, `Win`, `⌘`, `Super` or `Meta` for the same key.
-fn modifier_for_token(token: &str) -> Option<Modifier> {
-    match token.to_ascii_lowercase().as_str() {
-        "ctrl" | "control" | "^" => Some(Modifier::Ctrl),
-        "shift" | "⇧" => Some(Modifier::Shift),
-        "alt" | "option" | "opt" | "⌥" => Some(Modifier::Alt),
-        "meta" | "cmd" | "command" | "win" | "windows" | "super" | "⌘" => Some(Modifier::Meta),
-        _ => None,
     }
 }
 
