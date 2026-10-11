@@ -164,12 +164,15 @@ export function ShortcutsView() {
     PRESETS.find((p) => p.keys.join('+') === settings.switchKey.keys.join('+'))?.value ?? 'custom';
 
   const saveRules = async (next: Draft[]) => {
+    const before = rules;
     setRules(next);
     const complete = next.filter((r) => r.from && r.to) as RemapRule[];
     if (complete.length !== next.length) return; // unfinished draft stays local
     try {
       await client.setRemapRules(complete);
     } catch (e) {
+      // Show what the engine kept, not a rule it refused.
+      setRules(before);
       toast.show(friendlyError(e), 'error');
     }
   };

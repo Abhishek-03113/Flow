@@ -175,6 +175,30 @@ describe('MockEngine', () => {
     expect(client.getSnapshot().screenLayout.screens[1]).toMatchObject({ x: 0, y: a!.height });
   });
 
+  it('refuses typing keys without Ctrl, Alt or Meta, and a return-home key equal to the switch key', async () => {
+    const { client } = setup('two-devices');
+    await flush();
+    for (const keys of [['A'], ['Shift', 'A'], ['Space']]) {
+      await expect(client.setSwitchKey({ label: keys.join('+'), keys })).rejects.toMatchObject({
+        code: 'switch_key_needs_modifier',
+      });
+      await expect(
+        client.updateSettings({ returnHomeKey: { label: keys.join('+'), keys } }),
+      ).rejects.toMatchObject({ code: 'switch_key_needs_modifier' });
+    }
+    await client.setSwitchKey({ label: 'Ctrl + A', keys: ['Ctrl', 'A'] });
+    await client.setSwitchKey({ label: 'Pause', keys: ['Pause'] });
+    await expect(
+      client.updateSettings({ returnHomeKey: { label: 'Pause', keys: ['Pause'] } }),
+    ).rejects.toMatchObject({ code: 'switch_key_conflict' });
+    await client.updateSettings({ returnHomeKey: { label: 'F13', keys: ['F13'] } });
+    await expect(client.setSwitchKey({ label: 'F13', keys: ['F13'] })).rejects.toMatchObject({
+      code: 'switch_key_conflict',
+    });
+    await client.updateSettings({ returnHomeKey: null });
+    expect(client.getSnapshot().settings?.returnHomeKey).toBeNull();
+  });
+
   it('validates the switch key and remap rules; update_settings merges', async () => {
     const { client } = setup('two-devices');
     await flush();
@@ -198,6 +222,13 @@ describe('MockEngine', () => {
     ).rejects.toMatchObject({ code: 'invalid_remap_rule' });
     await client.setRemapRules([{ from: 'CapsLock', to: 'End', whenTargetOs: 'macos' }]);
     expect(client.getSnapshot().remapRules).toEqual([{ from: 'CapsLock', to: 'End', whenTargetOs: 'macos' }]);
+    // Like the engine: one rule per key and computer.
+    await expect(
+      client.setRemapRules([
+        { from: 'CapsLock', to: 'End', whenTargetOs: 'macos' },
+        { from: 'CapsLock', to: 'Home', whenTargetOs: 'macos' },
+      ]),
+    ).rejects.toMatchObject({ code: 'duplicate_remap_rule' });
   });
 
   it('retry_connection is only valid when disconnected/error and ends connected', async () => {
