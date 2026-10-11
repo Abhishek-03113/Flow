@@ -1,39 +1,42 @@
 /* Flow landing page.
  * Follows Apple's Human Interface Guidelines: system typography, semantic colours that adapt to
  * light and dark, translucent materials, generous spacing, and motion that respects
- * "Reduce Motion". Colours are tokens on :root; dark mode redefines them. */
+ * "Reduce Motion". Colours are tokens on :root; dark mode redefines them.
+ * Light mode uses the Catppuccin Latte palette (https://catppuccin.com/palette). */
 
 :root {
   color-scheme: light dark;
 
-  --bg: #ffffff;
-  --bg-alt: #f5f5f7;
-  --card: #ffffff;
-  --card-alt: #fbfbfd;
-  --label: #1d1d1f;
-  --label-2: #6e6e73;
-  --label-3: #86868b;
-  --separator: rgba(0, 0, 0, 0.1);
-  --blue: #0071e3;
-  --blue-hover: #0077ed;
-  --link: #0066cc;
-  --bar: rgba(255, 255, 255, 0.72);
-  --shadow: 0 30px 80px -30px rgba(0, 0, 0, 0.28), 0 8px 24px -12px rgba(0, 0, 0, 0.12);
-  --window-bar: #ececec;
-  --keycap: #ffffff;
-  --keycap-edge: rgba(0, 0, 0, 0.14);
+  --bg: #eff1f5; /* base */
+  --bg-alt: #e6e9ef; /* mantle */
+  --card: #f6f7fa; /* base, lifted for cards */
+  --card-alt: #eff1f5; /* base */
+  --label: #4c4f69; /* text */
+  --label-2: #5c5f77; /* subtext1 */
+  --label-3: #6c6f85; /* subtext0 */
+  --separator: rgba(76, 79, 105, 0.14);
+  --blue: #1e66f5; /* blue */
+  --blue-hover: #1758d6;
+  --link: #1e66f5; /* blue */
+  --bar: rgba(239, 241, 245, 0.72);
+  --shadow: 0 30px 80px -30px rgba(76, 79, 105, 0.3), 0 8px 24px -12px rgba(76, 79, 105, 0.14);
+  --window-bar: #dce0e8; /* crust */
+  --keycap: #eff1f5; /* base */
+  --keycap-edge: rgba(76, 79, 105, 0.2);
 
-  --grad-a: #4da3ff;
-  --grad-b: #4b3ff0;
+  --grad-a: #1e66f5; /* blue */
+  --grad-b: #8839ef; /* mauve */
 
   /* desk illustration */
-  --dev-bezel: #d2d2d7;
-  --dev-screen: #f5f5f7;
-  --dev-lines: rgba(0, 0, 0, 0.08);
-  --dev-kbd: #e8e8ed;
-  --dev-key: #ffffff;
-  --mat: #f0f0f3;
-  --cable: #b8b8c0;
+  --dev-bezel: #bcc0cc; /* surface1 */
+  --dev-screen: #eff1f5; /* base */
+  --dev-lines: rgba(76, 79, 105, 0.1);
+  --dev-kbd: #dce0e8; /* crust */
+  --dev-key: #eff1f5; /* base */
+  --mat: #e6e9ef; /* mantle */
+  --cable: #9ca0b0; /* overlay0 */
+  --plant-pot: #dc8a78; /* rosewater */
+  --plant-leaf: #40a02b; /* green */
 
   --radius-l: 28px;
   --radius-m: 18px;
@@ -73,6 +76,11 @@
     --dev-key: #3a3a3c;
     --mat: #121214;
     --cable: #48484a;
+    --plant-pot: #6e5a49;
+    --plant-leaf: #30d158;
+
+    --grad-a: #4da3ff;
+    --grad-b: #4b3ff0;
   }
 }
 
@@ -689,18 +697,10 @@ kbd {
   transform: scale(calc(0.6 + clamp(0, (var(--p) - 0.72) * 4, 1) * 0.4));
 }
 .topdown .plant rect {
-  fill: #c9b8a6;
+  fill: var(--plant-pot);
 }
 .topdown .plant circle {
-  fill: #34c759;
-}
-@media (prefers-color-scheme: dark) {
-  .topdown .plant rect {
-    fill: #6e5a49;
-  }
-  .topdown .plant circle {
-    fill: #30d158;
-  }
+  fill: var(--plant-leaf);
 }
 
 @media (max-width: 820px) {
@@ -1106,7 +1106,7 @@ kbd {
   width: 112px;
   height: 112px;
   margin: 0 auto 30px;
-  filter: drop-shadow(0 18px 30px rgba(75, 63, 240, 0.35));
+  filter: drop-shadow(0 18px 30px color-mix(in srgb, var(--grad-b) 35%, transparent));
 }
 .is-visible.final-logo {
   animation: float 6s ease-in-out infinite;
