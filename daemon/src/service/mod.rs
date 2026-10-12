@@ -96,6 +96,12 @@ mod permissions;
 /// a peer which never answers doesn't hold a caller indefinitely.
 const DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Pairing: how long the TCP connect may take before the other computer
+/// counts as not answering (a firewall that drops packets never refuses).
+const PAIRING_CONNECT_TIMEOUT: Duration = Duration::from_secs(6);
+/// Pairing: how long the secure (Noise) handshake may take.
+const PAIRING_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// How long an *inbound* peer connection may take to prove who it is
 /// (WebSocket upgrade, Noise handshake) and, when it is not trusted yet,
 /// to send its pairing request. Anything on the LAN can connect to the
@@ -175,6 +181,9 @@ pub struct ServiceState {
     /// The single incoming pairing request currently awaiting a
     /// decision, if any. `None` whenever nothing is pending.
     pub incoming_request: Option<PendingPairingRequest>,
+    /// Some OS permission was missing at some point in this run (decides
+    /// whether a later grant needs a restart on macOS).
+    pub permission_missing_seen: bool,
 }
 
 /// An incoming pairing request the daemon has surfaced to the UI and is
@@ -243,6 +252,7 @@ impl ServiceState {
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
             incoming_request: None,
+            permission_missing_seen: false,
         })
     }
 
@@ -298,10 +308,13 @@ impl ServiceState {
                 name: "Accessibility access".to_string(),
                 granted: false,
                 items: Vec::new(),
+                one_click_setup: false,
+                restart_required: false,
             },
             candidates_pool: mock_parity_candidates(),
             discovered_candidates: HashMap::new(),
             incoming_request: None,
+            permission_missing_seen: false,
         }
     }
 }
@@ -406,6 +419,9 @@ pub struct DaemonService {
     /// when this device's role changes; the peer, when its role changes,
     /// dials us and the link comes up.
     refused_peers: Arc<std::sync::Mutex<HashSet<DeviceId>>>,
+    /// The last reason a redial of each address failed, so a peer that
+    /// stays unreachable is logged once per reason, not every announce.
+    dial_failures: Arc<std::sync::Mutex<HashMap<String, &'static str>>>,
     /// When each peer's `last_seen` was last published, so the heartbeat
     /// does not flood `devices_changed`.
     heard_published: Arc<std::sync::Mutex<HashMap<DeviceId, std::time::Instant>>>,
@@ -548,6 +564,7 @@ impl DaemonService {
             backend: options.backend,
             redial_paused: Arc::new(AtomicBool::new(false)),
             refused_peers: Arc::default(),
+            dial_failures: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
             export_dir: None,
             log_tail: None,
@@ -1015,6 +1032,14 @@ impl DaemonService {
             device_id: device_id.clone(),
             links: Arc::clone(&self.links),
         })
+    }
+
+    /// Whether a link (live or still handshaking) exists to `device_id`.
+    pub fn has_link(&self, device_id: &DeviceId) -> bool {
+        self.links
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(device_id)
     }
 
     /// Whether a link (live or still handshaking) exists to the peer whose
@@ -1597,11 +1622,27 @@ impl DaemonService {
                 self.schedule_terminal_to_idle(PairingStage::Paired).await;
             }
             Ok((PairingDecision::Reject, _peer_public_key)) => {
-                self.fail_pairing("the peer rejected the pairing request".to_string())
-                    .await;
+                tracing::warn!(
+                    target: "flow",
+                    "[PAIR] {} ({address:?}) declined the pairing request",
+                    candidate.name
+                );
+                self.fail_pairing(format!(
+                    "{name} didn’t accept. Accept the request on {name} when it appears (it expires after {secs} seconds), then try again.",
+                    name = candidate.name,
+                    secs = PAIRING_DECISION_TIMEOUT.as_secs()
+                ))
+                .await;
             }
-            Err(err) => {
-                self.fail_pairing(format!("pairing failed: {err}")).await;
+            Err(failure) => {
+                tracing::warn!(
+                    target: "flow",
+                    "[PAIR] pairing with {} at {address:?} failed: {}",
+                    candidate.name,
+                    failure.log_detail()
+                );
+                self.fail_pairing(failure.message(&candidate.name, &address))
+                    .await;
             }
         }
     }
@@ -1620,10 +1661,33 @@ impl DaemonService {
     async fn request_real_pairing(
         &self,
         address: &ChannelAddress,
-    ) -> Result<(PairingDecision, Vec<u8>), ChannelError> {
-        let channel = negotiate::connect_best_available(std::slice::from_ref(address)).await?;
-        let (mut session, peer_key) = self.security.initiate(channel, &self.identity).await?;
+    ) -> Result<(PairingDecision, Vec<u8>), PairingFailure> {
+        tracing::info!(target: "flow", "[PAIR] connecting to {address:?}");
+        let channel = match tokio::time::timeout(
+            PAIRING_CONNECT_TIMEOUT,
+            negotiate::connect_best_available(std::slice::from_ref(address)),
+        )
+        .await
+        {
+            Ok(Ok(channel)) => channel,
+            Ok(Err(err)) => return Err(PairingFailure::ConnectRefused(err)),
+            Err(_) => return Err(PairingFailure::ConnectTimedOut),
+        };
+        let (mut session, peer_key) = match tokio::time::timeout(
+            PAIRING_HANDSHAKE_TIMEOUT,
+            self.security.initiate(channel, &self.identity),
+        )
+        .await
+        {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(err)) => return Err(PairingFailure::Handshake(err)),
+            Err(_) => return Err(PairingFailure::HandshakeTimedOut),
+        };
         let peer_public_key = peer_key.to_vec();
+        tracing::info!(
+            target: "flow",
+            "[PAIR] secure session up with {address:?}; waiting for the other computer to accept"
+        );
 
         // Show the verification code now, while the other person decides.
         {
@@ -1647,7 +1711,16 @@ impl DaemonService {
             // buildNote) — left blank rather than fabricated.
             address: String::new(),
         };
-        let decision = handshake::request_pairing(session.as_mut(), request).await?;
+        let decision = match tokio::time::timeout(
+            PAIRING_DECISION_TIMEOUT + PAIRING_HANDSHAKE_TIMEOUT,
+            handshake::request_pairing(session.as_mut(), request),
+        )
+        .await
+        {
+            Ok(Ok(decision)) => decision,
+            Ok(Err(err)) => return Err(PairingFailure::ClosedBeforeAnswer(err)),
+            Err(_) => return Err(PairingFailure::NoAnswer),
+        };
         Ok((decision, peer_public_key))
     }
 
@@ -1723,6 +1796,14 @@ impl DaemonService {
         peer_addr: Option<SocketAddr>,
     ) -> Result<(), ChannelError> {
         let request = inbound_step(handshake::recv_pairing_request(channel)).await?;
+        let from = peer_addr
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| "?".into());
+        tracing::info!(
+            target: "flow",
+            "[PAIR] pairing request from {} ({from})",
+            request.device_name
+        );
 
         let decision = if self.security.pairing_auto_accepts() {
             // Insecure dev profile: accept with no prompt and no consent
@@ -1741,7 +1822,7 @@ impl DaemonService {
         } else if self.connected_client_count() == 0 {
             // No UI connected ⇒ nobody can consent. Reject outright,
             // without publishing anything.
-            tracing::info!("declined an incoming pairing request: no UI connected to prompt");
+            tracing::warn!(target: "flow", "[PAIR] declined {}: no window is open to ask you", request.device_name);
             handshake::send_pairing_decision(channel, PairingDecision::Reject).await?;
             return Ok(());
         } else {
@@ -1757,8 +1838,10 @@ impl DaemonService {
             {
                 let mut state = self.state.write().await;
                 if state.incoming_request.is_some() {
-                    tracing::info!(
-                        "declined an incoming pairing request: another request is awaiting a decision"
+                    tracing::warn!(
+                        target: "flow",
+                        "[PAIR] declined {}: another pairing request is waiting for an answer",
+                        request.device_name
                     );
                     drop(state);
                     handshake::send_pairing_decision(channel, PairingDecision::Reject).await?;
@@ -1778,11 +1861,11 @@ impl DaemonService {
             let decision = tokio::select! {
                 received = rx => received.unwrap_or(PairingDecision::Reject),
                 _ = tokio::time::sleep(PAIRING_DECISION_TIMEOUT) => {
-                    tracing::info!("incoming pairing request timed out with no decision");
+                    tracing::warn!(target: "flow", "[PAIR] request from {} expired with no answer", request.device_name);
                     PairingDecision::Reject
                 }
                 _ = channel.recv() => {
-                    tracing::info!("the other computer withdrew its pairing request");
+                    tracing::info!(target: "flow", "[PAIR] {} withdrew its pairing request", request.device_name);
                     withdrawn = true;
                     PairingDecision::Reject
                 }
@@ -1800,6 +1883,12 @@ impl DaemonService {
         };
 
         handshake::send_pairing_decision(channel, decision).await?;
+        tracing::info!(
+            target: "flow",
+            "[PAIR] {} the request from {}",
+            if decision == PairingDecision::Accept { "accepted" } else { "declined" },
+            request.device_name
+        );
         if decision != PairingDecision::Accept {
             return Ok(());
         }
@@ -1995,6 +2084,10 @@ impl DaemonService {
         let (mut session, peer_key) = match tokio::time::timeout(DIAL_TIMEOUT, dial).await {
             Ok(Some(pair)) => pair,
             Ok(None) => {
+                self.note_dial_failure(
+                    &address,
+                    "could not connect or finish the secure handshake (is a firewall blocking it?)",
+                );
                 crate::hop_note!(
                     stage = "dial_failed",
                     role = "initiator",
@@ -2004,7 +2097,7 @@ impl DaemonService {
                 return None;
             }
             Err(_) => {
-                tracing::debug!("dialing {address:?} timed out before the handshake completed");
+                self.note_dial_failure(&address, "timed out before the secure handshake finished");
                 crate::hop_note!(
                     stage = "dial_timeout",
                     role = "initiator",
@@ -2015,6 +2108,15 @@ impl DaemonService {
             }
         };
         let peer_public_key = peer_key.to_vec();
+        if self
+            .dial_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&format!("{address:?}"))
+            .is_some()
+        {
+            tracing::info!(target: "flow", "[NET] reached {address:?} again");
+        }
 
         if !trust.is_trusted(&peer_public_key).await {
             let _ = session.close().await;
@@ -2041,6 +2143,22 @@ impl DaemonService {
             ConnectionPrecedence::Redundant => ConnectionPrecedence::Preferred,
         };
         Some((session, device_id, precedence))
+    }
+
+    /// Logs why redialling `address` failed, once per distinct reason.
+    fn note_dial_failure(&self, address: &ChannelAddress, reason: &'static str) {
+        let key = format!("{address:?}");
+        let previous = self
+            .dial_failures
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, reason);
+        if previous != Some(reason) {
+            tracing::warn!(
+                target: "flow",
+                "[NET] cannot reach paired computer at {address:?}: {reason}; retrying on every announce"
+            );
+        }
     }
 
     /// A stable, per-daemon identifier for `main.rs`'s discovery
@@ -2245,6 +2363,63 @@ fn diagnostics_of(
     )
 }
 
+/// Why an outgoing pairing attempt failed, step by step. Each one has its
+/// own message for the person and its own log line.
+#[derive(Debug)]
+enum PairingFailure {
+    /// The connection was refused or the address is unreachable.
+    ConnectRefused(ChannelError),
+    /// Nothing answered: typically a firewall silently dropping it.
+    ConnectTimedOut,
+    Handshake(ChannelError),
+    HandshakeTimedOut,
+    /// The other computer closed the connection while we waited.
+    ClosedBeforeAnswer(ChannelError),
+    NoAnswer,
+}
+
+impl PairingFailure {
+    fn log_detail(&self) -> String {
+        match self {
+            Self::ConnectRefused(err) => format!("connect failed: {err}"),
+            Self::ConnectTimedOut => format!(
+                "connect timed out after {}s (no answer; a firewall dropping it?)",
+                PAIRING_CONNECT_TIMEOUT.as_secs()
+            ),
+            Self::Handshake(err) => format!("secure handshake failed: {err}"),
+            Self::HandshakeTimedOut => "secure handshake timed out".to_string(),
+            Self::ClosedBeforeAnswer(err) => {
+                format!("the peer closed the connection before deciding: {err}")
+            }
+            Self::NoAnswer => "no decision arrived in time".to_string(),
+        }
+    }
+
+    fn message(&self, name: &str, address: &ChannelAddress) -> String {
+        let at = match address {
+            ChannelAddress::Tcp(addr) => format!(" at {addr}"),
+            _ => String::new(),
+        };
+        match self {
+            Self::ConnectRefused(_) => format!(
+                "Couldn’t connect to {name}{at}. Make sure Flow is open on {name}, then try again."
+            ),
+            Self::ConnectTimedOut => format!(
+                "{name}{at} didn’t answer. Its firewall is probably blocking Flow: open Flow on {name} and finish its setup, then try again."
+            ),
+            Self::Handshake(_) | Self::HandshakeTimedOut => format!(
+                "The secure connection to {name} couldn’t be set up. Make sure both computers run the same version of Flow, then try again."
+            ),
+            Self::ClosedBeforeAnswer(_) => format!(
+                "{name} closed the connection before answering. Try again, and accept the request on {name} when it appears."
+            ),
+            Self::NoAnswer => format!(
+                "{name} didn’t answer in time. Try again, and accept the request on {name} when it appears."
+            ),
+        }
+    }
+}
+
 /// A claimed link slot (see [`DaemonService::register_link`]): the
 /// outbox the router and service write to, the inbox the link task drains,
 /// and the claim itself, released on drop.
@@ -2292,16 +2467,22 @@ fn default_permission(host_os: HostOs) -> PermissionStatus {
             name: "Accessibility access".to_string(),
             granted: false,
             items: Vec::new(),
+            one_click_setup: false,
+            restart_required: false,
         },
         HostOs::Windows => PermissionStatus {
             name: "Input monitoring".to_string(),
             granted: true,
             items: Vec::new(),
+            one_click_setup: false,
+            restart_required: false,
         },
         HostOs::Linux => PermissionStatus {
             name: "Input device access".to_string(),
             granted: true,
             items: Vec::new(),
+            one_click_setup: false,
+            restart_required: false,
         },
     }
 }
@@ -2611,6 +2792,50 @@ mod tests {
              nothing — not the mock's Office Mac Mini/Studio Linux: {:?}",
             found.candidates
         );
+    }
+
+    #[tokio::test]
+    async fn pairing_with_a_computer_that_is_not_listening_says_why_and_where() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await.expect("service");
+        // A port nothing listens on: the connection is refused at once.
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = closed.local_addr().unwrap();
+        drop(closed);
+
+        let mut sessions = service.watch_pairing_session();
+        service.start_pairing().await.expect("start pairing");
+        service
+            .note_discovered_peer(DiscoveredPeer {
+                name: "Linux Box".to_string(),
+                os: HostOs::Linux,
+                address: ChannelAddress::Tcp(addr),
+            })
+            .await;
+        let candidate = loop {
+            let session = sessions.borrow_and_update().clone();
+            if session.stage == PairingStage::Found {
+                break session.candidates[0].id.clone();
+            }
+            sessions.changed().await.expect("update");
+        };
+        service.pair_with_candidate(&candidate).await.expect("pair");
+        let failed = loop {
+            let session = sessions.borrow_and_update().clone();
+            if session.stage == PairingStage::Failed {
+                break session;
+            }
+            tokio::time::timeout(Duration::from_secs(10), sessions.changed())
+                .await
+                .expect("pairing ends")
+                .expect("update");
+        };
+        let error = failed.error.expect("a reason");
+        assert!(
+            error.contains("Linux Box") && error.contains(&addr.to_string()),
+            "names the computer and where it was tried: {error}"
+        );
+        assert!(!error.contains("connection lost") && !error.contains("pairing failed:"));
     }
 
     #[tokio::test]

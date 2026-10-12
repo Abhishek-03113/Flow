@@ -16,7 +16,10 @@ async fn main() {
     let dev = DevMode::from_env();
     // `debug_logging`'s persisted value isn't known until the engine has
     // loaded settings; the engine syncs it onto this handle.
-    let logging = flow_daemon::logging::init(false, dev.trace);
+    let log_dir = flow_daemon::env_config::data_dir()
+        .ok()
+        .map(|dir| dir.join("logs"));
+    let logging = flow_daemon::logging::init_with_dir(false, dev.trace, log_dir.as_deref());
     dev.announce();
 
     let config = env_config::engine_config(

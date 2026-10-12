@@ -18,7 +18,7 @@ use flow_core::ipc::IPC_PORT;
 use thiserror::Error;
 
 use crate::devmode::DevMode;
-use crate::discovery::tcp::DISCOVERY_PORT;
+use crate::discovery::tcp::{DISCOVERY_PORT, PEER_PORT};
 use crate::engine::{DiscoveryConfig, EngineConfig, IpcConfig};
 use crate::ipc::auth;
 use crate::logging::LoggingHandle;
@@ -53,7 +53,7 @@ pub fn engine_config(
     config.test_hooks = dev.test_hooks;
     config.seed_mock_parity = std::env::var_os("FLOW_DAEMON_SEED_MOCK_PARITY").is_some();
     config.logging = logging;
-    config.peer_listen_port = env_port("FLOW_PEER_PORT")?.unwrap_or(0);
+    config.peer_listen_port = env_port("FLOW_PEER_PORT")?.unwrap_or(PEER_PORT);
     config.keymap_dir = flow_platform::keymap::overrides_dir();
     config.discovery = Some(DiscoveryConfig {
         port: env_port("FLOW_DISCOVERY_PORT")?.unwrap_or(DISCOVERY_PORT),

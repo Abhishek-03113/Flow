@@ -18,12 +18,11 @@ use tokio::sync::mpsc;
 
 use super::DiscoveredPeer;
 
-/// The well-known UDP port every Flow daemon's discovery listener binds
-/// to in real deployment. Distinct from `flow_core::ipc::IPC_PORT`
-/// (local UI<->engine) and from wherever a peer's own `TcpChannel`
-/// listener ends up bound (advertised inside the announce packet
-/// itself, since it can vary per daemon).
-pub const DISCOVERY_PORT: u16 = 47824;
+/// The well-known UDP discovery port and TCP peer port (see
+/// `flow_core::channel`). The peer port falls back to an ephemeral one
+/// when taken (a second instance on one machine); announces always carry
+/// the port actually bound.
+pub use flow_core::channel::{DISCOVERY_PORT, PEER_PORT};
 
 /// The wire shape of one announce packet.
 #[derive(Debug, Clone, Serialize, Deserialize)]

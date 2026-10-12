@@ -83,6 +83,8 @@ pub struct LoggingHandle {
     env_controlled: bool,
     /// The most recent log lines, for diagnostics bundles.
     tail: LogTail,
+    /// The on-disk log, when [`init`] was given a directory.
+    file: Option<LogFile>,
 }
 
 /// The last [`LogTail::CAPACITY`] formatted log lines, kept in memory.
@@ -118,7 +120,98 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogTail {
     }
 }
 
+/// A log file that rolls over at [`LogFile::MAX_BYTES`], keeping one older
+/// file (`flow.log.1`), so the logs of a misbehaving run survive a restart
+/// and can be attached to a bug report.
+#[derive(Clone)]
+pub struct LogFile(std::sync::Arc<std::sync::Mutex<LogFileState>>);
+
+pub struct LogFileState {
+    path: std::path::PathBuf,
+    file: Option<std::fs::File>,
+    written: u64,
+}
+
+impl LogFile {
+    const MAX_BYTES: u64 = 5 * 1024 * 1024;
+
+    /// Opens (appending) `dir/flow.log`, creating `dir`.
+    pub fn open(dir: &std::path::Path) -> std::io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let path = dir.join("flow.log");
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let written = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Self(std::sync::Arc::new(std::sync::Mutex::new(
+            LogFileState {
+                path,
+                file: Some(file),
+                written,
+            },
+        ))))
+    }
+
+    pub fn path(&self) -> std::path::PathBuf {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .path
+            .clone()
+    }
+}
+
+impl LogFileState {
+    fn roll(&mut self) {
+        self.file = None;
+        let _ = std::fs::rename(&self.path, self.path.with_extension("log.1"));
+        self.file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .ok();
+        self.written = 0;
+    }
+}
+
+impl std::io::Write for LogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if state.written + buf.len() as u64 > Self::MAX_BYTES {
+            state.roll();
+        }
+        if let Some(file) = state.file.as_mut() {
+            // Logging must never take the engine down: a full disk just
+            // loses lines.
+            if std::io::Write::write_all(file, buf).is_ok() {
+                state.written += buf.len() as u64;
+            }
+        }
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut state = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match state.file.as_mut() {
+            Some(file) => std::io::Write::flush(file),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogFile {
+    type Writer = LogFile;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
 impl LoggingHandle {
+    /// Where the log file is, when one is being written.
+    pub fn log_file(&self) -> Option<std::path::PathBuf> {
+        self.file.as_ref().map(LogFile::path)
+    }
+
     /// The recent log lines, oldest first.
     pub fn recent_lines(&self) -> Vec<String> {
         self.tail
@@ -183,6 +276,22 @@ impl LoggingHandle {
 /// returned handle once it's loaded (see `daemon/README.md`'s "Auto-reconnect"-
 /// adjacent structured-logging section for the full startup sequence).
 pub fn init(debug_logging: bool, trace: bool) -> LoggingHandle {
+    init_with_dir(debug_logging, trace, None)
+}
+
+/// [`init`], also writing every line to `log_dir/flow.log` (rolled at
+/// 5 MB). A directory that cannot be opened is reported and skipped:
+/// logging to stderr still works.
+pub fn init_with_dir(
+    debug_logging: bool,
+    trace: bool,
+    log_dir: Option<&std::path::Path>,
+) -> LoggingHandle {
+    let (file, file_error) = match log_dir.map(LogFile::open) {
+        Some(Ok(file)) => (Some(file), None),
+        Some(Err(err)) => (None, Some(err)),
+        None => (None, None),
+    };
     let base = if trace {
         LevelFilter::TRACE
     } else if debug_logging {
@@ -222,12 +331,31 @@ pub fn init(debug_logging: bool, trace: bool) -> LoggingHandle {
                 .with_ansi(false)
                 .with_writer(tail.clone()),
         )
+        .with(file.clone().map(|file| {
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(file)
+        }))
         .init();
+    match (&file, file_error) {
+        (Some(file), _) => tracing::info!(
+            target: "flow",
+            "[LOG] writing logs to {}",
+            file.path().display()
+        ),
+        (None, Some(err)) => tracing::warn!(
+            target: "flow",
+            "[LOG] could not open the log file in {:?}: {err}",
+            log_dir
+        ),
+        (None, None) => {}
+    }
     LoggingHandle {
         reload_handle,
         trace_floor: trace,
         env_controlled,
         tail,
+        file,
     }
 }
 
@@ -316,6 +444,7 @@ mod tests {
                 trace_floor,
                 env_controlled: false,
                 tail: LogTail::default(),
+                file: None,
             },
             subscriber,
         )
@@ -368,6 +497,26 @@ mod tests {
     /// `debug_logging` toggle must not fight the operator's explicit
     /// filter: `set_debug` becomes an inert no-op.
     #[test]
+    fn the_log_file_rolls_over_and_keeps_one_older_file() {
+        use std::io::Write as _;
+        let dir = tempfile::tempdir().unwrap();
+        let mut file = LogFile::open(dir.path()).unwrap();
+        let line = vec![b'x'; 1024 * 1024];
+        for _ in 0..6 {
+            file.write_all(&line).unwrap();
+        }
+        file.flush().unwrap();
+        let current = std::fs::metadata(dir.path().join("flow.log"))
+            .unwrap()
+            .len();
+        let older = std::fs::metadata(dir.path().join("flow.log.1"))
+            .unwrap()
+            .len();
+        assert!(current <= LogFile::MAX_BYTES && older <= LogFile::MAX_BYTES);
+        assert_eq!(current + older, 6 * 1024 * 1024);
+    }
+
+    #[test]
     fn rust_log_set_makes_set_debug_a_noop() {
         let (filter, reload_handle) =
             reload::Layer::new(EnvFilter::new(scoped_directives(LevelFilter::INFO)));
@@ -377,6 +526,7 @@ mod tests {
             trace_floor: false,
             env_controlled: true,
             tail: LogTail::default(),
+            file: None,
         };
         let before = handle.max_level();
         handle.set_debug(true);

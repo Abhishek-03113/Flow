@@ -71,6 +71,14 @@ pub fn app_command(
             }
             Some(Ok(Value::Null))
         }
+        // macOS applies Input Monitoring granted while Flow runs only to a
+        // fresh process (`permission.restart_required`): one click relaunches.
+        // The engine shuts down on the Exit event like a normal quit.
+        "restart_app" => {
+            tracing::info!(target: "flow", "[APP] restarting to apply new permissions");
+            app.request_restart();
+            Some(Ok(Value::Null))
+        }
         _ => None,
     }
 }

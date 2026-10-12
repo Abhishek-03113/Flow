@@ -73,6 +73,14 @@ pub struct ScreenRect {
 /// version (or none: v1 peers speak a different message set) is refused.
 pub const PROTOCOL_VERSION: u32 = 3;
 
+/// The UDP port discovery announces are sent to and heard on.
+pub const DISCOVERY_PORT: u16 = 47824;
+
+/// The TCP port the daemon-to-daemon listener binds by default. Fixed
+/// (rather than OS-assigned) so a firewall can allow exactly Flow's two
+/// ports: UDP [`DISCOVERY_PORT`] and TCP `PEER_PORT`.
+pub const PEER_PORT: u16 = 47825;
+
 /// Everything that can travel over a [`Channel`]
 /// (`docs/adr/0001-controller-controlled-input-model.md`).
 ///

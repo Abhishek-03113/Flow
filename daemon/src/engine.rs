@@ -354,7 +354,32 @@ async fn drive_local_pointer(service: Arc<DaemonService>, backend: Arc<dyn Platf
     }
 }
 
+/// How long a redundant connection waits for the preferred one to show up
+/// before it is used instead.
+const REDUNDANT_CONNECTION_GRACE: Duration = Duration::from_secs(2);
+
+/// A device id short enough for a log line.
+fn short_id(device_id: &DeviceId) -> &str {
+    let id = device_id.0.as_str();
+    &id[..id.len().min(15)]
+}
+
 impl Runtime {
+    /// Waits up to [`REDUNDANT_CONNECTION_GRACE`] for a link to `device_id`
+    /// to exist; `true` when one does.
+    async fn preferred_link_arrives(&self, device_id: &DeviceId) -> bool {
+        let deadline = tokio::time::Instant::now() + REDUNDANT_CONNECTION_GRACE;
+        loop {
+            if self.link.service.has_link(device_id) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     async fn spawn_ipc(&self, config: &IpcConfig) -> Result<SocketAddr, EngineError> {
         // Every control connection must present this token as its WebSocket
         // subprotocol: loopback is reachable by any local process.
@@ -399,8 +424,26 @@ impl Runtime {
     async fn spawn_peer_listener(&self, port: u16) -> Option<u16> {
         let listener = match TcpListener::bind(("0.0.0.0", port)).await {
             Ok(listener) => listener,
+            // The well-known port is taken (usually a second instance on
+            // this machine): an ephemeral port still works on the LAN, the
+            // announce carries it, but a firewall rule for the well-known
+            // port will not cover it.
+            Err(err) if port != 0 => {
+                tracing::warn!(
+                    target: "flow",
+                    "[NET] peer port {port} is unavailable ({err}); using a random port. \
+                     Other computers can only reach this one if its firewall allows that port"
+                );
+                match TcpListener::bind(("0.0.0.0", 0)).await {
+                    Ok(listener) => listener,
+                    Err(err) => {
+                        tracing::error!(target: "flow", "[NET] peer listener not started: {err}");
+                        return None;
+                    }
+                }
+            }
             Err(err) => {
-                tracing::warn!("peer channel listener not started: {err}");
+                tracing::error!(target: "flow", "[NET] peer listener not started: {err}");
                 return None;
             }
         };
@@ -408,7 +451,7 @@ impl Runtime {
             .local_addr()
             .expect("bound listener has a local address")
             .port();
-        tracing::info!("flow-daemon peer channel listening on 0.0.0.0:{port}");
+        tracing::info!(target: "flow", "[NET] accepting connections from other computers on TCP port {port}");
 
         let runtime = self.clone();
         self.tasks.spawn(async move {
@@ -449,12 +492,16 @@ impl Runtime {
         {
             Ok(discovery) => discovery,
             Err(err) => {
-                tracing::warn!("discovery service not started: {err}");
+                tracing::error!(
+                    target: "flow",
+                    "[NET] discovery not started on UDP port {}: {err}; other computers will not find this one",
+                    config.port
+                );
                 return None;
             }
         };
         let port = discovery.local_port().ok()?;
-        tracing::info!("flow-daemon discovery listening on 0.0.0.0:{port}");
+        tracing::info!(target: "flow", "[NET] discovering other computers on UDP port {port}");
 
         let targets = Arc::new(std::sync::Mutex::new(
             config
@@ -549,6 +596,7 @@ impl Runtime {
     /// already-trusted peers get a pipeline.
     async fn handle_incoming_peer_stream(&self, stream: TcpStream) {
         let peer_addr = stream.peer_addr().ok();
+        let from = peer_addr.map_or_else(|| "?".to_string(), |a| a.to_string());
         let upgrade = tokio::time::timeout(
             crate::service::INBOUND_HANDSHAKE_TIMEOUT,
             TcpChannel::accept(stream),
@@ -556,11 +604,11 @@ impl Runtime {
         let channel: Box<dyn Channel> = match upgrade.await {
             Ok(Ok(channel)) => Box::new(channel),
             Ok(Err(err)) => {
-                tracing::debug!("peer connection failed the WebSocket handshake: {err}");
+                tracing::warn!(target: "flow", "[NET] connection from {from} was not a Flow connection: {err}");
                 return;
             }
             Err(_) => {
-                tracing::debug!("peer connection timed out in the WebSocket handshake");
+                tracing::warn!(target: "flow", "[NET] connection from {from} went silent before it started");
                 return;
             }
         };
@@ -574,7 +622,10 @@ impl Runtime {
             Ok(IncomingPeerConnection::TrustedPeer(channel, device_id, precedence)) => {
                 self.claim_and_run(channel, device_id, precedence).await;
             }
-            Err(err) => tracing::debug!("incoming peer connection rejected: {err}"),
+            Err(err) => tracing::warn!(
+                target: "flow",
+                "[NET] connection from {from} ended during the secure handshake or pairing: {err}"
+            ),
         }
     }
 
@@ -595,14 +646,26 @@ impl Runtime {
             "resolving this connection against any competing one to the same peer"
         );
         if precedence == ConnectionPrecedence::Redundant {
-            let _ = channel.close().await;
-            crate::hop_note!(
-                stage = "claim_dropped",
-                role = "local",
-                peer = %device_id.0,
-                "dropped this connection as redundant"
+            // The other direction is the one both ends prefer, but it may
+            // never come: a firewall that blocks inbound connections on one
+            // computer leaves only this direction working. Drop this one
+            // only once the preferred link actually exists; otherwise keep
+            // it (both ends wait the same grace, so they keep the same one).
+            if self.preferred_link_arrives(&device_id).await {
+                let _ = channel.close().await;
+                crate::hop_note!(
+                    stage = "claim_dropped",
+                    role = "local",
+                    peer = %device_id.0,
+                    "dropped this connection as redundant"
+                );
+                return;
+            }
+            tracing::info!(
+                target: "flow",
+                "[NET] only one direction of the connection to {} works; using it",
+                short_id(&device_id)
             );
-            return;
         }
         run_link(&self.link, channel, device_id).await;
     }

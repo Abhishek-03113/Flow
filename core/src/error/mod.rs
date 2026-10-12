@@ -45,6 +45,15 @@ pub enum FlowError {
     #[error("permission already granted")]
     PermissionAlreadyGranted,
 
+    #[error("the administrator prompt for the permission setup was dismissed")]
+    PermissionSetupCancelled,
+
+    #[error("automatic permission setup is unavailable: {0}")]
+    PermissionSetupUnavailable(String),
+
+    #[error("permission setup failed: {0}")]
+    PermissionSetupFailed(String),
+
     #[error("link state is {0:?}, not disconnected or error — nothing to retry")]
     LinkNotRecoverable(crate::link::DaemonLinkState),
 
@@ -95,6 +104,9 @@ impl FlowError {
             FlowError::SwitchKeyNeedsModifier => "switch_key_needs_modifier",
             FlowError::SwitchKeyConflict => "switch_key_conflict",
             FlowError::PermissionAlreadyGranted => "permission_already_granted",
+            FlowError::PermissionSetupCancelled => "permission_setup_cancelled",
+            FlowError::PermissionSetupUnavailable(_) => "permission_setup_unavailable",
+            FlowError::PermissionSetupFailed(_) => "permission_setup_failed",
             FlowError::LinkNotRecoverable(_) => "link_not_recoverable",
             FlowError::PairingRequestNotFound => "pairing_request_not_found",
             FlowError::NotController => "not_controller",

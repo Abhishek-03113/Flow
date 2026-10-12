@@ -66,6 +66,18 @@ pub async fn run_link(env: &LinkEnv, mut channel: Box<dyn Channel>, device_id: D
         .await
         .err();
     let _ = channel.close().await;
+    match error.as_deref() {
+        Some(reason) => tracing::warn!(
+            target: "flow",
+            "[LINK] link to {} ended: {reason}",
+            device_id.0.get(..15).unwrap_or(&device_id.0)
+        ),
+        None => tracing::info!(
+            target: "flow",
+            "[LINK] link to {} closed",
+            device_id.0.get(..15).unwrap_or(&device_id.0)
+        ),
+    }
     env.service.link_down(&device_id, error.as_deref()).await;
     crate::hop_note!(
         stage = "link_end",
