@@ -30,6 +30,7 @@ export function PermissionSheet() {
         onRequest={() => void run(() => client.requestPermission())}
         onOpenSettings={(n) => void run(() => client.openPermissionSettings(n))}
         onRecheck={() => void run(() => client.recheckPermissions())}
+        onRestart={() => void run(() => client.restartApp())}
       />
     </Sheet>
   );

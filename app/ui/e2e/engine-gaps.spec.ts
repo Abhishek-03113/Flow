@@ -19,6 +19,8 @@ test('permission guidance lists each missing permission separately (Linux)', asy
   const guide = page.getByTestId('permission-guide-linux');
   await expect(guide).toContainText('Read keyboard and mouse');
   await expect(guide).toContainText('Create virtual input device');
+  await expect(guide).toContainText('Incoming connections');
+  await expect(guide.getByRole('button', { name: 'Set Up Automatically' })).toBeVisible();
   await snap(page, '08-e2-permission-sheet-linux', 'light', SHOT_DIR_E);
 });
 

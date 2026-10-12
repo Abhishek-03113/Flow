@@ -120,8 +120,11 @@ test('settings: record a shortcut, theme override and permission request', async
 
   await page.goto(url('scenario=permission-missing', '#/home'));
   await page.getByRole('button', { name: 'Allow…' }).click();
-  await page.getByRole('button', { name: 'Open System Settings' }).first().click();
+  await page.getByRole('button', { name: 'Allow Access' }).click();
   await expect(page.getByText('Allowed').first()).toBeVisible({ timeout: 5000 });
+  // macOS: the grant applies after a restart, offered right there.
+  await page.getByTestId('permission-sheet').getByRole('button', { name: 'Restart Flow' }).click();
+  await page.getByRole('button', { name: 'Done' }).click();
   await expect(page.getByTestId('banner')).toHaveCount(0);
 });
 

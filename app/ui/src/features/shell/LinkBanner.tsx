@@ -1,4 +1,4 @@
-import { CircleAlert, ShieldAlert, Unplug, WifiOff } from 'lucide-react';
+import { CircleAlert, RotateCw, ShieldAlert, Unplug, WifiOff } from 'lucide-react';
 import { Banner, Button, useToast } from '@flow/design-system';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { useAction } from '../../state/useAction';
@@ -35,6 +35,22 @@ export function LinkBanner() {
         }
       >
         {s.connectionError ?? 'Restart Flow if this keeps happening.'}
+      </Banner>
+    );
+  }
+  if (s.permission?.restartRequired) {
+    return (
+      <Banner
+        tone="orange"
+        icon={<RotateCw {...I} />}
+        title="Restart Flow to finish setup"
+        actions={
+          <Button size="small" loading={busy} onClick={() => void run(() => client.restartApp())}>
+            Restart Flow
+          </Button>
+        }
+      >
+        The new permission takes effect after Flow restarts.
       </Banner>
     );
   }

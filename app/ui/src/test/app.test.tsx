@@ -175,7 +175,7 @@ describe('Link state banners', () => {
     const guide = await screen.findByTestId('permission-guide-macos');
     expect(guide).toHaveTextContent('Accessibility');
     expect(guide).toHaveTextContent('Input Monitoring');
-    const buttons = within(guide).getAllByRole('button', { name: 'Open System Settings' });
+    const buttons = within(guide).getAllByRole('button', { name: 'Open Settings' });
     expect(buttons).toHaveLength(2);
     await user.click(buttons[1]!);
     expect(opened).toEqual(['Input Monitoring']);
@@ -190,15 +190,44 @@ describe('Link state banners', () => {
     expect(await screen.findByRole('button', { name: 'Try Again' })).toBeInTheDocument();
   });
 
-  it('Windows and Linux get their own guidance', async () => {
+  it('Linux: one button sets up input access and the firewall; a terminal command is the fallback', async () => {
     const user = userEvent.setup();
-    renderApp('permission-missing', '/home', 'linux');
+    const { client } = renderApp('permission-missing', '/home', 'linux');
     await user.click(await screen.findByRole('button', { name: 'Allow…' }));
     const guide = await screen.findByTestId('permission-guide-linux');
-    expect(within(guide).getByText('sudo usermod -aG input $USER')).toBeInTheDocument();
-    expect(within(guide).getAllByRole('button', { name: /^Copy command/ })).toHaveLength(2);
-    expect(within(guide).getByRole('button', { name: 'Check Again' })).toBeInTheDocument();
+    expect(guide).toHaveTextContent('Incoming connections');
+    // The three items share one fix: one command, shown once.
+    expect(within(guide).getAllByRole('button', { name: /^Copy command/ })).toHaveLength(1);
     expect(within(guide).getByText(/Wayland/)).toHaveClass('t-footnote');
+    await user.click(within(guide).getByRole('button', { name: 'Set Up Automatically' }));
+    await waitFor(() => expect(client.getSnapshot().permission?.granted).toBe(true));
+    expect(client.getSnapshot().permission?.restartRequired).toBe(false);
+  });
+
+  it('a failed setup says why instead of failing silently', async () => {
+    const user = userEvent.setup();
+    const { engine } = renderApp('permission-missing', '/home', 'linux');
+    engine.simulate.failNextPermissionSetup(
+      'permission_setup_failed',
+      'permission setup failed: ufw refused to allow UDP 47824',
+    );
+    await user.click(await screen.findByRole('button', { name: 'Allow…' }));
+    const guide = await screen.findByTestId('permission-guide-linux');
+    await user.click(within(guide).getByRole('button', { name: 'Set Up Automatically' }));
+    expect(
+      await screen.findByText('Setup didn’t finish. Ufw refused to allow UDP 47824.'),
+    ).toBeInTheDocument();
+  });
+
+  it('macOS: a grant made while running offers a one-click restart', async () => {
+    const user = userEvent.setup();
+    const { client } = renderApp('permission-missing');
+    await user.click(await screen.findByRole('button', { name: 'Allow…' }));
+    const guide = await screen.findByTestId('permission-guide-macos');
+    await user.click(within(guide).getByRole('button', { name: 'Allow Access' }));
+    const restart = await within(guide).findByRole('button', { name: 'Restart Flow' }, { timeout: 5000 });
+    await user.click(restart);
+    await waitFor(() => expect(client.getSnapshot().permission?.restartRequired).toBe(false));
   });
 });
 
@@ -263,24 +292,38 @@ describe('Settings', () => {
 });
 
 describe('Onboarding', () => {
-  it('walks welcome → role → permissions → pair → done and then shows the app', async () => {
+  it('walks role → setup → pair in three steps and then shows the app', async () => {
     localStorage.clear();
     const user = userEvent.setup();
     renderApp('fresh-install', '/');
     const ob = await screen.findByTestId('onboarding');
-    await user.click(screen.getByRole('button', { name: 'Get Started' }));
     expect(ob).toHaveAttribute('data-step', 'role');
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    expect(ob).toHaveAttribute('data-step', 'permissions');
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    expect(screen.getByLabelText('Step 1 of 3')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Get Started' }));
+    expect(ob).toHaveAttribute('data-step', 'setup');
+    expect(localStorage.getItem('flow.onboarding_step')).toBe('setup');
     await user.click(screen.getByRole('button', { name: 'Skip for Now' }));
     expect(ob).toHaveAttribute('data-step', 'pair');
     await user.click(await screen.findByRole('button', { name: 'Skip for Now' }));
-    expect(ob).toHaveAttribute('data-step', 'done');
-    expect(screen.getByLabelText('Step 5 of 5')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Start Using Flow' }));
     expect(await screen.findByTestId('home')).toBeInTheDocument();
     expect(localStorage.getItem('flow.onboarding_complete')).toBe('1');
+    expect(localStorage.getItem('flow.onboarding_step')).toBeNull();
+  });
+
+  it('skips setup when the OS needs nothing (Windows)', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    renderApp('fresh-install', '/', 'windows');
+    const ob = await screen.findByTestId('onboarding');
+    await user.click(screen.getByRole('button', { name: 'Get Started' }));
+    expect(ob).toHaveAttribute('data-step', 'pair');
+  });
+
+  it('resumes at the saved step after a restart', async () => {
+    localStorage.clear();
+    localStorage.setItem('flow.onboarding_step', 'pair');
+    renderApp('fresh-install', '/');
+    expect(await screen.findByTestId('onboarding')).toHaveAttribute('data-step', 'pair');
   });
 });
 

@@ -16,3 +16,23 @@ export function saveOnboardingComplete(): void {
     /* ignore */
   }
 }
+
+const ONBOARDING_STEP = 'flow.onboarding_step';
+
+/** Where onboarding was left, so a restart (macOS permissions) resumes there. */
+export function loadOnboardingStep(): string | null {
+  try {
+    return localStorage.getItem(ONBOARDING_STEP);
+  } catch {
+    return null;
+  }
+}
+
+export function saveOnboardingStep(step: string | null): void {
+  try {
+    if (step === null) localStorage.removeItem(ONBOARDING_STEP);
+    else localStorage.setItem(ONBOARDING_STEP, step);
+  } catch {
+    /* ignore */
+  }
+}
