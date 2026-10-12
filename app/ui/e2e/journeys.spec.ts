@@ -178,8 +178,12 @@ test('a second remap rule for the same key is refused and stays an unsaved draft
   await expect(page.getByTestId('toasts')).toContainText('already a rule for that key');
   await expect(page.getByText('Becomes: F12')).toHaveCount(0);
   // Leaving the page drops the draft; the engine kept only the first rule.
+  // Wait for each page to render: the hash changes before React does, and two
+  // presses in one frame never leave Shortcuts, so the draft would survive.
   await page.keyboard.press('Control+1');
+  await expect(page.getByTestId('home')).toBeVisible();
   await page.keyboard.press('Control+3');
+  await expect(page.getByTestId('shortcuts')).toBeVisible();
   await expect(page.getByTestId('remap-rule')).toHaveCount(saved + 1);
 });
 
