@@ -65,14 +65,29 @@ Capture each machine's output to a file to send back:
 
 - **macOS** asks for **Accessibility** (needed to inject, so needed in both roles) and
   **Input Monitoring** (needed to capture, so only as controller). Grant them in System
-  Settings → Privacy & Security, then restart Flow. The app's Permissions screen shows the
-  live state.
+  Settings → Privacy & Security (the setup step's **Allow Access** shows both prompts and
+  opens the pane). Once both show "Allowed", the screen offers **Restart Flow**: one click
+  relaunches it and onboarding resumes at pairing. Pass: no manual quit/reopen needed.
+- **Linux** (with `sudo ufw enable` first, to cover the firewall): the setup step lists
+  "Read keyboard and mouse", "Create virtual input device" and "Incoming connections".
+  **Set Up Automatically** asks for the password once; all three turn "Allowed" within a
+  few seconds, with no log out. Pass: `sudo ufw status` lists `47824/udp` and `47825/tcp`,
+  and `/etc/udev/rules.d/70-flow.rules` exists. Dismissing the password prompt shows
+  "Setup was cancelled"; trying again works.
 - **Windows** needs nothing extra, but an elevated (administrator) window does not receive
   injected input from a non-elevated Flow: test with ordinary apps.
 
 ---
 
 ## Round 0 — Roles, discovery, pairing (nothing is suppressed yet)
+
+**Firewall check (do once):** leave a firewall on for **one** machine only (macOS: System
+Settings → Network → Firewall on; Linux: ufw on *without* running the setup). Pair and switch
+anyway. Pass: pairing from the other machine reports *why* it failed (names the computer and
+`ip:47825`) if it can't connect, and once paired the link still comes up over the one working
+direction (`[NET] only one direction of the connection … works; using it` in the log).
+Logs: `~/.local/share/flow-daemon/logs/flow.log` (Linux),
+`~/Library/Application Support/dev.Flow.flow-daemon/logs/flow.log` (macOS).
 
 1. [ ] Windows: onboarding → **Share this computer's keyboard & mouse** (controller).
 2. [ ] Mac: onboarding → **Control this computer from another one** (controlled).

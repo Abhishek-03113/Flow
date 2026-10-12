@@ -141,11 +141,13 @@ Surfaced during onboarding, in the permission sheet and in Diagnostics.
       }
     },
     { "name": "Input Monitoring", "granted": true, "how_to_fix": null }
-  ]
+  ],
+  "one_click_setup": false,
+  "restart_required": false
 }
 ```
 
-`items` is what the OS requires, probed for real every ~2 s: macOS Accessibility and Input Monitoring (separately), Linux reading `/dev/input/event*` and creating the virtual device (`/dev/uinput`), Windows nothing (`items: []`, `granted: true`). `granted` is true when every item is. `how_to_fix` is `null` while granted; `command` is a shell command to copy. Names and text are engine-supplied, so the UI hardcodes no per-OS copy. `open_permission_settings {name}` answers `{ "url": … }` for the item's OS settings page (`null` where there is none).
+`items` is what the OS requires, probed for real every ~2 s: macOS Accessibility and Input Monitoring (separately), Linux reading `/dev/input/event*` and creating the virtual device (`/dev/uinput`), Windows nothing (`items: []`, `granted: true`). On Linux, while ufw or firewalld is active and Flow's setup has not opened its ports, a third item `Incoming connections` is listed. `one_click_setup` is true when `request_permission` can grant every missing item by itself behind one administrator prompt (Linux with polkit). `restart_required` is true when a permission was granted while Flow ran and the OS applies it only to a fresh process (macOS Input Monitoring); the desktop app answers the shell-only command `restart_app` by relaunching. `granted` is true when every item is. `how_to_fix` is `null` while granted; `command` is a shell command to copy. Names and text are engine-supplied, so the UI hardcodes no per-OS copy. `open_permission_settings {name}` answers `{ "url": … }` for the item's OS settings page (`null` where there is none).
 
 ## `ControlState` (0.2.0)
 
