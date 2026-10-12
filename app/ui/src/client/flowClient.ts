@@ -181,6 +181,8 @@ export class FlowClient {
     const r = await this.cmd<{ url?: string | null }>('open_permission_settings', { name });
     if (r?.url && this.transport.kind !== 'tauri') window.open(r.url, '_blank', 'noopener');
   };
+  /** Relaunches the app so the OS applies a new permission (`permission.restartRequired`). Desktop shell only. */
+  restartApp = () => this.cmd('restart_app');
   /** Tray popover → full window, optionally with a sheet open. Desktop shell only. */
   openMainWindow = (target: { route?: string; sheet?: 'pairing' | 'permission' } = {}) =>
     this.cmd('open_main_window', target);

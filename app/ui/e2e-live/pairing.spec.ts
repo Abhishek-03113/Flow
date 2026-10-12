@@ -24,8 +24,6 @@ test('1. first run: onboarding, role, pairing with matching codes, Home shows th
   const pcPage = await live.open('PC', { onboarding: true });
 
   for (const page of [macPage, pcPage]) {
-    await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'welcome');
-    await page.getByRole('button', { name: 'Get Started' }).click();
     await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'role');
   }
   // Mac keeps the default; the PC becomes the controlled one.
@@ -34,18 +32,13 @@ test('1. first run: onboarding, role, pairing with matching codes, Home shows th
     'true',
   );
   await pcPage.getByRole('radio', { name: /Control this computer from another one/ }).click();
+  // A virtual OS needs no permission, so setup is skipped: straight to pairing.
   for (const page of [macPage, pcPage]) {
-    await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'permissions');
+    await page.getByRole('button', { name: 'Get Started' }).click();
+    await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'pair');
   }
   await expect.poll(() => pc.settings()?.role).toBe('controlled');
   await expect.poll(() => pc.controlState()?.role).toBe('controlled');
-
-  // A virtual OS grants input access, so Continue is enabled.
-  for (const page of [macPage, pcPage]) {
-    await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'pair');
-  }
 
   // The search finds the other computer.
   await expect(macPage.getByRole('button', { name: 'Connect to PC' })).toBeVisible({ timeout: 20_000 });
@@ -69,8 +62,7 @@ test('1. first run: onboarding, role, pairing with matching codes, Home shows th
   await expect(pcPage.getByTestId('pairing-paired')).toContainText('Connected to Mac');
 
   for (const page of [macPage, pcPage]) {
-    await page.getByRole('button', { name: 'Continue' }).click();
-    await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'done');
+    await expect(page.getByTestId('onboarding-done')).toBeVisible();
     await page.getByRole('button', { name: 'Start Using Flow' }).click();
     await expect(page.getByTestId('home')).toBeVisible();
   }

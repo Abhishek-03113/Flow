@@ -15,6 +15,11 @@ export const ERRORS: Record<string, string> = {
     'That key is used for typing. Add Control, Option/Alt or Command, or choose Scroll Lock, Pause or a function key.',
   switch_key_conflict: 'The switch and return-home shortcuts need different keys.',
   permission_already_granted: 'Flow already has permission.',
+  permission_setup_cancelled:
+    'Setup was cancelled. Click “Set Up Automatically” again and enter your password to finish.',
+  permission_setup_unavailable:
+    'Flow can’t ask for your password here. Run the command shown below in a terminal instead.',
+  permission_setup_failed: 'Setup didn’t finish.',
   link_not_recoverable: 'Flow is already connected.',
   pairing_request_not_found: 'That request has expired.',
   not_controller: 'Only the computer that shares its keyboard and mouse can switch screens.',
@@ -31,9 +36,15 @@ export const ERRORS: Record<string, string> = {
   unknown_command: "This version of Flow can't do that yet.",
 };
 
+/** Errors whose engine message carries the specific reason (written for people, e.g. "ufw refused to allow UDP 47824"). */
+const WITH_REASON = new Set(['permission_setup_failed', 'permission_setup_unavailable']);
+
 export function friendlyError(e: unknown): string {
-  if (isFlowCommandError(e)) return ERRORS[e.code] ?? 'Something went wrong. Please try again.';
-  return 'Something went wrong. Please try again.';
+  if (!isFlowCommandError(e)) return 'Something went wrong. Please try again.';
+  const copy = ERRORS[e.code] ?? 'Something went wrong. Please try again.';
+  // The engine message is "<what failed>: <reason>"; the reason is the useful part.
+  const reason = WITH_REASON.has(e.code) ? e.message.replace(/^[^:]*:\s*/, '').trim() : '';
+  return reason ? `${copy} ${reason.charAt(0).toUpperCase()}${reason.slice(1)}.`.replace(/\.\.$/, '.') : copy;
 }
 
 export const osName = (os: HostOs): string => ({ macos: 'macOS', windows: 'Windows', linux: 'Linux' })[os];

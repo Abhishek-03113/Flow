@@ -1,5 +1,15 @@
 # Contract Changelog
 
+## 0.2.6 — one-step permission setup, fixed ports (additive)
+
+- **`PermissionStatus.one_click_setup`** (bool) and **`PermissionStatus.restart_required`** (bool), both defaulting to `false` when absent.
+- **`request_permission` on Linux** runs the one-time system setup behind a single `pkexec` prompt: a udev rule giving the signed-in user access to `/dev/input/event*` and `/dev/uinput` right away (`uaccess`, no log out), the `input` group as a fallback, the `uinput` module, and ufw/firewalld rules for Flow's ports. It acks when the setup finished.
+- **Linux item `Incoming connections`**: listed while ufw or firewalld is active and Flow's setup has not opened its ports.
+- **New error codes**: `permission_setup_cancelled`, `permission_setup_unavailable`, `permission_setup_failed` (the `message` ends with the reason).
+- **New shell-only command `restart_app`** (desktop app): relaunches Flow, for `restart_required`.
+- **Fixed ports**: discovery stays UDP `47824`; the daemon-to-daemon listener now binds TCP `47825` by default (`FLOW_PEER_PORT` overrides; an ephemeral port is used only when `47825` is taken), so a firewall can allow exactly these two.
+- **Behaviour**: when only one direction of a connection between two computers works (a firewall blocking inbound on one of them), the engine uses it instead of dropping it as the redundant duplicate. A failed outgoing pairing reports a specific `PairingSession.error` sentence (not answering / refused / secure handshake / closed before answering / declined), naming the computer and address.
+
 ## 0.2.5 — shortcut and remap-rule checks (no shape changes)
 
 - **A shortcut with a typing key needs `Ctrl`, `Alt` or `Meta`**: `set_switch_key`, and `update_settings` setting `switch_key` or `return_home_key`, refuse a binding like `A`, `Space` or `Shift + A` with the new code `switch_key_needs_modifier`. Before, such a binding was accepted and swallowed that key every time it was typed. `ScrollLock`, `Pause` and `F1`–`F24` still work on their own.

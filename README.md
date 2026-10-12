@@ -92,6 +92,8 @@ just dev                                # or: the app with UI hot reload (tauri 
 npm --prefix app/ui run dev             # the UI alone in a browser, on mock data (http://localhost:5173)
 ```
 
+**Network and logs.** Flow uses UDP `47824` (discovery) and TCP `47825` (connections) on the local network; on Linux the in-app setup opens them in ufw/firewalld. Logs are written to `<data dir>/logs/flow.log` (Linux: `~/.local/share/flow-daemon/logs/flow.log`; macOS: `~/Library/Application Support/dev.Flow.flow-daemon/logs/flow.log`).
+
 Tests: `cargo test --workspace`, `npm --prefix app/ui test`, `npm --prefix app/ui run e2e`, and `just harness` for the
 multi-device scenario matrix (no hardware needed). See `daemon/README.md` and `app/ui/README.md`.
 

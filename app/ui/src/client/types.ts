@@ -117,6 +117,10 @@ export interface PermissionStatus {
   /** True when every item is granted. */
   granted: boolean;
   items: PermissionItem[];
+  /** `requestPermission` grants everything missing behind one administrator prompt (Linux). */
+  oneClickSetup: boolean;
+  /** Granted while Flow ran; the OS applies it only after Flow restarts (macOS). */
+  restartRequired: boolean;
 }
 
 export type ActiveScreen = 'local' | string;

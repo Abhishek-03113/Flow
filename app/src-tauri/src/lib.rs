@@ -30,7 +30,10 @@ fn start_engine() -> Result<flow_daemon::engine::EngineHandle, String> {
     } else {
         dev.without_test_switches()
     };
-    let logging = flow_daemon::logging::init(false, dev.trace);
+    // The app has no console: keep a log file next to the engine's data
+    // (`<data dir>/logs/flow.log`) so failures can be diagnosed afterwards.
+    let log_dir = env_config::data_dir().ok().map(|dir| dir.join("logs"));
+    let logging = flow_daemon::logging::init_with_dir(false, dev.trace, log_dir.as_deref());
     dev.announce();
     let config = env_config::engine_config(
         Profile::Embedded,

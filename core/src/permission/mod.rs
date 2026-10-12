@@ -60,6 +60,15 @@ pub struct PermissionStatus {
     pub granted: bool,
     #[serde(default)]
     pub items: Vec<PermissionItem>,
+    /// True when `request_permission` can grant every missing item by
+    /// itself behind one administrator prompt (Linux with polkit), so the
+    /// UI offers a single button instead of manual steps.
+    #[serde(default)]
+    pub one_click_setup: bool,
+    /// True when a permission was granted while Flow was running and the
+    /// OS applies it only after Flow restarts (macOS Input Monitoring).
+    #[serde(default)]
+    pub restart_required: bool,
 }
 
 impl PermissionStatus {
@@ -78,6 +87,8 @@ impl PermissionStatus {
             name,
             granted: items.iter().all(|i| i.granted),
             items,
+            one_click_setup: false,
+            restart_required: false,
         }
     }
 }

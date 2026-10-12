@@ -199,6 +199,8 @@ export class MockEngine {
         return this.resetSettings();
       case 'request_permission':
         return this.requestPermission();
+      case 'restart_app':
+        return this.restartApp();
       case 'retry_connection':
         return this.retryConnection();
       case 'recheck_permissions':
@@ -469,9 +471,22 @@ export class MockEngine {
 
   private requestPermission(): void {
     if (this.s.permission.granted) throw err('permission_already_granted', 'Already allowed.');
-    // The OS prompt is out of our hands; simulate the user flipping the switch.
-    this.later(2500, () => this.simulate.grantPermission());
+    const failure = this.nextSetupFailure;
+    this.nextSetupFailure = null;
+    if (failure) throw err(failure.code, failure.message);
+    // The OS prompt (or the administrator password) is out of our hands;
+    // simulate the user approving it.
+    this.later(this.os === 'linux' ? 800 : 2500, () => this.simulate.grantPermission());
   }
+
+  /** The real shell relaunches; here the "new process" simply has the grant applied. */
+  private restartApp(): void {
+    if (!this.s.permission.restartRequired) return;
+    this.s.permission = { ...this.s.permission, restartRequired: false };
+    this.push('permission_changed', this.s.permission);
+  }
+
+  private nextSetupFailure: { code: string; message: string } | null = null;
 
   private cancelReconnect(): void {
     if (this.s.linkState !== 'reconnecting') {
@@ -559,12 +574,19 @@ export class MockEngine {
       this.push('incoming_pairing_request_changed', null);
     },
     linkState: (state: LinkState) => this.setLink(state),
+    /** The next `request_permission` fails with this engine error (e.g. `permission_setup_cancelled`). */
+    failNextPermissionSetup: (code: string, message = '') => {
+      this.nextSetupFailure = { code, message };
+    },
     grantPermission: () => {
       if (this.s.permission.granted) return;
       this.s.permission = {
         ...this.s.permission,
         granted: true,
         items: this.s.permission.items.map((i) => ({ ...i, granted: true, howToFix: null })),
+        oneClickSetup: false,
+        // Like the engine: macOS applies a grant made while running after a restart.
+        restartRequired: this.os === 'macos',
       };
       this.push('permission_changed', this.s.permission);
       if (this.s.linkState === 'permission_required') this.setLink('connected');

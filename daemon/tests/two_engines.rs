@@ -233,3 +233,64 @@ async fn a_controlled_machine_can_ask_for_control_back() {
     windows.engine.shutdown();
     mac.engine.shutdown();
 }
+
+/// A firewall that blocks inbound connections on one computer leaves only
+/// one direction working. When that is the direction the tie-break would
+/// drop (the dialer has the larger identity key), the link must still come
+/// up over it instead of being dropped as redundant forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_link_comes_up_when_only_the_non_preferred_direction_can_connect() {
+    let first = machine("Linux box", HostOs::Linux).await;
+    let second = machine("MacBook", HostOs::Macos).await;
+    // The dialer is the side whose outbound connection loses the tie-break.
+    let (dialer, listener) = if first.engine.service().local_instance_id()
+        > second.engine.service().local_instance_id()
+    {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    listener
+        .engine
+        .service()
+        .set_role(Role::Controlled)
+        .await
+        .expect("listener is controlled");
+
+    // Only the listener announces, so only the dialer ever learns an
+    // address to connect to: the listener can never dial back.
+    listener.engine.add_discovery_target(SocketAddr::new(
+        Ipv4Addr::LOCALHOST.into(),
+        dialer.engine.discovery_port().expect("discovery port"),
+    ));
+
+    let service = dialer.engine.service();
+    service.start_pairing().await.expect("start pairing");
+    let mut session = service.watch_pairing_session();
+    let candidate = loop {
+        let current = session.borrow_and_update().clone();
+        if current.stage == PairingStage::Found && !current.candidates.is_empty() {
+            break current.candidates[0].id.clone();
+        }
+        tokio::time::timeout(Duration::from_secs(10), session.changed())
+            .await
+            .expect("a candidate is found")
+            .unwrap();
+    };
+    service
+        .pair_with_candidate(&candidate)
+        .await
+        .expect("pair with the candidate");
+
+    eventually("the one-way link comes up on both ends", || {
+        dialer.engine.service().router().peer_ids().len() == 1
+            && listener
+                .engine
+                .service()
+                .watch_control_state()
+                .borrow()
+                .controller_device_id
+                .is_some()
+    })
+    .await;
+}

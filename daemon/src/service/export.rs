@@ -43,6 +43,8 @@ impl DaemonService {
             "permission": &*self.permission_tx.borrow(),
             "diagnostics": self.diagnostics(),
             "log_tail": self.log_tail.as_ref().map(|l| l.recent_lines()).unwrap_or_default(),
+            // The full log (rolled at 5 MB) lives here; attach it to a report.
+            "log_file": self.log_tail.as_ref().and_then(|l| l.log_file()),
         });
         let path = dir.join(format!(
             "flow-diagnostics-{}.json",

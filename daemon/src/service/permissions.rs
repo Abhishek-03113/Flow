@@ -3,6 +3,7 @@
 use flow_core::error::FlowError;
 use flow_core::link::DaemonLinkState;
 use flow_core::permission::PermissionStatus;
+use flow_platform::permissions::SetupError;
 
 use super::{default_permission, DaemonService, ServiceOptions};
 
@@ -21,15 +22,36 @@ impl DaemonService {
     /// that state clears. Does nothing without an attached platform.
     pub async fn refresh_permissions(&self) {
         let Some(backend) = &self.backend else { return };
-        let status = PermissionStatus::from_items(backend.permissions());
+        let mut status = PermissionStatus::from_items(backend.permissions());
+        status.one_click_setup = !status.granted && backend.permission_one_click_setup();
         let changed = {
             let mut state = self.state.write().await;
+            if !status.granted {
+                state.permission_missing_seen = true;
+            }
+            // Granted while running, on an OS that applies it only to a
+            // fresh process: say so, instead of capture silently failing.
+            status.restart_required = status.granted
+                && state.permission_missing_seen
+                && backend.permission_grant_needs_restart();
             let changed = state.permission != status;
             state.permission = status.clone();
             changed
         };
         if changed {
-            tracing::info!(granted = status.granted, "input permission changed");
+            let missing: Vec<&str> = status
+                .items
+                .iter()
+                .filter(|i| !i.granted)
+                .map(|i| i.name.as_str())
+                .collect();
+            tracing::info!(
+                target: "flow",
+                "[PERMISSION] granted={} missing=[{}] restart_required={}",
+                status.granted,
+                missing.join(", "),
+                status.restart_required
+            );
             self.permission_tx.send_replace(status.clone());
         }
         self.gate_link_on_permission(status.granted);
@@ -54,9 +76,10 @@ impl DaemonService {
         }
     }
 
-    /// Shows the real OS permission prompt (where the OS has one) for
-    /// everything still missing, then re-probes. With no platform attached
-    /// (tests) it simply marks the fixture granted.
+    /// Gets everything still missing granted (macOS: the OS prompts; Linux:
+    /// the one-time system setup behind one administrator prompt), then
+    /// re-probes. Each way it can fail is its own error code, and logged.
+    /// With no platform attached (tests) it simply marks the fixture granted.
     #[tracing::instrument(skip(self))]
     pub async fn request_permission(&self) -> Result<(), FlowError> {
         if self.state.read().await.permission.granted {
@@ -64,8 +87,22 @@ impl DaemonService {
         }
         match &self.backend {
             Some(backend) => {
-                backend.request_permission(None);
+                let backend = std::sync::Arc::clone(backend);
+                // May wait on a password prompt: keep it off the runtime.
+                let result = tokio::task::spawn_blocking(move || backend.request_permission(None))
+                    .await
+                    .unwrap_or_else(|err| {
+                        Err(SetupError::Failed(format!("the setup task died: {err}")))
+                    });
                 self.refresh_permissions().await;
+                if let Err(err) = result {
+                    crate::logging::product::error("permission setup", &err.to_string());
+                    return Err(match err {
+                        SetupError::Cancelled => FlowError::PermissionSetupCancelled,
+                        SetupError::Unavailable(why) => FlowError::PermissionSetupUnavailable(why),
+                        SetupError::Failed(why) => FlowError::PermissionSetupFailed(why),
+                    });
+                }
             }
             None => {
                 let permission = {
@@ -152,8 +189,12 @@ mod tests {
                 })
                 .collect()
         }
-        fn request_permission(&self, _name: Option<&str>) {
+        fn request_permission(&self, _name: Option<&str>) -> Result<(), SetupError> {
             *self.prompts.lock().unwrap() += 1;
+            Ok(())
+        }
+        fn permission_grant_needs_restart(&self) -> bool {
+            true
         }
         fn permission_settings_url(&self, name: &str) -> Option<String> {
             Some(format!("settings://{name}"))
@@ -225,6 +266,25 @@ mod tests {
             service.request_permission().await,
             Err(FlowError::PermissionAlreadyGranted)
         );
+    }
+
+    #[tokio::test]
+    async fn a_grant_made_while_running_asks_for_a_restart_where_the_os_needs_one() {
+        let fake = fake(false);
+        let service = service_on(&fake).await;
+        service.refresh_permissions().await;
+        assert!(!service.watch_permission().borrow().restart_required);
+        *fake.granted.lock().unwrap() = true;
+        service.refresh_permissions().await;
+        let status = service.watch_permission().borrow().clone();
+        assert!(status.granted && status.restart_required);
+    }
+
+    #[tokio::test]
+    async fn permissions_granted_from_the_start_need_no_restart() {
+        let service = service_on(&fake(true)).await;
+        service.refresh_permissions().await;
+        assert!(!service.watch_permission().borrow().restart_required);
     }
 
     #[tokio::test]

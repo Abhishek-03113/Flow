@@ -71,6 +71,8 @@ function normalizePermission(p: Partial<PermissionStatus>): PermissionStatus {
           }
         : null,
     })),
+    oneClickSetup: p.oneClickSetup === true,
+    restartRequired: p.restartRequired === true,
   };
 }
 

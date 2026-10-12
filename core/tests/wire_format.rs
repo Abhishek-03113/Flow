@@ -141,9 +141,20 @@ fn permission_status_matches_data_model_example() {
                     "summary": "Allow Flow in Privacy & Security.",
                     "steps": [{ "text": "Turn on Flow.", "command": null }]
                 }
-            }]
+            }],
+            "one_click_setup": false,
+            "restart_required": false
         })
     );
+}
+
+/// An engine from before 0.2.6 sends neither field: both default to false.
+#[test]
+fn permission_status_without_the_setup_fields_still_parses() {
+    let status: PermissionStatus =
+        serde_json::from_value(json!({ "name": "Input access", "granted": true, "items": [] }))
+            .expect("parses");
+    assert!(!status.one_click_setup && !status.restart_required);
 }
 
 #[test]

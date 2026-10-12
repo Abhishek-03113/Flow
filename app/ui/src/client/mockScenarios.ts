@@ -80,7 +80,28 @@ const macFix = (summary: string, pane: string, reopen = false): HowToFix => ({
   steps: [
     { text: `Open System Settings › Privacy & Security › ${pane}.`, command: null },
     { text: 'Turn on Flow.', command: null },
-    ...(reopen ? [{ text: 'Reopen Flow if it does not pick it up.', command: null }] : []),
+    ...(reopen
+      ? [
+          {
+            text: 'macOS asks to quit and reopen Flow. Choose “Later”: Flow offers a restart button.',
+            command: null,
+          },
+        ]
+      : []),
+  ],
+});
+
+const linuxFix = (summary: string): HowToFix => ({
+  summary,
+  steps: [
+    {
+      text: 'Click “Set Up Automatically” and enter your password once. Flow sets up everything it needs.',
+      command: null,
+    },
+    {
+      text: 'Or run this in a terminal:',
+      command: "sudo sh '/home/you/.local/share/flow-daemon/flow-linux-setup.sh'",
+    },
   ],
 });
 
@@ -102,30 +123,30 @@ const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => {
         ]
       : os === 'linux'
         ? [
-            item('Read keyboard and mouse', granted, {
-              summary: 'Flow needs your account to be in the “input” group.',
-              steps: [
-                { text: 'Add yourself to the group:', command: 'sudo usermod -aG input $USER' },
-                { text: 'Log out and back in.', command: null },
-              ],
-            }),
-            item('Create virtual input device', granted, {
-              summary: 'Flow needs permission to create a virtual keyboard and mouse.',
-              steps: [
-                {
-                  text: 'Allow the input group to use /dev/uinput:',
-                  command:
-                    'echo \'KERNEL=="uinput", GROUP="input", MODE="0660"\' | sudo tee /etc/udev/rules.d/99-flow.rules && sudo udevadm control --reload && sudo udevadm trigger',
-                },
-                { text: 'Make sure you are in the “input” group, then log out and back in.', command: null },
-              ],
+            item(
+              'Read keyboard and mouse',
+              granted,
+              linuxFix('Flow needs permission to read your keyboard and mouse.'),
+            ),
+            item(
+              'Create virtual input device',
+              granted,
+              linuxFix('Flow needs permission to create a virtual keyboard and mouse.'),
+            ),
+            item('Incoming connections', granted, {
+              ...linuxFix(
+                'Your firewall (ufw) blocks other computers from finding and connecting to this one.',
+              ),
             }),
           ]
         : [];
+  const allGranted = items.length ? items.every((i) => i.granted) : granted;
   return {
     name: items.map((i) => i.name).join(' and ') || 'Input access',
-    granted: items.length ? items.every((i) => i.granted) : granted,
+    granted: allGranted,
     items,
+    oneClickSetup: os === 'linux' && !allGranted,
+    restartRequired: false,
   };
 };
 
@@ -202,7 +223,8 @@ export function seedScenario(name: string, os: HostOs): EngineState {
   switch (name) {
     case 'fresh-install': {
       const s = base(os, [me()]);
-      s.permission = permissionFor(os, os !== 'macos');
+      // A fresh macOS or Linux install still has to grant access; Windows needs nothing.
+      s.permission = permissionFor(os, os === 'windows');
       s.linkState = s.permission.granted ? 'connected' : 'permission_required';
       s.remapRules = [];
       s.diagnostics = { ...diagnostics(), eventsForwarded: 0, eventsDropped: 0, uptimeS: 12 };

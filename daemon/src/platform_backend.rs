@@ -54,9 +54,26 @@ pub trait PlatformBackend: Send + Sync {
     fn permissions(&self) -> Vec<PermissionItem> {
         Vec::new()
     }
-    /// Shows the OS permission prompt where one exists. `None` asks for
+    /// Gets what is missing granted the best way the OS allows (macOS: its
+    /// prompts; Linux: the one-time system setup behind one administrator
+    /// prompt). May block until the person answers. `None` asks for
     /// everything still missing.
-    fn request_permission(&self, _name: Option<&str>) {}
+    fn request_permission(
+        &self,
+        _name: Option<&str>,
+    ) -> Result<(), flow_platform::permissions::SetupError> {
+        Ok(())
+    }
+    /// Whether [`Self::request_permission`] fixes every missing item by
+    /// itself, behind a single prompt.
+    fn permission_one_click_setup(&self) -> bool {
+        false
+    }
+    /// Whether a permission granted while running applies only after a
+    /// restart (macOS).
+    fn permission_grant_needs_restart(&self) -> bool {
+        false
+    }
     /// Where the user grants `name` in the OS settings, if anywhere.
     fn permission_settings_url(&self, _name: &str) -> Option<String> {
         None
@@ -95,8 +112,19 @@ impl PlatformBackend for NativeBackend {
         flow_platform::permissions::check()
     }
 
-    fn request_permission(&self, name: Option<&str>) {
-        flow_platform::permissions::request(name);
+    fn request_permission(
+        &self,
+        name: Option<&str>,
+    ) -> Result<(), flow_platform::permissions::SetupError> {
+        flow_platform::permissions::request(name)
+    }
+
+    fn permission_one_click_setup(&self) -> bool {
+        flow_platform::permissions::one_click_setup()
+    }
+
+    fn permission_grant_needs_restart(&self) -> bool {
+        flow_platform::permissions::grant_needs_restart()
     }
 
     fn permission_settings_url(&self, name: &str) -> Option<String> {
