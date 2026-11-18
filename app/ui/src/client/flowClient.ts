@@ -161,6 +161,8 @@ export class FlowClient {
   startPairing = () => this.cmd('start_pairing');
   cancelPairing = () => this.cmd('cancel_pairing');
   pairWithCandidate = (candidateId: string) => this.cmd('pair_with_candidate', { candidateId });
+  /** Pairs with the computer at `address` (`host` or `host:port`) without discovery. */
+  pairWithAddress = (address: string) => this.cmd('pair_with_address', { address });
   respondToPairingRequest = (requestId: string, decision: 'accept' | 'reject') =>
     this.cmd('respond_to_pairing_request', { requestId, decision });
   setSwitchKey = (binding: SwitchKeyBinding) => this.cmd('set_switch_key', binding);

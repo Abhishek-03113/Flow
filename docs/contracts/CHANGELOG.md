@@ -9,6 +9,9 @@
 - **`retry_connection` dials now**: it resets every redial delay and dials and announces immediately (before, it only changed the link state and waited for the next announce).
 - **Windows item `Incoming connections`**: always listed on Windows (after the first background probe, about a second after start), not granted while Windows Defender Firewall is on without Flow's allow rules for UDP 47824 and TCP 47825, or while an inbound block rule for Flow's program exists (the first "Allow access" prompt was dismissed). `one_click_setup` is now `true` on Windows when it is missing: `request_permission` adds the rules and removes those block rules behind one UAC prompt (`permission_setup_cancelled` when the prompt is dismissed). `open_permission_settings` answers `windowsdefender://network`.
 - **Item `Local network`** (any OS): listed, not granted, after three announce intervals in a row on which no discovery announce could leave this computer (macOS Local Network privacy denied, no network). It clears on the next delivered announce. On macOS `open_permission_settings` answers the Local Network privacy pane. Its loss or recovery never asks for a restart.
+- **New command `pair_with_address { address }`** and error code **`invalid_address`**: pair without discovery by typing the other computer's address (`host` or `host:port`, default 47825). **`Diagnostics.local_addresses`** lists this computer's own addresses to type on the other one.
+- **A paired computer is listed under the name it gives in its link Hello**, kept up to date when it is renamed (the name was fixed at pairing time).
+- **Behaviour**: a successful pairing records the address that answered, so the link comes up at once instead of after the next announce.
 - **Daemon-to-daemon announce v2** (UDP 47824): adds `proto` (2), `role` and `reply`. Older announces still parse; replies are never answered.
 
 ## 0.2.6 — one-step permission setup, fixed ports (additive)

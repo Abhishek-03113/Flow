@@ -88,6 +88,11 @@ pub struct Diagnostics {
     pub events_forwarded: u64,
     pub events_dropped: u64,
     pub uptime_s: u64,
+    /// This computer's LAN addresses as another computer would type them
+    /// to connect by address (0.3.0): `ip`, or `ip:port` when Flow does
+    /// not listen on the default port. Empty when not known.
+    #[serde(default)]
+    pub local_addresses: Vec<String>,
 }
 
 impl Diagnostics {
@@ -104,6 +109,7 @@ impl Diagnostics {
             events_forwarded,
             events_dropped,
             uptime_s,
+            local_addresses: Vec::new(),
         }
     }
 }

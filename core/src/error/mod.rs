@@ -84,6 +84,9 @@ pub enum FlowError {
     #[error("link state is {0:?}, not reconnecting — nothing to cancel")]
     NotReconnecting(crate::link::DaemonLinkState),
 
+    #[error("not an address another computer can be reached at: {0}")]
+    InvalidAddress(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -117,6 +120,7 @@ impl FlowError {
             FlowError::InvalidLayout(_) => "invalid_layout",
             FlowError::PermissionNotFound(_) => "permission_not_found",
             FlowError::NotReconnecting(_) => "not_reconnecting",
+            FlowError::InvalidAddress(_) => "invalid_address",
             FlowError::Internal(_) => "internal_error",
         }
     }

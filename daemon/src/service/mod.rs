@@ -433,6 +433,8 @@ pub struct DaemonService {
     redial_now: Arc<tokio::sync::Notify>,
     /// Consecutive announce ticks on which every send failed.
     announce_failures: Arc<std::sync::atomic::AtomicU32>,
+    /// The peer listener's port (0 until the engine binds it).
+    peer_port: Arc<std::sync::atomic::AtomicU16>,
     /// Peers whose link was refused (`role_conflict`, `protocol_mismatch`):
     /// not redialled, since that cannot help until a role changes. Cleared
     /// when this device's role changes; the peer, when its role changes,
@@ -466,6 +468,8 @@ pub struct PeerInfo {
     pub role: Role,
     pub os: HostOs,
     pub screen: ScreenSize,
+    /// The name the peer gave in its Hello. Empty when unknown.
+    pub device_name: String,
 }
 
 impl DaemonService {
@@ -586,6 +590,7 @@ impl DaemonService {
             peer_addresses: Arc::default(),
             redial_now: Arc::new(tokio::sync::Notify::new()),
             announce_failures: Arc::default(),
+            peer_port: Arc::default(),
             refused_peers: Arc::default(),
             dial_failures: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -860,7 +865,19 @@ impl DaemonService {
 
     /// Current diagnostics, computed now.
     pub fn diagnostics(&self) -> Diagnostics {
-        diagnostics_of(&self.router, &self.dropped_remote, self.started)
+        diagnostics_of(
+            &self.router,
+            &self.dropped_remote,
+            self.started,
+            self.peer_port.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The engine reports the port its peer listener is bound to, so the
+    /// addresses shown for "connect by address" carry it when it is not the
+    /// default.
+    pub fn set_peer_port(&self, port: u16) {
+        self.peer_port.store(port, Ordering::Relaxed);
     }
 
     /// Publishes fresh diagnostics every couple of seconds while the
@@ -869,6 +886,7 @@ impl DaemonService {
         let router = Arc::downgrade(&self.router);
         let dropped = Arc::clone(&self.dropped_remote);
         let started = self.started;
+        let peer_port = Arc::clone(&self.peer_port);
         let tx = self.diagnostics_tx.clone();
         tokio::spawn(async move {
             let period = Duration::from_secs(2);
@@ -878,7 +896,12 @@ impl DaemonService {
                 let Some(router) = router.upgrade() else {
                     return;
                 };
-                tx.send_replace(diagnostics_of(&router, &dropped, started));
+                tx.send_replace(diagnostics_of(
+                    &router,
+                    &dropped,
+                    started,
+                    peer_port.load(Ordering::Relaxed),
+                ));
             }
         });
     }
@@ -1101,6 +1124,7 @@ impl DaemonService {
                 width: 1920,
                 height: 1080,
             },
+            device_name: String::new(),
         };
         self.link_up(&id, &peer, registration.outbox.clone()).await;
         registration
@@ -1156,6 +1180,7 @@ impl DaemonService {
                 control.controller_device_id = Some(device_id.clone());
             });
         }
+        let mut renamed = false;
         self.update_device(device_id, |device| {
             device.state = DeviceState::Inactive;
             device.os = peer.os;
@@ -1163,8 +1188,23 @@ impl DaemonService {
             device.screen = Some(peer.screen);
             device.link_error = None;
             device.last_seen = Utc::now();
+            // The name it calls itself: replaces the address a computer
+            // paired by address was listed under, and follows renames.
+            let name = peer.device_name.trim();
+            if !name.is_empty() && device.name != name {
+                device.name = name.to_string();
+                renamed = true;
+            }
         })
         .await;
+        if renamed && !peer.device_name.trim().is_empty() {
+            if let Err(err) = DeviceRepo::new(self.storage.clone())
+                .set_name(device_id.clone(), peer.device_name.trim().to_string())
+                .await
+            {
+                tracing::warn!(%err, "could not persist a paired computer's name");
+            }
+        }
         self.redial_paused.store(false, Ordering::Relaxed);
         self.refused_peers
             .lock()
@@ -1480,6 +1520,46 @@ impl DaemonService {
         Ok(())
     }
 
+    /// Pairs with the computer at `address` (`host` or `host:port`, default
+    /// port 47825) without discovery: for networks that drop broadcast
+    /// (`flows-v3.md` §3.4). Same verified pairing and failure messages as
+    /// a discovered candidate. Allowed whenever no request is in flight.
+    #[tracing::instrument(skip(self))]
+    pub async fn pair_with_address(&self, address: &str) -> Result<(), FlowError> {
+        let typed = address.trim();
+        let target = resolve_peer_address(typed).await?;
+        let candidate = PairingCandidate {
+            id: format!("addr:{target}"),
+            // Shown until the link's Hello brings the computer's own name.
+            name: typed.to_string(),
+            // Corrected by the Hello as soon as the link comes up.
+            os: current_host_os(),
+            role: None,
+        };
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage == PairingStage::Requesting {
+                return Err(FlowError::PairingInProgress);
+            }
+            state.pairing_session.stage = PairingStage::Requesting;
+            state.pairing_session.target_name = Some(candidate.name.clone());
+            state.pairing_session.error = None;
+            state.pairing_session.code = None;
+        }
+        self.cancel_pending_timer().await;
+        self.emit_pairing_session().await;
+        tracing::info!(target: "flow", "[PAIR] pairing by address with {typed} ({target})");
+
+        let service = self.clone();
+        let handle = tokio::spawn(async move {
+            service
+                .on_real_pairing_request(candidate, ChannelAddress::Tcp(target))
+                .await
+        });
+        self.set_pairing_timer(handle).await;
+        Ok(())
+    }
+
     /// `Searching -> Found`, offering whichever of `candidates_pool`
     /// (the mock-parity fallback) and `discovered_candidates` (real,
     /// live-discovered peers) isn't already a known device name —
@@ -1707,6 +1787,11 @@ impl DaemonService {
                     removable: true,
                 })
                 .await;
+                // Connect straight away at the address that just answered,
+                // instead of waiting for an announce that may never come.
+                if let ChannelAddress::Tcp(addr) = &address {
+                    self.note_peer_address(&device_id, *addr).await;
+                }
 
                 self.take_pairing_timer().await;
                 self.emit_devices().await;
@@ -2456,14 +2541,47 @@ fn diagnostics_of(
     router: &InputRouter,
     dropped_remote: &AtomicU64,
     started: std::time::Instant,
+    peer_port: u16,
 ) -> Diagnostics {
     let stats = router.stats();
-    Diagnostics::from_samples(
+    let mut diagnostics = Diagnostics::from_samples(
         stats.switch_latencies_ms,
         stats.events_forwarded,
         stats.events_dropped + dropped_remote.load(Ordering::Relaxed),
         started.elapsed().as_secs(),
-    )
+    );
+    if peer_port != 0 {
+        diagnostics.local_addresses = local_addresses(peer_port);
+    }
+    diagnostics
+}
+
+/// The LAN IPv4 addresses another computer can reach this one on, as a
+/// person would type them: loopback and link-local (169.254/16, no DHCP)
+/// are left out.
+fn local_addresses(peer_port: u16) -> Vec<String> {
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = interfaces
+        .into_iter()
+        .filter_map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() && !v4.ip.is_link_local() => {
+                Some(v4.ip)
+            }
+            _ => None,
+        })
+        .map(|ip| {
+            if peer_port == flow_core::channel::PEER_PORT {
+                ip.to_string()
+            } else {
+                format!("{ip}:{peer_port}")
+            }
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Why an outgoing pairing attempt failed, step by step. Each one has its
@@ -2548,6 +2666,44 @@ impl Drop for LinkRegistration {
 /// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.
+/// Parses what a person typed to reach another computer: an IPv4/IPv6
+/// address or host name, optionally with `:port` (default 47825), and
+/// resolves it to one socket address (IPv4 preferred: Flow listens on
+/// IPv4).
+async fn resolve_peer_address(typed: &str) -> Result<SocketAddr, FlowError> {
+    let invalid = || FlowError::InvalidAddress(typed.to_string());
+    if typed.is_empty() || typed.contains(char::is_whitespace) || typed.contains('/') {
+        return Err(invalid());
+    }
+    if let Ok(addr) = typed.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    if let Ok(ip) = typed.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, flow_core::channel::PEER_PORT));
+    }
+    let (host, port) = match typed.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().map_err(|_| invalid())?),
+        None => (typed, flow_core::channel::PEER_PORT),
+    };
+    if host.is_empty() {
+        return Err(invalid());
+    }
+    let resolved: Vec<SocketAddr> = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| invalid())?
+    .map_err(|_| invalid())?
+    .collect();
+    resolved
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(resolved.first())
+        .copied()
+        .ok_or_else(invalid)
+}
+
 /// Whether a pairing candidate is a computer this one is already paired
 /// with. A live candidate's id carries the identity it announced, which is
 /// the hex public key a paired device's id is derived from.
@@ -2980,6 +3136,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn typed_addresses_parse_with_the_default_port_and_bad_ones_are_refused() {
+        let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert_eq!(
+            resolve_peer_address("192.168.1.20").await.unwrap(),
+            at("192.168.1.20:47825")
+        );
+        assert_eq!(
+            resolve_peer_address("10.0.0.7:5000").await.unwrap(),
+            at("10.0.0.7:5000")
+        );
+        assert_eq!(
+            resolve_peer_address("[::1]").await.unwrap(),
+            at("[::1]:47825")
+        );
+        assert_eq!(resolve_peer_address("localhost:9").await.unwrap().port(), 9);
+        for bad in ["", "two words", "10.0.0.7:port", "http://10.0.0.7", ":5000"] {
+            let err = resolve_peer_address(bad).await.unwrap_err();
+            assert_eq!(err.code(), "invalid_address", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn local_addresses_leave_out_loopback_and_show_a_non_default_port() {
+        for listed in local_addresses(flow_core::channel::PEER_PORT) {
+            let ip: std::net::Ipv4Addr = listed.parse().expect("bare IPv4 on the default port");
+            assert!(!ip.is_loopback() && !ip.is_link_local());
+        }
+        for listed in local_addresses(5000) {
+            assert!(listed.ends_with(":5000"), "{listed}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_computer_that_stops_announcing_leaves_the_pairing_list() {
         let storage = Storage::open_in_memory().await.expect("open db");
         let service = DaemonService::new(storage).await.expect("service");
@@ -3304,6 +3493,7 @@ mod tests {
                 width: 1000,
                 height: 800,
             },
+            device_name: String::new(),
         };
         service
             .link_up(&id, &peer, registration.outbox.clone())
@@ -3492,6 +3682,7 @@ mod tests {
                 width: 10,
                 height: 10,
             },
+            device_name: String::new(),
         };
         let d2 = DeviceId("d2".to_string());
         // Controller meets controller.

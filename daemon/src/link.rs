@@ -149,12 +149,17 @@ async fn exchange_hello(
             role,
             os,
             screen,
-            ..
+            device_name,
         }) => {
             if protocol_version != PROTOCOL_VERSION {
                 return Err(refuse(channel, link_error::PROTOCOL_MISMATCH).await);
             }
-            let peer = PeerInfo { role, os, screen };
+            let peer = PeerInfo {
+                role,
+                os,
+                screen,
+                device_name,
+            };
             match env.service.check_peer(device_id, &peer) {
                 Ok(()) => Ok(peer),
                 Err(reason) => {

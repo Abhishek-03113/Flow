@@ -197,6 +197,7 @@ impl Engine {
 
         if let Some(port) = runtime.spawn_peer_listener(config.peer_listen_port).await {
             handle.peer_port = Some(port);
+            service.set_peer_port(port);
             runtime.spawn_reconnect_supervisor();
             if let Some(discovery) = &config.discovery {
                 if let Some((bound, targets)) = runtime.spawn_discovery(discovery, port).await {

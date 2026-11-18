@@ -223,3 +223,47 @@ async fn paired_computers_reconnect_with_no_broadcast_after_the_controller_resta
     restart_without_discovery(&mut pc).await;
     eventually("the link after the PC restarts", || linked(&pc, &mac)).await;
 }
+
+/// E4: on a network that carries no broadcast at all, a person can pair by
+/// typing the other computer's address; the computer is then listed under
+/// its own name, not the address that was typed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_by_address_works_with_no_discovery_and_shows_the_real_name() {
+    let dir_pc = tempfile::tempdir().unwrap();
+    let dir_mac = tempfile::tempdir().unwrap();
+    let pc = Machine {
+        engine: Some(start(&dir_pc, "Windows PC", HostOs::Windows, 0, false).await),
+        name: "Windows PC".into(),
+        os: HostOs::Windows,
+        dir: dir_pc,
+    };
+    let mac = Machine {
+        engine: Some(start(&dir_mac, "MacBook", HostOs::Macos, 0, false).await),
+        name: "MacBook".into(),
+        os: HostOs::Macos,
+        dir: dir_mac,
+    };
+    mac.engine()
+        .service()
+        .set_role(Role::Controlled)
+        .await
+        .expect("controlled role");
+
+    let typed = format!("127.0.0.1:{}", mac.engine().peer_port().expect("peer port"));
+    pc.engine()
+        .service()
+        .pair_with_address(&typed)
+        .await
+        .expect("pair by address");
+    eventually("the link after pairing by address", || linked(&pc, &mac)).await;
+
+    eventually("the Mac listed under its own name", || {
+        pc.engine()
+            .service()
+            .watch_devices()
+            .borrow()
+            .iter()
+            .any(|d| d.name == "MacBook" && d.os == HostOs::Macos)
+    })
+    .await;
+}

@@ -112,6 +112,20 @@ impl DeviceRepo {
             .await
     }
 
+    /// Persists only a device's display name (the name it gave in its
+    /// Hello). A missing row is a no-op.
+    pub async fn set_name(&self, id: DeviceId, name: String) -> Result<(), StorageError> {
+        self.storage
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE devices SET name = ?1 WHERE id = ?2",
+                    rusqlite::params![name, id.0],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
     /// Records where a paired computer's peer listener was last reached.
     /// A missing row (device removed meanwhile) is a no-op.
     pub async fn set_last_address(

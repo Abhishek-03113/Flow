@@ -31,6 +31,8 @@ export const ERRORS: Record<string, string> = {
   invalid_remap_rule: 'A key can only become another key, and a modifier another modifier.',
   duplicate_remap_rule: 'There’s already a rule for that key on that computer. Change or remove it first.',
   invalid_payload: "That value isn't allowed.",
+  invalid_address:
+    'That doesn’t look like an address. Type it as shown on the other computer, like 192.168.1.20.',
   connection_closed: "Flow isn't responding.",
   engine_not_embedded: 'Flow is still starting up.',
   unknown_command: "This version of Flow can't do that yet.",

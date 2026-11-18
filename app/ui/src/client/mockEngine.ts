@@ -189,6 +189,8 @@ export class MockEngine {
         return this.cancelPairing();
       case 'pair_with_candidate':
         return this.pairWithCandidate(String(p.candidateId));
+      case 'pair_with_address':
+        return this.pairWithAddress(String(p.address ?? ''));
       case 'respond_to_pairing_request':
         return this.respondToPairingRequest(String(p.requestId), p.decision === 'accept');
       case 'set_switch_key':
@@ -339,6 +341,44 @@ export class MockEngine {
       } else {
         this.addDevice({ name: cand.name, os: cand.os });
         this.s.pairingSession = { ...this.s.pairingSession, stage: 'paired', code: null };
+      }
+      this.pushPairing();
+      this.later(1600, () => this.resetPairing());
+    });
+  }
+
+  /** Like the engine: any typed address is tried; `10.0.0.99` stands for one nobody answers at. */
+  private pairWithAddress(address: string): void {
+    const typed = address.trim();
+    if (!/^[\w.\-[\]:]+$/.test(typed) || /:\D|:$/.test(typed.replace(/^\[.*\]/, '')))
+      throw err('invalid_address', `not an address: ${typed}`);
+    if (this.s.pairingSession.stage === 'requesting')
+      throw err('pairing_in_progress', 'A request is already waiting for an answer.');
+    this.s.pairingSession = {
+      ...this.s.pairingSession,
+      stage: 'requesting',
+      targetName: typed,
+      error: null,
+      code: '482 913',
+    };
+    this.pushPairing();
+    this.later(1500, () => {
+      if (typed.startsWith('10.0.0.99')) {
+        this.s.pairingSession = {
+          ...this.s.pairingSession,
+          stage: 'failed',
+          code: null,
+          error: `${typed} didn’t answer. Its firewall is probably blocking Flow: open Flow on ${typed} and finish its setup, then try again.`,
+        };
+      } else {
+        // The engine lists it under the name it gives once linked.
+        this.addDevice({ name: 'Study PC', os: 'windows' });
+        this.s.pairingSession = {
+          ...this.s.pairingSession,
+          stage: 'paired',
+          targetName: 'Study PC',
+          code: null,
+        };
       }
       this.pushPairing();
       this.later(1600, () => this.resetPairing());

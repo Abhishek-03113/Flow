@@ -211,6 +211,7 @@ const diagnostics = (): Diagnostics => ({
   eventsForwarded: 18_204,
   eventsDropped: 3,
   uptimeS: 5_412,
+  localAddresses: ['192.168.1.20'],
 });
 
 const base = (os: HostOs, devices: EngineDevice[]): EngineState => ({

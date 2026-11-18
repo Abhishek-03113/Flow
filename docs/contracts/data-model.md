@@ -178,6 +178,8 @@ Screens are rectangles in one shared virtual space (`d1` is this computer); two 
 
 Latencies are `null` until a switch happened. `events_dropped` includes input a controlled device refused (outside `Enter`..`Leave`, replays).
 
+`local_addresses` (0.3.0, may be absent): this computer's LAN IPv4 addresses as another computer would type them into `pair_with_address`: `"192.168.1.20"`, or `"192.168.1.20:50211"` when Flow does not listen on the default port 47825. Loopback and link-local addresses are left out.
+
 ## `RemapRule` (0.2.0)
 
 ```json
