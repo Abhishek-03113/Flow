@@ -65,6 +65,8 @@ Health of *this machine's* connection to the daemon and, by extension, the activ
 
 `code` (0.2.1) is the verification code shown on both computers while `requesting`; the other side's `IncomingPairingRequest.fingerprint` is the same string. State machine and transitions are in `daemon-ipc.md`.
 
+Each candidate may carry `role` (0.3.0, `controller` | `controlled`): the role it announced, absent when unknown. While the session is `found` the list is live: computers are added as they announce and removed 15 s after their last announce.
+
 ## `IncomingPairingRequest`
 
 Another device that has connected to this daemon's peer listener and is

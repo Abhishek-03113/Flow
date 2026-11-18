@@ -48,6 +48,11 @@ pub struct DiscoveryConfig {
     pub targets: Option<Vec<SocketAddr>>,
     /// How often this engine announces itself.
     pub announce_interval: Duration,
+    /// Answer every announce heard with a unicast one, so one working
+    /// broadcast direction is enough (`flows-v3.md` §3.2). Always on in
+    /// real use; tests turn it off to model a computer whose inbound
+    /// traffic is blocked.
+    pub answer_announces: bool,
 }
 
 pub struct EngineConfig {
@@ -503,52 +508,95 @@ impl Runtime {
         let port = discovery.local_port().ok()?;
         tracing::info!(target: "flow", "[NET] discovering other computers on UDP port {port}");
 
+        // Fixed targets isolate engines sharing a host (tests, harness).
+        // Otherwise the interfaces are read again on every tick, so a
+        // network that comes up after Flow (login before Wi-Fi), a new
+        // network or a VPN is used within one interval.
+        let fixed = config.targets.is_some();
         let targets = Arc::new(std::sync::Mutex::new(
-            config
-                .targets
-                .clone()
-                .unwrap_or_else(|| DiscoveryService::broadcast_destinations(port)),
+            config.targets.clone().unwrap_or_default(),
         ));
         let announce_targets = Arc::clone(&targets);
-        let announce = config.announce_interval;
+        let every = config.announce_interval;
+        let answer = config.answer_announces;
         let runtime = self.clone();
+        let announce_now = self.link.service.announce_requests();
         self.tasks.spawn(async move {
-            let mut announce_interval = tokio::time::interval(announce);
+            let mut announce_interval = tokio::time::interval(every);
+            announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Last unicast answer per sender, so answers stay bounded.
+            let mut answered: std::collections::HashMap<SocketAddr, tokio::time::Instant> =
+                std::collections::HashMap::new();
             loop {
-                tokio::select! {
-                    _ = announce_interval.tick() => {
-                        let destinations = announce_targets
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clone();
-                        for destination in destinations {
-                            match discovery.announce_to(destination).await {
-                                Ok(()) => crate::hop!(
-                                    stage = "announce_sent",
-                                    role = "local",
-                                    to = %destination,
-                                    "sent a discovery announce"
-                                ),
-                                Err(err) => crate::hop!(
-                                    stage = "announce_failed",
-                                    role = "local",
-                                    to = %destination,
-                                    error = %err,
-                                    "a discovery announce send failed"
-                                ),
+                let announce_tick = tokio::select! {
+                    _ = announce_interval.tick() => true,
+                    _ = announce_now.notified() => true,
+                    received = discovery.recv_announce() => {
+                        match received {
+                            Ok(Some(announce)) => {
+                                let now = tokio::time::Instant::now();
+                                let due = answered
+                                    .get(&announce.sender)
+                                    .is_none_or(|at| now.duration_since(*at) >= every);
+                                if answer && !announce.is_reply && due {
+                                    answered.insert(announce.sender, now);
+                                    if let Err(err) = discovery.answer_to(announce.sender).await {
+                                        crate::hop!(
+                                            stage = "answer_failed",
+                                            role = "local",
+                                            to = %announce.sender,
+                                            error = %err,
+                                            "a unicast discovery answer failed"
+                                        );
+                                    }
+                                }
+                                runtime
+                                    .handle_discovered_peer(announce.peer, &announce.instance_id)
+                                    .await;
+                            }
+                            Ok(None) => {}
+                            // A transient receive error must not end
+                            // discovery, nor spin while it lasts.
+                            Err(err) => {
+                                tracing::debug!("discovery receive failed, continuing: {err}");
+                                tokio::time::sleep(crate::discovery::tcp::RECV_ERROR_PAUSE).await;
                             }
                         }
+                        false
                     }
-                    received = discovery.recv_announce() => match received {
-                        Ok(Some(announce)) => {
-                            runtime
-                                .handle_discovered_peer(announce.peer, &announce.instance_id)
-                                .await
+                };
+                if !announce_tick {
+                    continue;
+                }
+                discovery.set_role(runtime.link.service.local_role());
+                runtime.link.service.prune_stale_candidates().await;
+                answered.retain(|_, at| at.elapsed() < every * 4);
+                let mut destinations = announce_targets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if !fixed {
+                    for destination in DiscoveryService::broadcast_destinations(port) {
+                        if !destinations.contains(&destination) {
+                            destinations.push(destination);
                         }
-                        Ok(None) => {}
-                        // A transient receive error must not end discovery
-                        // for the rest of the process's life.
-                        Err(err) => tracing::warn!("discovery receive failed, continuing: {err}"),
+                    }
+                }
+                for destination in destinations {
+                    match discovery.announce_to(destination).await {
+                        Ok(()) => crate::hop!(
+                            stage = "announce_sent",
+                            role = "local",
+                            to = %destination,
+                            "sent a discovery announce"
+                        ),
+                        Err(err) => crate::hop!(
+                            stage = "announce_failed",
+                            role = "local",
+                            to = %destination,
+                            error = %err,
+                            "a discovery announce send failed"
+                        ),
                     }
                 }
             }

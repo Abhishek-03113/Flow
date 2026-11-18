@@ -270,6 +270,7 @@ impl World {
             port: 0,
             targets: Some(Vec::new()),
             announce_interval: Duration::from_millis(250),
+            answer_announces: true,
         });
         config.ipc = ipc.map(|port| IpcConfig {
             port,

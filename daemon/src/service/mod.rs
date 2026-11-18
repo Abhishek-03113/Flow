@@ -84,6 +84,10 @@ const PAIRING_TERMINAL_TO_IDLE: Duration = Duration::from_millis(1600);
 
 /// How long an incoming pairing request waits for the local user's
 /// Accept/Reject before the daemon rejects it on their behalf.
+/// How long a discovered computer stays a pairing candidate after its last
+/// announce: three announce intervals, so one lost packet does not drop it.
+pub const CANDIDATE_TTL: Duration = Duration::from_secs(15);
+
 const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod export;
@@ -178,6 +182,9 @@ pub struct ServiceState {
     /// keep exercising the pure mock flow unchanged, with no separate
     /// feature flag needed.
     pub discovered_candidates: HashMap<String, (PairingCandidate, ChannelAddress)>,
+    /// When each discovered candidate was last heard. A candidate not
+    /// heard for [`CANDIDATE_TTL`] is gone (it quit, slept or left).
+    pub candidate_seen: HashMap<String, std::time::Instant>,
     /// The single incoming pairing request currently awaiting a
     /// decision, if any. `None` whenever nothing is pending.
     pub incoming_request: Option<PendingPairingRequest>,
@@ -251,6 +258,7 @@ impl ServiceState {
             permission: permissions::initial_permission(options),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
+            candidate_seen: HashMap::new(),
             incoming_request: None,
             permission_missing_seen: false,
         })
@@ -313,6 +321,7 @@ impl ServiceState {
             },
             candidates_pool: mock_parity_candidates(),
             discovered_candidates: HashMap::new(),
+            candidate_seen: HashMap::new(),
             incoming_request: None,
             permission_missing_seen: false,
         }
@@ -414,6 +423,9 @@ pub struct DaemonService {
     /// Set by `cancel_reconnect`: stop redialling paired computers until
     /// the user retries (or a computer connects to us).
     redial_paused: Arc<AtomicBool>,
+    /// Wakes the discovery loop to announce right away (pairing opened,
+    /// Retry pressed) instead of waiting for the next interval.
+    announce_now: Arc<tokio::sync::Notify>,
     /// Peers whose link was refused (`role_conflict`, `protocol_mismatch`):
     /// not redialled, since that cannot help until a role changes. Cleared
     /// when this device's role changes; the peer, when its role changes,
@@ -563,6 +575,7 @@ impl DaemonService {
             keymap_dir: options.keymap_dir,
             backend: options.backend,
             redial_paused: Arc::new(AtomicBool::new(false)),
+            announce_now: Arc::new(tokio::sync::Notify::new()),
             refused_peers: Arc::default(),
             dial_failures: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -1382,6 +1395,9 @@ impl DaemonService {
             };
         }
         self.emit_pairing_session().await;
+        // Announce now: every Flow that hears it answers at once, so nearby
+        // computers show up in well under a second.
+        self.announce_now.notify_one();
 
         let service = self.clone();
         let handle = tokio::spawn(async move { service.on_search_elapsed().await });
@@ -1465,13 +1481,23 @@ impl DaemonService {
                 return;
             }
             let known: HashSet<&str> = state.devices.values().map(|d| d.name.as_str()).collect();
-            let candidates: Vec<PairingCandidate> = state
+            // Mock-parity seeds are matched by name; real candidates by the
+            // identity they announced (two computers may share a name).
+            let mut candidates: Vec<PairingCandidate> = state
                 .candidates_pool
                 .iter()
-                .cloned()
-                .chain(state.discovered_candidates.values().map(|(c, _)| c.clone()))
                 .filter(|c| !known.contains(c.name.as_str()))
+                .cloned()
                 .collect();
+            candidates.extend(
+                state
+                    .discovered_candidates
+                    .values()
+                    .map(|(c, _)| c)
+                    .filter(|c| !is_paired_candidate(&state, c))
+                    .cloned(),
+            );
+            candidates.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
             state.pairing_session = PairingSession {
                 stage: PairingStage::Found,
                 candidates,
@@ -1492,32 +1518,78 @@ impl DaemonService {
     /// `Searching` or before `start_pairing` is simply cached here for
     /// whichever `on_search_elapsed`/`start_pairing` runs next.
     pub async fn note_discovered_peer(&self, peer: DiscoveredPeer) {
-        let candidate_id = format!("live:{}", peer.name);
+        // Keyed by the announced identity when there is one: names are
+        // labels, and two computers may well share one.
+        let candidate_id = match &peer.instance_id {
+            Some(instance) => format!("live:{instance}"),
+            None => format!("live:{}", peer.name),
+        };
         let candidate = PairingCandidate {
             id: candidate_id.clone(),
             name: peer.name.clone(),
             os: peer.os,
+            role: peer.role,
         };
         let should_emit = {
             let mut state = self.state.write().await;
             state
                 .discovered_candidates
                 .insert(candidate_id.clone(), (candidate.clone(), peer.address));
-            let already_known = state.devices.values().any(|d| d.name == candidate.name);
-            let already_offered = state
+            state
+                .candidate_seen
+                .insert(candidate_id.clone(), std::time::Instant::now());
+            if state.pairing_session.stage != PairingStage::Found
+                || is_paired_candidate(&state, &candidate)
+            {
+                false
+            } else if let Some(offered) = state
                 .pairing_session
                 .candidates
-                .iter()
-                .any(|c| c.id == candidate.id);
-            if !already_known
-                && !already_offered
-                && state.pairing_session.stage == PairingStage::Found
+                .iter_mut()
+                .find(|c| c.id == candidate.id)
             {
+                // Same computer, maybe renamed or with a new role.
+                let changed = *offered != candidate;
+                *offered = candidate;
+                changed
+            } else {
                 state.pairing_session.candidates.push(candidate);
                 true
-            } else {
-                false
             }
+        };
+        if should_emit {
+            self.emit_pairing_session().await;
+        }
+    }
+
+    /// Drops discovered computers not heard for [`CANDIDATE_TTL`], from the
+    /// cache and from an open pairing list. The engine calls it on every
+    /// announce tick.
+    pub async fn prune_stale_candidates(&self) {
+        self.prune_candidates_older_than(CANDIDATE_TTL).await;
+    }
+
+    async fn prune_candidates_older_than(&self, ttl: Duration) {
+        let should_emit = {
+            let mut state = self.state.write().await;
+            let now = std::time::Instant::now();
+            let stale: Vec<String> = state
+                .candidate_seen
+                .iter()
+                .filter(|(_, seen)| now.duration_since(**seen) >= ttl)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &stale {
+                state.candidate_seen.remove(id);
+                state.discovered_candidates.remove(id);
+            }
+            let before = state.pairing_session.candidates.len();
+            state
+                .pairing_session
+                .candidates
+                .retain(|c| !stale.contains(&c.id));
+            state.pairing_session.stage == PairingStage::Found
+                && state.pairing_session.candidates.len() != before
         };
         if should_emit {
             self.emit_pairing_session().await;
@@ -2173,6 +2245,11 @@ impl DaemonService {
     /// and the peer listener proves possession of the matching private
     /// key via Noise before anything is trusted, so a copied id buys an
     /// attacker nothing beyond being ignored by the daemon it copied.
+    /// Signalled whenever this computer should announce itself now.
+    pub fn announce_requests(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.announce_now)
+    }
+
     pub fn local_instance_id(&self) -> String {
         hex_encode(&self.identity.public_key_bytes())
     }
@@ -2445,6 +2522,18 @@ impl Drop for LinkRegistration {
 /// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.
+/// Whether a pairing candidate is a computer this one is already paired
+/// with. A live candidate's id carries the identity it announced, which is
+/// the hex public key a paired device's id is derived from.
+fn is_paired_candidate(state: &ServiceState, candidate: &PairingCandidate) -> bool {
+    match candidate.id.strip_prefix("live:") {
+        Some(rest) if rest.len() == 64 && rest.bytes().all(|b| b.is_ascii_hexdigit()) => state
+            .devices
+            .contains_key(&DeviceId(format!("pk:{}", rest.to_ascii_lowercase()))),
+        _ => state.devices.values().any(|d| d.name == candidate.name),
+    }
+}
+
 fn device_id_from_public_key(public_key: &[u8]) -> DeviceId {
     DeviceId(format!("pk:{}", hex_encode(public_key)))
 }
@@ -2589,11 +2678,13 @@ fn mock_parity_candidates() -> Vec<PairingCandidate> {
             id: "cand-office-mini".to_string(),
             name: "Office Mac Mini".to_string(),
             os: HostOs::Macos,
+            role: None,
         },
         PairingCandidate {
             id: "cand-studio-linux".to_string(),
             name: "Studio Linux".to_string(),
             os: HostOs::Linux,
+            role: None,
         },
     ]
 }
@@ -2810,6 +2901,8 @@ mod tests {
                 name: "Linux Box".to_string(),
                 os: HostOs::Linux,
                 address: ChannelAddress::Tcp(addr),
+                instance_id: None,
+                role: None,
             })
             .await;
         let candidate = loop {
@@ -2838,6 +2931,82 @@ mod tests {
         assert!(!error.contains("connection lost") && !error.contains("pairing failed:"));
     }
 
+    fn announced(name: &str, instance: char) -> DiscoveredPeer {
+        DiscoveredPeer {
+            name: name.to_string(),
+            os: HostOs::Macos,
+            address: ChannelAddress::Tcp("127.0.0.1:9".parse().unwrap()),
+            instance_id: Some(instance.to_string().repeat(64)),
+            role: Some(Role::Controlled),
+        }
+    }
+
+    async fn found_candidates(service: &DaemonService) -> Vec<PairingCandidate> {
+        service.start_pairing().await.expect("start pairing");
+        let mut sessions = service.watch_pairing_session();
+        loop {
+            let current = sessions.borrow_and_update().clone();
+            if current.stage == PairingStage::Found {
+                return current.candidates;
+            }
+            sessions.changed().await.expect("session update");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_computer_that_stops_announcing_leaves_the_pairing_list() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await.expect("service");
+        service
+            .note_discovered_peer(announced("Gone Mac", 'a'))
+            .await;
+        service
+            .note_discovered_peer(announced("Here Mac", 'b'))
+            .await;
+        assert_eq!(found_candidates(&service).await.len(), 2);
+
+        // "Here Mac" announces again; "Gone Mac" does not.
+        service.prune_candidates_older_than(Duration::ZERO).await;
+        service
+            .note_discovered_peer(announced("Here Mac", 'b'))
+            .await;
+        let names: Vec<String> = service
+            .watch_pairing_session()
+            .borrow()
+            .candidates
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Here Mac".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_paired_computer_is_not_offered_again_even_under_a_new_name() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await.expect("service");
+        let key = "c".repeat(64);
+        {
+            let mut state = service.state.write().await;
+            let id = DeviceId(format!("pk:{key}"));
+            let mut device = state.devices.values().next().expect("local device").clone();
+            device.id = id.clone();
+            device.name = "Old Name".to_string();
+            state.devices.insert(id, device);
+        }
+        service
+            .note_discovered_peer(announced("New Name", 'c'))
+            .await;
+        service
+            .note_discovered_peer(announced("Old Name", 'd'))
+            .await;
+        let listed = found_candidates(&service).await;
+        // The paired identity is hidden; a stranger that merely shares the
+        // paired computer's old name is still offered.
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Old Name");
+        assert_eq!(listed[0].role, Some(Role::Controlled));
+    }
+
     #[tokio::test]
     async fn a_real_discovered_peer_is_the_only_pairing_candidate_offered() {
         let storage = Storage::open_in_memory().await.expect("open db");
@@ -2852,6 +3021,8 @@ mod tests {
             name: "Real Linux Box".to_string(),
             os: HostOs::Linux,
             address: ChannelAddress::Tcp("127.0.0.1:9".parse().unwrap()),
+            instance_id: None,
+            role: None,
         };
         service.note_discovered_peer(peer.clone()).await;
 

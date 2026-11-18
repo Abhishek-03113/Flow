@@ -1,5 +1,12 @@
 # Contract Changelog
 
+## 0.3.0 — Flow 3 connection flows (`docs/redesign/flows-v3.md`)
+
+- **`PairingCandidate.role`** (`controller` | `controlled`, optional): the role the candidate announced. Absent for a peer that does not announce one. UIs warn before requesting a pairing that cannot work (same role).
+- **Live candidate ids are `live:<identity key hex>`** (were `live:<name>`): two computers with the same name are two candidates, and a paired computer is never offered again whatever its name. Ids stay opaque to clients.
+- **Behaviour**: the candidate list is live while pairing is open; a computer not heard for 15 s leaves it. Opening pairing announces at once, and every Flow answers an announce with a unicast one, so nearby computers appear in well under a second and one working broadcast direction is enough. Broadcast addresses are re-read from the interfaces on every announce (a network that comes up after Flow is used within one interval).
+- **Daemon-to-daemon announce v2** (UDP 47824): adds `proto` (2), `role` and `reply`. Older announces still parse; replies are never answered.
+
 ## 0.2.6 — one-step permission setup, fixed ports (additive)
 
 - **`PermissionStatus.one_click_setup`** (bool) and **`PermissionStatus.restart_required`** (bool), both defaulting to `false` when absent.

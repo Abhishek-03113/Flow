@@ -59,6 +59,7 @@ pub fn engine_config(
         port: env_port("FLOW_DISCOVERY_PORT")?.unwrap_or(DISCOVERY_PORT),
         targets: discovery_targets()?,
         announce_interval: Duration::from_secs(5),
+        answer_announces: true,
     });
     if serve_ipc(profile) {
         config.ipc = Some(IpcConfig {

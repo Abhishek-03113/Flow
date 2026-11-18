@@ -120,6 +120,8 @@ async fn two_daemons_complete_a_real_pairing_handshake_over_tcp() {
             name: "Studio B".to_string(),
             os: HostOs::Linux,
             address: ChannelAddress::Tcp(b_addr),
+            instance_id: None,
+            role: None,
         })
         .await;
 
@@ -267,6 +269,8 @@ async fn insecure_profile_pairs_two_headless_daemons_with_no_ui() {
             name: "Headless B".to_string(),
             os: HostOs::Windows,
             address: ChannelAddress::Tcp(b_addr),
+            instance_id: None,
+            role: None,
         })
         .await;
 
@@ -362,6 +366,8 @@ async fn a_rejected_real_pairing_request_lands_in_failed_not_paired() {
             name: "Studio C".to_string(),
             os: HostOs::Linux,
             address: ChannelAddress::Tcp(b_addr),
+            instance_id: None,
+            role: None,
         })
         .await;
 
@@ -458,6 +464,8 @@ async fn a_rejected_incoming_request_fails_the_initiator() {
             name: "Studio B".to_string(),
             os: HostOs::Linux,
             address: ChannelAddress::Tcp(b_addr),
+            instance_id: None,
+            role: None,
         })
         .await;
 
