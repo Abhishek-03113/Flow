@@ -2,6 +2,7 @@ import { FlowCommandError } from './errors';
 import { fromWire, toWire } from './mapper';
 import {
   candidatePool,
+  sameRoleCandidate,
   defaultSettings,
   layoutFor,
   LOCAL_DEVICE_ID,
@@ -301,10 +302,18 @@ export class MockEngine {
     this.pushPairing();
     this.later(1200, () => {
       const known = new Set(this.s.devices.map((d) => d.name));
+      // Like the engine: each candidate carries the role it announced.
+      const mine = this.s.settings.role;
+      const other: Role = mine === 'controller' ? 'controlled' : 'controller';
       this.s.pairingSession = {
         ...this.s.pairingSession,
         stage: 'found',
-        candidates: candidatePool.filter((c) => !known.has(c.name)),
+        candidates: this.noBroadcast
+          ? []
+          : [
+              ...candidatePool.map((c) => ({ ...c, role: other })),
+              { ...sameRoleCandidate, role: mine },
+            ].filter((c) => !known.has(c.name)),
       };
       this.pushPairing();
     });
@@ -604,7 +613,14 @@ export class MockEngine {
   }
 
   // --- test / demo hooks (exposed as window.__flowMock) -----------------------
+  /** Models a network that drops broadcast: discovery finds nobody. */
+  private noBroadcast = false;
+
   readonly simulate = {
+    /** From now on, pairing finds no nearby computers (only Connect by Address works). */
+    blockBroadcast: () => {
+      this.noBroadcast = true;
+    },
     incomingPairingRequest: (partial: Partial<typeof sampleIncomingRequest> = {}) => {
       this.s.incomingPairingRequest = { ...sampleIncomingRequest, ...partial };
       this.push('incoming_pairing_request_changed', this.s.incomingPairingRequest);

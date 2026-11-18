@@ -342,3 +342,6 @@ export const candidatePool = [
   { id: 'cand-2', name: 'Living Room PC', os: 'windows' as const },
   { id: 'cand-3', name: 'Dev Laptop', os: 'linux' as const },
 ];
+
+/** A nearby computer with the same role as this one: listed, but it can't be paired (0.3.0 `role`). */
+export const sameRoleCandidate = { id: 'cand-4', name: 'Office iMac', os: 'macos' as const };
