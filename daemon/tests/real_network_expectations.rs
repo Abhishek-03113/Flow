@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use flow_core::control::Role;
 use flow_core::device::{HostOs, ScreenSize};
+use flow_core::link::DaemonLinkState;
 use flow_core::pairing::{PairingCandidate, PairingStage};
+use flow_core::settings::SettingsPatch;
 use flow_daemon::devmode::SecurityMode;
 use flow_daemon::engine::{DiscoveryConfig, Engine, EngineConfig, EngineHandle};
 use flow_daemon::virtual_backend::VirtualBackend;
@@ -266,4 +268,64 @@ async fn pairing_by_address_works_with_no_discovery_and_shows_the_real_name() {
             .any(|d| d.name == "MacBook" && d.os == HostOs::Macos)
     })
     .await;
+}
+
+/// E9: "Stop Trying" really stops redialling, and Retry dials at once (it
+/// used to only change the displayed state and wait for an announce).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stop_trying_stops_and_retry_dials_immediately() {
+    let pc = machine("Windows PC", HostOs::Windows).await;
+    let mut mac = machine("MacBook", HostOs::Macos).await;
+    pair(&pc, &mac).await;
+    // Only the PC may dial, so the test sees the PC's behaviour alone.
+    mac.engine()
+        .service()
+        .update_settings(SettingsPatch {
+            auto_connect_paired_devices: Some(false),
+            ..SettingsPatch::default()
+        })
+        .await
+        .expect("mac stops dialling");
+
+    // The Mac goes away; the PC starts reconnecting, and the person stops it.
+    let port = mac.engine().peer_port().expect("peer port");
+    mac.engine.take().expect("running").shutdown();
+    let pc_link = pc.engine().service().watch_link_state();
+    eventually("the PC notices the Mac is gone", || {
+        *pc_link.borrow() == DaemonLinkState::Reconnecting
+    })
+    .await;
+    pc.engine()
+        .service()
+        .cancel_reconnect()
+        .await
+        .expect("stop trying");
+
+    // The Mac comes back (no discovery). The PC must not dial on its own.
+    for _ in 0..100 {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let engine = start(&mac.dir, &mac.name, mac.os, port, false).await;
+        if engine.peer_port() == Some(port) {
+            mac.engine = Some(engine);
+            break;
+        }
+        engine.shutdown();
+    }
+    assert!(mac.engine.is_some(), "the Mac restarted on its port");
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!linked(&pc, &mac), "no redial after Stop Trying");
+
+    // Retry: connected well within the shortest backoff step plus a dial.
+    let pressed = std::time::Instant::now();
+    pc.engine()
+        .service()
+        .retry_connection()
+        .await
+        .expect("retry");
+    eventually("the link after Retry", || linked(&pc, &mac)).await;
+    assert!(
+        pressed.elapsed() < Duration::from_secs(3),
+        "Retry took {:?}",
+        pressed.elapsed()
+    );
 }

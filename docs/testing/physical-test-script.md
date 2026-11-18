@@ -74,8 +74,15 @@ Capture each machine's output to a file to send back:
   few seconds, with no log out. Pass: `sudo ufw status` lists `47824/udp` and `47825/tcp`,
   and `/etc/udev/rules.d/70-flow.rules` exists. Dismissing the password prompt shows
   "Setup was cancelled"; trying again works.
-- **Windows** needs nothing extra, but an elevated (administrator) window does not receive
-  injected input from a non-elevated Flow: test with ordinary apps.
+- **Windows** (Flow 3): the setup step lists **Incoming connections** while Windows Defender
+  Firewall is on without Flow's rules, and on a fresh install it is *not* skipped.
+  **Set Up Automatically** shows one UAC prompt (choose Yes); the item turns "Allowed" within
+  a few seconds. Pass: in an administrator PowerShell, `Get-NetFirewallRule -Group Flow` lists
+  `Flow (UDP 47824)` and `Flow (TCP 47825)`, enabled, Allow, profile Any. Dismissing the UAC
+  prompt shows "Setup was cancelled"; trying again works. **Block-rule case:** on a machine
+  where the first Windows "Allow access" prompt was cancelled, the item says the firewall is
+  *blocking* Flow, and the one click removes that block rule. Also: an elevated (administrator)
+  window does not receive injected input from a non-elevated Flow: test with ordinary apps.
 
 ---
 
@@ -91,8 +98,9 @@ Logs: `~/.local/share/flow-daemon/logs/flow.log` (Linux),
 
 1. [ ] Windows: onboarding → **Share this computer's keyboard & mouse** (controller).
 2. [ ] Mac: onboarding → **Control this computer from another one** (controlled).
-3. [ ] Within ~10 s each side lists the other as a pairing candidate. If not: same subnet?
-       Windows Defender Firewall allowing inbound UDP 47824 (`daemon/README.md` "Channels")?
+3. [ ] Within ~2 s of opening Add Computer, each side lists the other as a pairing candidate
+       (the list is live: no Search Again). If not, after 10 s the panel shows "Not showing
+       up?" with Connect by Address: note it, and continue with Round 3 step 3.
 4. [ ] Windows: **Pair** with the Mac. Mac: accept the incoming pairing prompt.
 5. [ ] Both device lists show the other as connected; both logs show `[PEER] <name> connected`.
        The Mac's screen appears to the right of the Windows screen in the Arrangement view.
@@ -184,9 +192,58 @@ work, and was there any echo or doubling.
 
 ---
 
+## Round 3 — Real networks (Flow 3 expectations E1–E10)
+
+From [`docs/redesign/flows-v3.md`](../redesign/flows-v3.md). Each step says what the person
+expects; tick it only if that is what happened, with no workaround. Run with the roles of
+Round 1 (Windows controller, Mac controlled) unless a step says otherwise.
+
+1. [ ] **E2 Setup is honest.** Fresh install on each machine (delete Flow's data directory).
+       Onboarding never shows "ready" while a firewall or privacy setting blocks Flow: Windows
+       lists Incoming connections; macOS lists Accessibility and Input Monitoring. Skipping
+       setup leads to a pairing page with an orange banner naming what is missing.
+2. [ ] **E5 Same role.** Set both machines to share their keyboard and mouse. In Add Computer
+       the other one is listed with "Same role" and an explanation, and offers no Connect
+       button. Set the Mac back to controlled: within a few seconds it shows Connect.
+3. [ ] **E4 Connect by address.** On the Mac, open Add Computer → Connect by Address… and read
+       "This computer's address". On Windows, type it and Connect. The code matches on both,
+       the Mac accepts, and Windows lists the Mac **under its own name** (not the address).
+4. [ ] **E7 No broadcast after pairing.** Block discovery only (UDP 47824 inbound) on *both*
+       machines: Windows `New-NetFirewallRule -DisplayName "Flow test block" -Direction Inbound
+       -Protocol UDP -LocalPort 47824 -Action Block`; macOS (packet filter is off by default):
+       `echo "block in quick proto udp from any to any port 47824" | sudo pfctl -ef -`.
+       Restart the Mac app, then the Windows app, then both. Each time the link comes back
+       within ~15 s with no user action (log: `[NET] <id> is at <ip:port>` then
+       `[PEER] … connected`), although neither side hears a single announce. Undo afterwards:
+       `Remove-NetFirewallRule -DisplayName "Flow test block"` and `sudo pfctl -d`.
+5. [ ] **E7 One direction only.** Leave the Windows firewall rules from setup in place, but on
+       the Mac turn on the macOS firewall with "Block all incoming connections". Pair (or
+       restart) — the link still comes up over the one working direction.
+6. [ ] **E8 Interruptions.** While linked: (a) turn Wi-Fi off on the Mac for 20 s and back on;
+       (b) sleep the Windows PC for a minute and wake it; (c) renew the Mac's DHCP lease or
+       move it to another access point so its IP changes. Each time the link returns within
+       ~15 s of the network being back, with no user action, and Scroll Lock works again.
+7. [ ] **E9 Retry.** Quit Flow on the Mac. On Windows, when "Reconnecting…" shows, press
+       **Stop Trying**: it stops (log quiet). Start Flow on the Mac (setting "Connect to paired
+       computers automatically" off on the Mac for this step). Nothing connects until you
+       press **Try Again** on Windows; then it connects within ~2 s.
+8. [ ] **E2 Local network (macOS 15+).** In System Settings → Privacy & Security → Local
+       Network, turn Flow off. Within ~15 s Flow lists **Local network** as needed and the
+       link state shows permission required. Turn it back on: the item clears by itself, with
+       no restart prompt.
+9. [ ] **E3 Late network.** Turn Wi-Fi off on the Mac, start Flow, wait 10 s, turn Wi-Fi on.
+       Windows sees the Mac (or the link returns, if paired) within one announce interval
+       (~5 s) of the Mac getting an address.
+10. [ ] **E10 Truth.** Throughout, both UIs agree on connected / reconnecting / not connected,
+        and every failure names the computer, the step and what to do.
+
+**Send back:** both logs (`[NET]`, `[PAIR]`, `[PERMISSION]` lines) and which boxes passed.
+
+---
+
 ## What "pass" means
 
-Every box in Rounds 0–2 checked, with the emphasis from ADR 0001: control can always be
+Every box in Rounds 0–3 checked, with the emphasis from ADR 0001: control can always be
 regained from the controller's own keyboard, a controlled machine's input never travels, no
 input leaks into the controller while remote, no stuck keys or buttons, no doubled input, no
 crash, and both UIs always agree on which screen is active. Partial results are still

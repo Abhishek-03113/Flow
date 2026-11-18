@@ -8,6 +8,13 @@ and the [redesign plan](../redesign/PLAN.md). Each journey lists what verifies i
 > more other computers (controlled), the switch hotkey, a screen edge or the UI moves between
 > screens, and the controller's own keyboard can always bring control back.
 
+> **Flow 3 (connection flows).** The expectations behind first run, setup, discovery,
+> pairing, reconnecting and Retry were rewritten from what a person on two real computers
+> expects: [`docs/redesign/flows-v3.md`](../redesign/flows-v3.md) (E1–E10). They are tested
+> under real-network conditions (one-way broadcast, no broadcast, restarts in either order,
+> Retry) in `daemon/tests/real_network_expectations.rs` and `app/ui/e2e/pairing-network.spec.ts`,
+> and on hardware by Round 3 of [`physical-test-script.md`](physical-test-script.md).
+
 ## Status legend
 
 - `[x]` verified automatically: engine logic through the real engine on virtual operating
