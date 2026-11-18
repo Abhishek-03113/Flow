@@ -4,7 +4,11 @@
 //!   events) are separate grants; each can be requested to show the OS
 //!   prompt. macOS applies Input Monitoring to a running app only after it
 //!   restarts, so a grant made while Flow runs asks for a restart.
-//! * Windows: nothing to grant at runtime.
+//! * Windows: no input permission, but Windows Defender Firewall blocks
+//!   other computers from reaching Flow until it allows UDP 47824 and TCP
+//!   47825 (and dismissing its first prompt writes a *block* rule).
+//!   [`request`] adds the allow rules, and removes Flow's inbound block
+//!   rules, behind one UAC prompt.
 //! * Linux: read access to `/dev/input/event*`, write access to
 //!   `/dev/uinput` and, when a firewall (ufw or firewalld) is active, its
 //!   permission for Flow's two ports. [`request`] fixes all of it at once
@@ -17,7 +21,6 @@
 //! have not run on real hardware; they are kept deliberately small.
 
 use flow_core::permission::PermissionItem;
-#[cfg(not(target_os = "windows"))]
 use flow_core::permission::{FixStep, HowToFix};
 
 pub const ACCESSIBILITY: &str = "Accessibility";
@@ -25,6 +28,33 @@ pub const INPUT_MONITORING: &str = "Input Monitoring";
 pub const READ_INPUT: &str = "Read keyboard and mouse";
 pub const CREATE_INPUT: &str = "Create virtual input device";
 pub const INCOMING_CONNECTIONS: &str = "Incoming connections";
+pub const LOCAL_NETWORK: &str = "Local network";
+
+/// The item the engine adds when every discovery announce has kept failing
+/// to leave this computer: macOS Local Network privacy denied, or no
+/// network at all. Not probed here; the engine sees it from send results.
+pub fn local_network_item() -> PermissionItem {
+    let steps = if cfg!(target_os = "macos") {
+        vec![
+            FixStep::text(
+                "Open System Settings \u{203a} Privacy & Security \u{203a} Local Network.",
+            ),
+            FixStep::text("Turn on Flow."),
+            FixStep::text("Check that this Mac is connected to Wi-Fi or Ethernet."),
+        ]
+    } else {
+        vec![
+            FixStep::text("Check that this computer is connected to Wi-Fi or Ethernet."),
+            FixStep::text("If a VPN or security app is running, allow Flow on the local network."),
+        ]
+    };
+    item(LOCAL_NETWORK, false, || {
+        HowToFix {
+        summary: "Flow can\u{2019}t send anything to your local network, so other computers can\u{2019}t find this one.".into(),
+        steps,
+    }
+    })
+}
 
 /// Why [`request`] could not fix what is missing. Each variant is a
 /// distinct, explainable reason; the text is for the log.
@@ -49,7 +79,6 @@ impl std::fmt::Display for SetupError {
     }
 }
 
-#[cfg(not(target_os = "windows"))]
 fn item(name: &str, granted: bool, how_to_fix: impl FnOnce() -> HowToFix) -> PermissionItem {
     PermissionItem {
         name: name.to_string(),
@@ -403,26 +432,317 @@ echo "flow-setup: done for $user (firewalls:${{firewalls:- none}})"
     }
 }
 
+/// PowerShell for the Windows firewall item, kept free of Windows APIs so
+/// it is unit-tested on every OS.
+#[cfg(any(target_os = "windows", test))]
+mod windows_firewall {
+    use flow_core::channel::{DISCOVERY_PORT, PEER_PORT};
+
+    /// The rule group Flow's allow rules live in (also their display names'
+    /// prefix), so setup can replace them idempotently.
+    pub const GROUP: &str = "Flow";
+
+    /// What the probe found. The probe script's exit codes map onto it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum State {
+        /// Firewall off, or both allow rules present and no block rule.
+        Open,
+        /// The allow rules are missing.
+        Missing,
+        /// An inbound block rule for Flow's program exists (the first
+        /// "Allow access" prompt was dismissed).
+        Blocked,
+    }
+
+    pub fn state_from_exit(code: Option<i32>) -> Option<State> {
+        match code {
+            Some(0) => Some(State::Open),
+            Some(1) => Some(State::Missing),
+            Some(2) => Some(State::Blocked),
+            _ => None,
+        }
+    }
+
+    fn quoted(text: &str) -> String {
+        format!("'{}'", text.replace('\'', "''"))
+    }
+
+    /// Exits 0 (open), 1 (missing) or 2 (blocked). Reads only; needs no
+    /// administrator rights. Compares enum names, so the result does not
+    /// depend on the Windows display language.
+    pub fn probe_script(exe: &str) -> String {
+        format!(
+            "$ErrorActionPreference = 'SilentlyContinue'\n\
+             if (-not (Get-NetFirewallProfile | Where-Object {{ $_.Enabled -eq 'True' }})) {{ exit 0 }}\n\
+             $block = Get-NetFirewallApplicationFilter -Program {exe} | Get-NetFirewallRule | \
+             Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' }}\n\
+             if ($block) {{ exit 2 }}\n\
+             $allow = @(Get-NetFirewallRule -Group {group} | \
+             Where-Object {{ $_.Enabled -eq 'True' -and $_.Action -eq 'Allow' -and $_.Direction -eq 'Inbound' }})\n\
+             if ($allow.Count -ge 2) {{ exit 0 }}\n\
+             exit 1\n",
+            exe = quoted(exe),
+            group = quoted(GROUP),
+        )
+    }
+
+    /// Run elevated: removes Flow's inbound block rules and its old allow
+    /// rules, then allows UDP 47824 and TCP 47825 on every profile.
+    pub fn setup_script(exe: &str) -> String {
+        format!(
+            "$ErrorActionPreference = 'Stop'\n\
+             Get-NetFirewallApplicationFilter -Program {exe} -ErrorAction SilentlyContinue | Get-NetFirewallRule | \
+             Where-Object {{ $_.Action -eq 'Block' -and $_.Direction -eq 'Inbound' }} | Remove-NetFirewallRule\n\
+             Get-NetFirewallRule -Group {group} -ErrorAction SilentlyContinue | Remove-NetFirewallRule\n\
+             New-NetFirewallRule -DisplayName 'Flow (UDP {DISCOVERY_PORT})' -Group {group} -Direction Inbound \
+             -Action Allow -Protocol UDP -LocalPort {DISCOVERY_PORT} -Profile Any | Out-Null\n\
+             New-NetFirewallRule -DisplayName 'Flow (TCP {PEER_PORT})' -Group {group} -Direction Inbound \
+             -Action Allow -Protocol TCP -LocalPort {PEER_PORT} -Profile Any | Out-Null\n\
+             exit 0\n",
+            exe = quoted(exe),
+            group = quoted(GROUP),
+        )
+    }
+
+    /// `ERROR_CANCELLED`: the outer script's exit code when the UAC prompt
+    /// was dismissed.
+    pub const CANCELLED: i32 = 1223;
+
+    /// Runs `inner` elevated (one UAC prompt) and exits with its exit code,
+    /// or [`CANCELLED`] when the prompt was dismissed.
+    pub fn elevate_script(inner: &str) -> String {
+        format!(
+            "try {{ $p = Start-Process -FilePath powershell.exe -Verb RunAs -Wait -PassThru -WindowStyle Hidden \
+             -ArgumentList '-NoProfile','-NonInteractive','-EncodedCommand','{}' }} catch {{ exit {CANCELLED} }}\n\
+             exit $p.ExitCode\n",
+            encode(inner)
+        )
+    }
+
+    /// `-EncodedCommand` form: base64 of the UTF-16LE text. No quoting
+    /// survives being nested through `Start-Process`, but base64 has none.
+    pub fn encode(script: &str) -> String {
+        let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        base64(&bytes)
+    }
+
+    fn base64(bytes: &[u8]) -> String {
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+        for chunk in bytes.chunks(3) {
+            let n = (u32::from(chunk[0]) << 16)
+                | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+                | u32::from(*chunk.get(2).unwrap_or(&0));
+            for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+                if i <= chunk.len() {
+                    out.push(char::from(ALPHABET[(n >> shift) as usize & 63]));
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn base64_matches_known_vectors() {
+            assert_eq!(base64(b""), "");
+            assert_eq!(base64(b"f"), "Zg==");
+            assert_eq!(base64(b"fo"), "Zm8=");
+            assert_eq!(base64(b"foo"), "Zm9v");
+            assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+            // `powershell -EncodedCommand` of "exit 0" as UTF-16LE.
+            assert_eq!(encode("exit 0"), "ZQB4AGkAdAAgADAA");
+        }
+
+        #[test]
+        fn scripts_open_both_ports_and_quote_the_program_path() {
+            let exe = r"C:\Users\O'Brien\AppData\Local\Flow\Flow.exe";
+            let setup = setup_script(exe);
+            assert!(setup.contains(&format!("-Protocol UDP -LocalPort {DISCOVERY_PORT}")));
+            assert!(setup.contains(&format!("-Protocol TCP -LocalPort {PEER_PORT}")));
+            assert!(setup.contains("-Profile Any"));
+            assert!(setup.contains("Remove-NetFirewallRule"));
+            assert!(setup.contains(r"'C:\Users\O''Brien\AppData\Local\Flow\Flow.exe'"));
+            let probe = probe_script(exe);
+            assert!(
+                probe.contains("exit 2") && probe.contains("exit 1") && probe.contains("exit 0")
+            );
+            assert!(
+                !probe.contains("New-NetFirewallRule"),
+                "the probe only reads"
+            );
+        }
+
+        #[test]
+        fn the_elevated_wrapper_carries_the_script_without_quotes_and_maps_cancel() {
+            let wrapper = elevate_script(&setup_script(r"C:\Flow.exe"));
+            assert!(wrapper.contains("-Verb RunAs"));
+            assert!(wrapper.contains(&format!("exit {CANCELLED}")));
+            let encoded = wrapper.split('\'').nth(7).expect("encoded argument");
+            assert!(encoded
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)));
+        }
+
+        #[test]
+        #[ignore = "prints the scripts for reading"]
+        fn print_scripts() {
+            println!(
+                "{}\n---\n{}",
+                probe_script(r"C:\\Flow.exe"),
+                setup_script(r"C:\\Flow.exe")
+            );
+        }
+
+        #[test]
+        fn probe_exit_codes_map_to_states() {
+            assert_eq!(state_from_exit(Some(0)), Some(State::Open));
+            assert_eq!(state_from_exit(Some(1)), Some(State::Missing));
+            assert_eq!(state_from_exit(Some(2)), Some(State::Blocked));
+            assert_eq!(state_from_exit(Some(5)), None);
+            assert_eq!(state_from_exit(None), None);
+        }
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod imp {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use flow_core::channel::{DISCOVERY_PORT, PEER_PORT};
+
+    use super::windows_firewall::{self as fw, State};
     use super::*;
 
+    /// No console window flashes up for the hidden PowerShell runs.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    /// The probe starts PowerShell (about a second), and `check` is polled
+    /// every 2 s: probe in the background, at most this often.
+    const PROBE_EVERY: Duration = Duration::from_secs(20);
+
+    struct Probe {
+        state: Option<State>,
+        at: Option<Instant>,
+        running: bool,
+    }
+
+    static PROBE: Mutex<Probe> = Mutex::new(Probe {
+        state: None,
+        at: None,
+        running: false,
+    });
+
+    fn exe() -> String {
+        std::env::current_exe()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    }
+
+    fn powershell(script: &str) -> std::io::Result<std::process::Output> {
+        Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-EncodedCommand"])
+            .arg(fw::encode(script))
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+    }
+
+    fn probe_now() -> Option<State> {
+        match powershell(&fw::probe_script(&exe())) {
+            Ok(out) => {
+                let state = fw::state_from_exit(out.status.code());
+                if state.is_none() {
+                    tracing::warn!(
+                        "could not read the Windows Firewall rules (exit {:?}): {}",
+                        out.status.code(),
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+                state
+            }
+            Err(err) => {
+                tracing::warn!("could not run PowerShell to read the firewall rules: {err}");
+                None
+            }
+        }
+    }
+
+    fn store(state: Option<State>) {
+        let mut probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+        probe.state = state;
+        probe.at = Some(Instant::now());
+        probe.running = false;
+    }
+
+    /// The last probe result; starts a background probe when it is stale.
+    /// `None` until the first probe finishes, or when it cannot run.
+    fn firewall_state() -> Option<State> {
+        let mut probe = PROBE.lock().unwrap_or_else(|e| e.into_inner());
+        let stale = probe.at.is_none_or(|at| at.elapsed() >= PROBE_EVERY);
+        if stale && !probe.running {
+            probe.running = true;
+            std::thread::spawn(|| store(probe_now()));
+        }
+        probe.state
+    }
+
+    fn firewall_fix(state: State) -> HowToFix {
+        let summary = match state {
+            State::Blocked => "Windows Firewall is blocking Flow (its \u{201c}Allow access\u{201d} prompt was probably dismissed), so other computers can\u{2019}t reach this one.",
+            _ => "Windows Firewall stops other computers from finding and connecting to this one.",
+        };
+        HowToFix {
+            summary: summary.into(),
+            steps: vec![
+                FixStep::text("Click \u{201c}Set Up Automatically\u{201d} and choose Yes in the Windows prompt."),
+                FixStep::text(&format!(
+                    "Or allow it yourself: Windows Security \u{203a} Firewall & network protection \u{203a} Allow an app through firewall \u{203a} Flow, Private and Public. Flow uses UDP port {DISCOVERY_PORT} and TCP port {PEER_PORT}."
+                )),
+            ],
+        }
+    }
+
     pub fn check() -> Vec<PermissionItem> {
-        Vec::new()
+        match firewall_state() {
+            Some(State::Open) => vec![item(INCOMING_CONNECTIONS, true, || {
+                firewall_fix(State::Open)
+            })],
+            Some(state) => vec![item(INCOMING_CONNECTIONS, false, || firewall_fix(state))],
+            // Not known yet (or unreadable): claim nothing.
+            None => Vec::new(),
+        }
     }
 
     pub fn request(_name: Option<&str>) -> Result<(), SetupError> {
-        Ok(())
+        tracing::info!(target: "flow", "[SETUP] asking Windows for administrator access to allow Flow through the firewall");
+        let out = powershell(&fw::elevate_script(&fw::setup_script(&exe())))
+            .map_err(|err| SetupError::Unavailable(format!("PowerShell could not start: {err}")))?;
+        let result = match out.status.code() {
+            Some(0) => Ok(()),
+            Some(fw::CANCELLED) => Err(SetupError::Cancelled),
+            code => Err(SetupError::Failed(format!(
+                "adding the firewall rules failed (exit {code:?})"
+            ))),
+        };
+        // Re-probe now so the result shows at once.
+        store(probe_now());
+        result
     }
 
     pub fn one_click_setup() -> bool {
-        false
+        true
     }
 
-    pub fn settings_url(_name: &str) -> Option<&'static str> {
-        // Windows has no input permission; the privacy page is the closest
-        // useful destination if a security product blocks Flow.
-        Some("ms-settings:privacy")
+    pub fn settings_url(name: &str) -> Option<&'static str> {
+        (name == INCOMING_CONNECTIONS).then_some("windowsdefender://network")
     }
 }
 
@@ -529,6 +849,9 @@ mod imp {
             ),
             INPUT_MONITORING => {
                 Some("x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")
+            }
+            LOCAL_NETWORK => {
+                Some("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
             }
             _ => None,
         }

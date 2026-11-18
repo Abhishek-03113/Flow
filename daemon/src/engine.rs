@@ -684,14 +684,10 @@ impl Runtime {
                         }
                     }
                 }
+                let mut delivered = false;
                 for destination in destinations {
                     match discovery.announce_to(destination).await {
-                        Ok(()) => crate::hop!(
-                            stage = "announce_sent",
-                            role = "local",
-                            to = %destination,
-                            "sent a discovery announce"
-                        ),
+                        Ok(()) => delivered = true,
                         Err(err) => crate::hop!(
                             stage = "announce_failed",
                             role = "local",
@@ -701,6 +697,7 @@ impl Runtime {
                         ),
                     }
                 }
+                runtime.link.service.note_announce_result(!delivered).await;
             }
         });
         Some((port, targets))

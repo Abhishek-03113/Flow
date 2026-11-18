@@ -4,7 +4,10 @@ import fs from 'node:fs';
 // Use the preinstalled Chromium (never `playwright install`).
 const root = process.env.PLAYWRIGHT_BROWSERS_PATH ?? '/opt/pw-browsers';
 const dir = fs.existsSync(root) ? fs.readdirSync(root).find((d) => /^chromium-\d+$/.test(d)) : undefined;
-const executablePath = dir ? `${root}/${dir}/chrome-linux/chrome` : undefined;
+// Newer Playwright builds unpack to chrome-linux64/.
+const executablePath = dir
+  ? ['chrome-linux', 'chrome-linux64'].map((d) => `${root}/${dir}/${d}/chrome`).find((p) => fs.existsSync(p))
+  : undefined;
 
 export default defineConfig({
   testDir: './e2e',

@@ -431,6 +431,8 @@ pub struct DaemonService {
     peer_addresses: reconnect::PeerAddresses,
     /// Wakes the reconnect supervisor to dial every paired computer now.
     redial_now: Arc<tokio::sync::Notify>,
+    /// Consecutive announce ticks on which every send failed.
+    announce_failures: Arc<std::sync::atomic::AtomicU32>,
     /// Peers whose link was refused (`role_conflict`, `protocol_mismatch`):
     /// not redialled, since that cannot help until a role changes. Cleared
     /// when this device's role changes; the peer, when its role changes,
@@ -583,6 +585,7 @@ impl DaemonService {
             announce_now: Arc::new(tokio::sync::Notify::new()),
             peer_addresses: Arc::default(),
             redial_now: Arc::new(tokio::sync::Notify::new()),
+            announce_failures: Arc::default(),
             refused_peers: Arc::default(),
             dial_failures: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),

@@ -16,7 +16,7 @@ export const ERRORS: Record<string, string> = {
   switch_key_conflict: 'The switch and return-home shortcuts need different keys.',
   permission_already_granted: 'Flow already has permission.',
   permission_setup_cancelled:
-    'Setup was cancelled. Click “Set Up Automatically” again and enter your password to finish.',
+    'Setup was cancelled. Click “Set Up Automatically” again and approve the prompt to finish.',
   permission_setup_unavailable:
     'Flow can’t ask for your password here. Run the command shown below in a terminal instead.',
   permission_setup_failed: 'Setup didn’t finish.',

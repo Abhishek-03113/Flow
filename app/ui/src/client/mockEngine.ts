@@ -476,7 +476,7 @@ export class MockEngine {
     if (failure) throw err(failure.code, failure.message);
     // The OS prompt (or the administrator password) is out of our hands;
     // simulate the user approving it.
-    this.later(this.os === 'linux' ? 800 : 2500, () => this.simulate.grantPermission());
+    this.later(this.os === 'macos' ? 2500 : 800, () => this.simulate.grantPermission());
   }
 
   /** The real shell relaunches; here the "new process" simply has the grant applied. */

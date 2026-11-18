@@ -105,6 +105,17 @@ const linuxFix = (summary: string): HowToFix => ({
   ],
 });
 
+const windowsFix: HowToFix = {
+  summary: 'Windows Firewall stops other computers from finding and connecting to this one.',
+  steps: [
+    { text: 'Click “Set Up Automatically” and choose Yes in the Windows prompt.', command: null },
+    {
+      text: 'Or allow it yourself: Windows Security › Firewall & network protection › Allow an app through firewall › Flow, Private and Public. Flow uses UDP port 47824 and TCP port 47825.',
+      command: null,
+    },
+  ],
+};
+
 /** What the engine reports per OS (same names and fix-it steps). */
 const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => {
   const items: PermissionItem[] =
@@ -139,13 +150,13 @@ const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => {
               ),
             }),
           ]
-        : [];
+        : [item('Incoming connections', granted, windowsFix)];
   const allGranted = items.length ? items.every((i) => i.granted) : granted;
   return {
     name: items.map((i) => i.name).join(' and ') || 'Input access',
     granted: allGranted,
     items,
-    oneClickSetup: os === 'linux' && !allGranted,
+    oneClickSetup: os !== 'macos' && !allGranted,
     restartRequired: false,
   };
 };
@@ -223,8 +234,8 @@ export function seedScenario(name: string, os: HostOs): EngineState {
   switch (name) {
     case 'fresh-install': {
       const s = base(os, [me()]);
-      // A fresh macOS or Linux install still has to grant access; Windows needs nothing.
-      s.permission = permissionFor(os, os === 'windows');
+      // A fresh install still has to grant access (Windows: allow Flow through the firewall).
+      s.permission = permissionFor(os, false);
       s.linkState = s.permission.granted ? 'connected' : 'permission_required';
       s.remapRules = [];
       s.diagnostics = { ...diagnostics(), eventsForwarded: 0, eventsDropped: 0, uptimeS: 12 };

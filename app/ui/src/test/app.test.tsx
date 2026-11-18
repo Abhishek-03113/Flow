@@ -204,6 +204,19 @@ describe('Link state banners', () => {
     expect(client.getSnapshot().permission?.restartRequired).toBe(false);
   });
 
+  it('Windows: one button allows Flow through the firewall; nothing is claimed ready before that', async () => {
+    const user = userEvent.setup();
+    const { client } = renderApp('permission-missing', '/home', 'windows');
+    await user.click(await screen.findByRole('button', { name: 'Allow…' }));
+    const guide = await screen.findByTestId('permission-guide-windows');
+    expect(guide).toHaveTextContent('Incoming connections');
+    expect(guide).toHaveTextContent('Windows Firewall');
+    expect(within(guide).getByText(/Choose Yes/)).toHaveClass('t-footnote');
+    await user.click(within(guide).getByRole('button', { name: 'Set Up Automatically' }));
+    await waitFor(() => expect(client.getSnapshot().permission?.granted).toBe(true));
+    expect(client.getSnapshot().permission?.restartRequired).toBe(false);
+  });
+
   it('a failed setup says why instead of failing silently', async () => {
     const user = userEvent.setup();
     const { engine } = renderApp('permission-missing', '/home', 'linux');
@@ -310,10 +323,21 @@ describe('Onboarding', () => {
     expect(localStorage.getItem('flow.onboarding_step')).toBeNull();
   });
 
-  it('skips setup when the OS needs nothing (Windows)', async () => {
+  it('a fresh Windows install asks to allow Flow through the firewall', async () => {
     localStorage.clear();
     const user = userEvent.setup();
     renderApp('fresh-install', '/', 'windows');
+    const ob = await screen.findByTestId('onboarding');
+    await user.click(screen.getByRole('button', { name: 'Get Started' }));
+    expect(ob).toHaveAttribute('data-step', 'setup');
+    expect(within(ob).getByTestId('permission-guide-windows')).toHaveTextContent('Incoming connections');
+  });
+
+  it('skips setup when the OS needs nothing more (Windows firewall already open)', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    const { engine } = renderApp('fresh-install', '/', 'windows');
+    engine.simulate.grantPermission();
     const ob = await screen.findByTestId('onboarding');
     await user.click(screen.getByRole('button', { name: 'Get Started' }));
     expect(ob).toHaveAttribute('data-step', 'pair');

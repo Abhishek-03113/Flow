@@ -47,7 +47,8 @@ function sharedSteps(items: PermissionItem[]): FixStep[] {
  *   behind a single password prompt (a terminal command when that isn't possible).
  * - macOS: "Allow Access" shows both OS prompts and opens System Settings;
  *   once granted, "Restart Flow" applies it (macOS needs a fresh process).
- * - Windows: nothing to grant.
+ * - Windows: "Set Up Automatically" allows Flow through Windows Firewall
+ *   behind one UAC prompt.
  * Shared by onboarding and the "Fix permission" sheet.
  */
 export function PermissionGuide({
@@ -94,7 +95,7 @@ export function PermissionGuide({
         </div>
       );
     if (granted) return null;
-    if (os === 'linux')
+    if (os === 'linux' || os === 'windows')
       return oneClick ? (
         <div className="fl-center" style={{ display: 'grid', gap: 'var(--s-2)' }}>
           <div>
@@ -102,7 +103,11 @@ export function PermissionGuide({
               Set Up Automatically
             </Button>
           </div>
-          <p className="t-footnote t-secondary">You’ll enter your password once. No log out needed.</p>
+          <p className="t-footnote t-secondary">
+            {os === 'windows'
+              ? 'Windows asks once whether Flow may change the firewall. Choose Yes.'
+              : 'You’ll enter your password once. No log out needed.'}
+          </p>
         </div>
       ) : null;
     if (os === 'macos')
