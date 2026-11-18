@@ -5,6 +5,8 @@
 - **`PairingCandidate.role`** (`controller` | `controlled`, optional): the role the candidate announced. Absent for a peer that does not announce one. UIs warn before requesting a pairing that cannot work (same role).
 - **Live candidate ids are `live:<identity key hex>`** (were `live:<name>`): two computers with the same name are two candidates, and a paired computer is never offered again whatever its name. Ids stay opaque to clients.
 - **Behaviour**: the candidate list is live while pairing is open; a computer not heard for 15 s leaves it. Opening pairing announces at once, and every Flow answers an announce with a unicast one, so nearby computers appear in well under a second and one working broadcast direction is enough. Broadcast addresses are re-read from the interfaces on every announce (a network that comes up after Flow is used within one interval).
+- **Reconnect without broadcast**: each paired computer's last reachable address is stored (`devices.last_address`, from successful dials, its announces and its inbound connections). The engine dials every paired computer without a live link at that address every 1 s, doubling to 15 s per computer, independent of discovery, while `auto_connect_paired_devices` is on and reconnecting was not cancelled. Two paired computers reconnect in either start order on a network that never carries broadcast.
+- **`retry_connection` dials now**: it resets every redial delay and dials and announces immediately (before, it only changed the link state and waited for the next announce).
 - **Daemon-to-daemon announce v2** (UDP 47824): adds `proto` (2), `role` and `reply`. Older announces still parse; replies are never answered.
 
 ## 0.2.6 — one-step permission setup, fixed ports (additive)

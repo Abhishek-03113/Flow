@@ -93,6 +93,7 @@ const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
 mod export;
 mod health;
 mod permissions;
+mod reconnect;
 
 /// How long [`DaemonService::dial_if_trusted`] will spend connecting to
 /// and handshaking with a discovered peer before giving up. Generous
@@ -426,6 +427,10 @@ pub struct DaemonService {
     /// Wakes the discovery loop to announce right away (pairing opened,
     /// Retry pressed) instead of waiting for the next interval.
     announce_now: Arc<tokio::sync::Notify>,
+    /// Where each paired computer was last reached (`reconnect.rs`).
+    peer_addresses: reconnect::PeerAddresses,
+    /// Wakes the reconnect supervisor to dial every paired computer now.
+    redial_now: Arc<tokio::sync::Notify>,
     /// Peers whose link was refused (`role_conflict`, `protocol_mismatch`):
     /// not redialled, since that cannot help until a role changes. Cleared
     /// when this device's role changes; the peer, when its role changes,
@@ -576,6 +581,8 @@ impl DaemonService {
             backend: options.backend,
             redial_paused: Arc::new(AtomicBool::new(false)),
             announce_now: Arc::new(tokio::sync::Notify::new()),
+            peer_addresses: Arc::default(),
+            redial_now: Arc::new(tokio::sync::Notify::new()),
             refused_peers: Arc::default(),
             dial_failures: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -583,6 +590,7 @@ impl DaemonService {
             log_tail: None,
             virtual_io: Arc::default(),
         };
+        service.load_peer_addresses().await;
         service.spawn_active_screen_follower();
         service.spawn_diagnostics_ticker();
         Ok(service)
@@ -1361,6 +1369,7 @@ impl DaemonService {
         let persisted = DeviceRepo::new(self.storage.clone())
             .remove(target_id.clone())
             .await;
+        self.forget_peer_address(&target_id);
 
         self.devices_tx.send_replace(devices);
         self.mutate_layout(|layout| layout.remove(&target_id)).await;
@@ -1530,11 +1539,19 @@ impl DaemonService {
             os: peer.os,
             role: peer.role,
         };
+        if let (Some(instance), ChannelAddress::Tcp(addr)) = (&peer.instance_id, &peer.address) {
+            let device_id = DeviceId(format!("pk:{instance}"));
+            if self.state.read().await.devices.contains_key(&device_id) {
+                // A paired computer announced where it is now.
+                self.note_peer_address(&device_id, *addr).await;
+            }
+        }
         let should_emit = {
             let mut state = self.state.write().await;
-            state
-                .discovered_candidates
-                .insert(candidate_id.clone(), (candidate.clone(), peer.address));
+            state.discovered_candidates.insert(
+                candidate_id.clone(),
+                (candidate.clone(), peer.address.clone()),
+            );
             state
                 .candidate_seen
                 .insert(candidate_id.clone(), std::time::Instant::now());
@@ -2201,6 +2218,9 @@ impl DaemonService {
             return None;
         }
         let device_id = device_id_from_public_key(&peer_public_key);
+        if let ChannelAddress::Tcp(addr) = &address {
+            self.note_peer_address(&device_id, *addr).await;
+        }
         crate::hop_note!(
             stage = "dial_trusted",
             role = "initiator",
@@ -2228,7 +2248,7 @@ impl DaemonService {
         if previous != Some(reason) {
             tracing::warn!(
                 target: "flow",
-                "[NET] cannot reach paired computer at {address:?}: {reason}; retrying on every announce"
+                "[NET] cannot reach paired computer at {address:?}: {reason}; will keep retrying"
             );
         }
     }
@@ -2411,6 +2431,9 @@ impl DaemonService {
         }
         self.redial_paused.store(false, Ordering::Relaxed);
         self.link_state_tx.send_replace(DaemonLinkState::Connecting);
+        // Retry means now: dial every paired computer and announce.
+        self.redial_now.notify_one();
+        self.announce_now.notify_one();
         Ok(())
     }
 }
@@ -4136,6 +4159,25 @@ mod tests {
             service.request_permission().await,
             Err(FlowError::PermissionAlreadyGranted)
         );
+    }
+
+    #[tokio::test]
+    async fn retry_dials_now_and_announces_now() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        service.set_link_state(DaemonLinkState::Disconnected);
+        let (redial, announce) = (service.redial_requests(), service.announce_requests());
+
+        service.retry_connection().await.expect("retry accepted");
+
+        // Both wake-ups are stored permits: they fire even though nothing
+        // was waiting at the moment Retry was pressed.
+        tokio::time::timeout(Duration::from_secs(1), redial.notified())
+            .await
+            .expect("the reconnect supervisor is woken");
+        tokio::time::timeout(Duration::from_secs(1), announce.notified())
+            .await
+            .expect("discovery is woken");
     }
 
     #[tokio::test]

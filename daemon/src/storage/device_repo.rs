@@ -112,6 +112,47 @@ impl DeviceRepo {
             .await
     }
 
+    /// Records where a paired computer's peer listener was last reached.
+    /// A missing row (device removed meanwhile) is a no-op.
+    pub async fn set_last_address(
+        &self,
+        id: DeviceId,
+        address: std::net::SocketAddr,
+    ) -> Result<(), StorageError> {
+        self.storage
+            .with_connection(move |conn| {
+                conn.execute(
+                    "UPDATE devices SET last_address = ?1 WHERE id = ?2",
+                    rusqlite::params![address.to_string(), id.0],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Every device's last known peer address. Unparsable values (written
+    /// by a future version) are skipped.
+    pub async fn last_addresses(
+        &self,
+    ) -> Result<Vec<(DeviceId, std::net::SocketAddr)>, StorageError> {
+        self.storage
+            .with_connection(|conn| {
+                let mut stmt = conn.prepare(
+                    "SELECT id, last_address FROM devices WHERE last_address IS NOT NULL",
+                )?;
+                let rows = stmt
+                    .query_map([], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(rows
+                    .into_iter()
+                    .filter_map(|(id, addr)| Some((DeviceId(id), addr.parse().ok()?)))
+                    .collect())
+            })
+            .await
+    }
+
     pub async fn remove(&self, id: DeviceId) -> Result<(), StorageError> {
         self.storage
             .with_connection(move |conn| {
@@ -247,6 +288,36 @@ mod tests {
         // state is never persisted: an Active row on disk still loads as
         // Disconnected, not resurrected from the stale write.
         assert_eq!(reloaded.device.state, DeviceState::Disconnected);
+    }
+
+    #[tokio::test]
+    async fn a_last_address_survives_upserts_and_goes_with_the_device() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let repo = DeviceRepo::new(storage);
+        let id = DeviceId("d2".to_string());
+        let addr: std::net::SocketAddr = "192.168.1.20:47825".parse().unwrap();
+
+        // Unknown device: nothing to record.
+        repo.set_last_address(id.clone(), addr)
+            .await
+            .expect("no-op");
+        assert!(repo.last_addresses().await.unwrap().is_empty());
+
+        repo.upsert(sample("d2", Some(vec![1])))
+            .await
+            .expect("upsert");
+        repo.set_last_address(id.clone(), addr).await.expect("set");
+        // A later upsert (rename, last_seen) keeps the address.
+        repo.upsert(sample("d2", Some(vec![1])))
+            .await
+            .expect("upsert");
+        assert_eq!(
+            repo.last_addresses().await.unwrap(),
+            vec![(id.clone(), addr)]
+        );
+
+        repo.remove(id).await.expect("remove");
+        assert!(repo.last_addresses().await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use flow_core::channel::Channel;
+use flow_core::channel::{Channel, ChannelAddress};
 use flow_core::control::Role;
 use flow_core::device::DeviceId;
 use thiserror::Error;
@@ -197,6 +197,7 @@ impl Engine {
 
         if let Some(port) = runtime.spawn_peer_listener(config.peer_listen_port).await {
             handle.peer_port = Some(port);
+            runtime.spawn_reconnect_supervisor();
             if let Some(discovery) = &config.discovery {
                 if let Some((bound, targets)) = runtime.spawn_discovery(discovery, port).await {
                     handle.discovery_port = Some(bound);
@@ -361,6 +362,41 @@ async fn drive_local_pointer(service: Arc<DaemonService>, backend: Arc<dyn Platf
 
 /// How long a redundant connection waits for the preferred one to show up
 /// before it is used instead.
+/// How often the reconnect supervisor looks for paired computers to dial.
+const RECONNECT_TICK: Duration = Duration::from_secs(1);
+/// First and longest wait between dials to one paired computer.
+const REDIAL_MIN: Duration = Duration::from_secs(1);
+const REDIAL_MAX: Duration = Duration::from_secs(15);
+
+/// Per-computer redial delays: 1 s, doubling to 15 s.
+#[derive(Default)]
+struct Backoff {
+    next: std::collections::HashMap<DeviceId, (tokio::time::Instant, Duration)>,
+}
+
+impl Backoff {
+    fn due(&self, id: &DeviceId, now: tokio::time::Instant) -> bool {
+        self.next.get(id).is_none_or(|(at, _)| now >= *at)
+    }
+
+    fn attempted(&mut self, id: &DeviceId, now: tokio::time::Instant) {
+        let delay = self
+            .next
+            .get(id)
+            .map_or(REDIAL_MIN, |(_, delay)| (*delay * 2).min(REDIAL_MAX));
+        self.next.insert(id.clone(), (now + delay, delay));
+    }
+
+    fn keep_only<'a>(&mut self, ids: impl Iterator<Item = &'a DeviceId>) {
+        let keep: std::collections::HashSet<&DeviceId> = ids.collect();
+        self.next.retain(|id, _| keep.contains(id));
+    }
+
+    fn reset_all(&mut self) {
+        self.next.clear();
+    }
+}
+
 const REDUNDANT_CONNECTION_GRACE: Duration = Duration::from_secs(2);
 
 /// A device id short enough for a log line.
@@ -474,6 +510,72 @@ impl Runtime {
             }
         });
         Some(port)
+    }
+
+    /// Dials every paired computer that has no live link at the address it
+    /// was last reached, with a per-computer backoff, independent of
+    /// discovery: two paired computers reconnect even on a network that
+    /// never carries broadcast (`flows-v3.md` §3.5). Retry resets every
+    /// backoff and dials at once.
+    fn spawn_reconnect_supervisor(&self) {
+        let runtime = self.clone();
+        let redial_now = self.link.service.redial_requests();
+        self.tasks.spawn(async move {
+            let mut tick = tokio::time::interval(RECONNECT_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut backoff = Backoff::default();
+            let in_flight: Arc<std::sync::Mutex<std::collections::HashSet<DeviceId>>> =
+                Arc::default();
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = redial_now.notified() => backoff.reset_all(),
+                }
+                let targets = runtime.link.service.redial_targets().await;
+                // A computer that is linked (or no longer paired) starts
+                // from the shortest delay next time it drops.
+                backoff.keep_only(targets.iter().map(|(id, _)| id));
+                let now = tokio::time::Instant::now();
+                for (device_id, address) in targets {
+                    if !backoff.due(&device_id, now) {
+                        continue;
+                    }
+                    if !in_flight
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(device_id.clone())
+                    {
+                        continue;
+                    }
+                    backoff.attempted(&device_id, now);
+                    crate::hop_note!(
+                        stage = "redial",
+                        role = "initiator",
+                        peer = %device_id.0,
+                        address = %address,
+                        "dialing a paired computer at its last known address"
+                    );
+                    let inner = runtime.clone();
+                    let in_flight = Arc::clone(&in_flight);
+                    runtime.tasks.spawn(async move {
+                        if let Some((channel, id, precedence)) = inner
+                            .link
+                            .service
+                            .dial_if_trusted(ChannelAddress::Tcp(address))
+                            .await
+                        {
+                            // The address may now answer as another paired
+                            // computer (addresses move); run whatever it is.
+                            inner.claim_and_run(channel, id, precedence).await;
+                        }
+                        in_flight
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&device_id);
+                    });
+                }
+            }
+        });
     }
 
     /// Starts discovery: one UDP socket both listens for announces and
@@ -668,6 +770,10 @@ impl Runtime {
         {
             Ok(IncomingPeerConnection::HandledAsPairing) => {}
             Ok(IncomingPeerConnection::TrustedPeer(channel, device_id, precedence)) => {
+                self.link
+                    .service
+                    .note_inbound_peer(&device_id, peer_addr)
+                    .await;
                 self.claim_and_run(channel, device_id, precedence).await;
             }
             Err(err) => tracing::warn!(
@@ -716,5 +822,37 @@ impl Runtime {
             );
         }
         run_link(&self.link, channel, device_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redial_delays_double_from_one_second_to_fifteen_and_reset() {
+        let id = DeviceId("pk:aa".to_string());
+        let start = tokio::time::Instant::now();
+        let mut backoff = Backoff::default();
+        let mut now = start;
+        let mut delays = Vec::new();
+        for _ in 0..7 {
+            assert!(backoff.due(&id, now));
+            backoff.attempted(&id, now);
+            let (at, delay) = backoff.next[&id];
+            assert!(!backoff.due(&id, at - Duration::from_millis(1)));
+            delays.push(delay.as_secs());
+            now = at;
+        }
+        assert_eq!(delays, vec![1, 2, 4, 8, 15, 15, 15]);
+
+        // Linked again (dropped from the targets): the next drop starts at 1 s.
+        backoff.keep_only(std::iter::empty());
+        backoff.attempted(&id, now);
+        assert_eq!(backoff.next[&id].1, REDIAL_MIN);
+
+        // Retry: everything is due at once.
+        backoff.reset_all();
+        assert!(backoff.due(&id, now));
     }
 }
