@@ -31,6 +31,36 @@ describe('Home', () => {
     expect(await screen.findByTestId('pairing-found')).toBeInTheDocument();
   });
 
+  it('a nearby computer with the same role is explained, not offered', async () => {
+    const user = userEvent.setup();
+    renderApp('no-devices');
+    await user.click(await screen.findByRole('button', { name: 'Add Computer…' }));
+    const found = await screen.findByTestId('pairing-found');
+    expect(within(found).getByRole('button', { name: 'Connect to Studio Mac mini' })).toBeInTheDocument();
+    expect(within(found).queryByRole('button', { name: 'Connect to Office iMac' })).not.toBeInTheDocument();
+    expect(within(found).getByText('Same role')).toBeInTheDocument();
+    expect(found).toHaveTextContent('Also shares its keyboard and mouse');
+  });
+
+  it('with nothing discoverable, a computer can be paired by typing its address', async () => {
+    const user = userEvent.setup();
+    const { engine, client } = renderApp('no-devices');
+    engine.simulate.blockBroadcast();
+    await user.click(await screen.findByRole('button', { name: 'Add Computer…' }));
+    expect(await screen.findByTestId('pairing-searching')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Connect by Address…' }));
+    const form = screen.getByTestId('pair-by-address');
+    expect(within(form).getByTestId('local-addresses')).toHaveTextContent('192.168.1.20');
+    const input = within(form).getByRole('textbox');
+    expect(input).toHaveFocus();
+    await user.type(input, 'not an address');
+    await user.click(within(form).getByRole('button', { name: 'Connect' }));
+    expect(await screen.findByText(/doesn’t look like an address/)).toBeInTheDocument();
+    await user.clear(input);
+    await user.type(input, '192.168.1.31{Enter}');
+    await waitFor(() => expect(client.getSnapshot().devices.some((d) => d.name === 'Study PC')).toBe(true));
+  });
+
   it('with no paired computer the link is neutral: no error banner, no "null ms"', async () => {
     renderApp('no-devices');
     await screen.findByText('Add your first computer');
@@ -204,6 +234,19 @@ describe('Link state banners', () => {
     expect(client.getSnapshot().permission?.restartRequired).toBe(false);
   });
 
+  it('Windows: one button allows Flow through the firewall; nothing is claimed ready before that', async () => {
+    const user = userEvent.setup();
+    const { client } = renderApp('permission-missing', '/home', 'windows');
+    await user.click(await screen.findByRole('button', { name: 'Allow…' }));
+    const guide = await screen.findByTestId('permission-guide-windows');
+    expect(guide).toHaveTextContent('Incoming connections');
+    expect(guide).toHaveTextContent('Windows Firewall');
+    expect(within(guide).getByText(/Choose Yes/)).toHaveClass('t-footnote');
+    await user.click(within(guide).getByRole('button', { name: 'Set Up Automatically' }));
+    await waitFor(() => expect(client.getSnapshot().permission?.granted).toBe(true));
+    expect(client.getSnapshot().permission?.restartRequired).toBe(false);
+  });
+
   it('a failed setup says why instead of failing silently', async () => {
     const user = userEvent.setup();
     const { engine } = renderApp('permission-missing', '/home', 'linux');
@@ -310,13 +353,38 @@ describe('Onboarding', () => {
     expect(localStorage.getItem('flow.onboarding_step')).toBeNull();
   });
 
-  it('skips setup when the OS needs nothing (Windows)', async () => {
+  it('a fresh Windows install asks to allow Flow through the firewall', async () => {
     localStorage.clear();
     const user = userEvent.setup();
     renderApp('fresh-install', '/', 'windows');
     const ob = await screen.findByTestId('onboarding');
     await user.click(screen.getByRole('button', { name: 'Get Started' }));
+    expect(ob).toHaveAttribute('data-step', 'setup');
+    expect(within(ob).getByTestId('permission-guide-windows')).toHaveTextContent('Incoming connections');
+  });
+
+  it('skips setup when the OS needs nothing more (Windows firewall already open)', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    const { engine } = renderApp('fresh-install', '/', 'windows');
+    engine.simulate.grantPermission();
+    const ob = await screen.findByTestId('onboarding');
+    await user.click(screen.getByRole('button', { name: 'Get Started' }));
     expect(ob).toHaveAttribute('data-step', 'pair');
+  });
+
+  it('pairing after skipping setup says what is still missing', async () => {
+    localStorage.clear();
+    const user = userEvent.setup();
+    renderApp('fresh-install', '/', 'windows');
+    const ob = await screen.findByTestId('onboarding');
+    await user.click(screen.getByRole('button', { name: 'Get Started' }));
+    await user.click(screen.getByRole('button', { name: 'Skip for Now' }));
+    expect(ob).toHaveAttribute('data-step', 'pair');
+    const banner = within(ob).getByTestId('banner');
+    expect(banner).toHaveTextContent('Still needed: Incoming connections');
+    await user.click(within(banner).getByRole('button', { name: 'Finish Setup' }));
+    expect(ob).toHaveAttribute('data-step', 'setup');
   });
 
   it('resumes at the saved step after a restart', async () => {

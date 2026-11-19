@@ -38,6 +38,10 @@ socket2 = { version = "0.6", features = ["all"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 bluer = { version = "0.17.4", features = ["rfcomm", "bluetoothd"], optional = true }
 
+# Discovery turns off UDP connection-reset reports on its socket.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Networking_WinSock"] }
+
 [dev-dependencies]
 tokio = { version = "1", features = ["test-util"] }
 tempfile = "3"

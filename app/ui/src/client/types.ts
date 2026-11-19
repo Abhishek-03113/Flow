@@ -44,6 +44,8 @@ export interface PairingCandidate {
   id: string;
   name: string;
   os: HostOs;
+  /** The role it announced (0.3.0); absent when unknown. */
+  role?: Role;
 }
 
 export interface PairingSession {
@@ -158,6 +160,8 @@ export interface Diagnostics {
   eventsForwarded: number;
   eventsDropped: number;
   uptimeS: number;
+  /** This computer's LAN addresses as another computer would type them (0.3.0). */
+  localAddresses?: string[];
 }
 
 export interface RemapRule {

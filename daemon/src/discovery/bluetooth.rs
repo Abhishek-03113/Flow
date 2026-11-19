@@ -109,6 +109,8 @@ async fn resolve_peer(adapter: &Adapter, address: Address) -> Option<DiscoveredP
         name: advertisement.name,
         os: advertisement.os,
         address: ChannelAddress::Bluetooth(BluetoothAddr(address.to_string())),
+        instance_id: None,
+        role: None,
     })
 }
 

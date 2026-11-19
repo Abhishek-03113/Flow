@@ -1,6 +1,7 @@
 //! Peer discovery for daemon-to-daemon pairing (`docs/architecture/channels.md`).
 
 use flow_core::channel::ChannelAddress;
+use flow_core::control::Role;
 use flow_core::device::HostOs;
 
 #[cfg(all(target_os = "linux", feature = "bluetooth"))]
@@ -15,4 +16,10 @@ pub struct DiscoveredPeer {
     pub name: String,
     pub os: HostOs,
     pub address: ChannelAddress,
+    /// The peer's identity public key, hex, as announced. Unauthenticated:
+    /// it keys pairing candidates and skips redundant work, never trust.
+    /// `None` for a medium that does not carry it.
+    pub instance_id: Option<String>,
+    /// The role the peer announced, when it announces one.
+    pub role: Option<Role>,
 }

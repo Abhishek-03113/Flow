@@ -52,5 +52,11 @@ export function usePairingFlow() {
     [client, toast],
   );
 
-  return { display, searching: starting && !display, start, stop, cancel, pair };
+  /** Pairs with a typed address (no discovery needed). */
+  const pairAddress = useCallback(
+    (address: string) => client.pairWithAddress(address).catch((e) => toast.show(friendlyError(e), 'error')),
+    [client, toast],
+  );
+
+  return { display, searching: starting && !display, start, stop, cancel, pair, pairAddress };
 }

@@ -65,6 +65,8 @@ Health of *this machine's* connection to the daemon and, by extension, the activ
 
 `code` (0.2.1) is the verification code shown on both computers while `requesting`; the other side's `IncomingPairingRequest.fingerprint` is the same string. State machine and transitions are in `daemon-ipc.md`.
 
+Each candidate may carry `role` (0.3.0, `controller` | `controlled`): the role it announced, absent when unknown. While the session is `found` the list is live: computers are added as they announce and removed 15 s after their last announce.
+
 ## `IncomingPairingRequest`
 
 Another device that has connected to this daemon's peer listener and is
@@ -175,6 +177,8 @@ Screens are rectangles in one shared virtual space (`d1` is this computer); two 
 ```
 
 Latencies are `null` until a switch happened. `events_dropped` includes input a controlled device refused (outside `Enter`..`Leave`, replays).
+
+`local_addresses` (0.3.0, may be absent): this computer's LAN IPv4 addresses as another computer would type them into `pair_with_address`: `"192.168.1.20"`, or `"192.168.1.20:50211"` when Flow does not listen on the default port 47825. Loopback and link-local addresses are left out.
 
 ## `RemapRule` (0.2.0)
 

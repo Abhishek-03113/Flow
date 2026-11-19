@@ -105,6 +105,17 @@ const linuxFix = (summary: string): HowToFix => ({
   ],
 });
 
+const windowsFix: HowToFix = {
+  summary: 'Windows Firewall stops other computers from finding and connecting to this one.',
+  steps: [
+    { text: 'Click “Set Up Automatically” and choose Yes in the Windows prompt.', command: null },
+    {
+      text: 'Or allow it yourself: Windows Security › Firewall & network protection › Allow an app through firewall › Flow, Private and Public. Flow uses UDP port 47824 and TCP port 47825.',
+      command: null,
+    },
+  ],
+};
+
 /** What the engine reports per OS (same names and fix-it steps). */
 const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => {
   const items: PermissionItem[] =
@@ -139,13 +150,13 @@ const permissionFor = (os: HostOs, granted: boolean): PermissionStatus => {
               ),
             }),
           ]
-        : [];
+        : [item('Incoming connections', granted, windowsFix)];
   const allGranted = items.length ? items.every((i) => i.granted) : granted;
   return {
     name: items.map((i) => i.name).join(' and ') || 'Input access',
     granted: allGranted,
     items,
-    oneClickSetup: os === 'linux' && !allGranted,
+    oneClickSetup: os !== 'macos' && !allGranted,
     restartRequired: false,
   };
 };
@@ -200,6 +211,7 @@ const diagnostics = (): Diagnostics => ({
   eventsForwarded: 18_204,
   eventsDropped: 3,
   uptimeS: 5_412,
+  localAddresses: ['192.168.1.20'],
 });
 
 const base = (os: HostOs, devices: EngineDevice[]): EngineState => ({
@@ -223,8 +235,8 @@ export function seedScenario(name: string, os: HostOs): EngineState {
   switch (name) {
     case 'fresh-install': {
       const s = base(os, [me()]);
-      // A fresh macOS or Linux install still has to grant access; Windows needs nothing.
-      s.permission = permissionFor(os, os === 'windows');
+      // A fresh install still has to grant access (Windows: allow Flow through the firewall).
+      s.permission = permissionFor(os, false);
       s.linkState = s.permission.granted ? 'connected' : 'permission_required';
       s.remapRules = [];
       s.diagnostics = { ...diagnostics(), eventsForwarded: 0, eventsDropped: 0, uptimeS: 12 };
@@ -330,3 +342,6 @@ export const candidatePool = [
   { id: 'cand-2', name: 'Living Room PC', os: 'windows' as const },
   { id: 'cand-3', name: 'Dev Laptop', os: 'linux' as const },
 ];
+
+/** A nearby computer with the same role as this one: listed, but it can't be paired (0.3.0 `role`). */
+export const sameRoleCandidate = { id: 'cand-4', name: 'Office iMac', os: 'macos' as const };

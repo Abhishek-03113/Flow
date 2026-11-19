@@ -2,7 +2,7 @@ import { ChevronLeft } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import type { Role } from '../../client/types';
 import { trayName } from '../../copy';
-import { Button, KeyCombo } from '@flow/design-system';
+import { Banner, Button, KeyCombo } from '@flow/design-system';
 import { useAction } from '../../state/useAction';
 import { useClient, useFlow } from '../../state/FlowProvider';
 import { loadOnboardingStep, saveOnboardingStep } from '../../state/prefs';
@@ -40,6 +40,7 @@ export function Onboarding({ onFinish }: { onFinish(): void }) {
   const granted = s.permission?.granted ?? false;
   const restartRequired = s.permission?.restartRequired ?? false;
   const ready = granted && !restartRequired;
+  const missingSetup = (s.permission?.items ?? []).filter((i) => !i.granted).map((i) => i.name);
 
   useEffect(() => {
     primary.current?.focus();
@@ -122,6 +123,17 @@ export function Onboarding({ onFinish }: { onFinish(): void }) {
               Open Flow on the other computer too. Pairing happens once; after that your computers find each
               other automatically.
             </p>
+            {!ready && !paired && (
+              <Banner
+                tone="orange"
+                title="Setup isn’t finished on this computer"
+                actions={<Button onClick={() => goTo('setup')}>Finish Setup</Button>}
+              >
+                {missingSetup.length
+                  ? `Still needed: ${missingSetup.join(', ')}. Other computers may not find or reach this one until it’s done.`
+                  : 'Restart Flow to finish setup.'}
+              </Banner>
+            )}
             <div className="fl-onboard__body">
               <PairingPanel flow={flow} myRole={role} connectedTo={linked?.name} />
             </div>

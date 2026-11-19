@@ -53,6 +53,11 @@ pub struct PairingCandidate {
     pub id: String,
     pub name: String,
     pub os: HostOs,
+    /// The role the candidate announced (contract 0.3.0). `None` for a
+    /// peer that does not announce one (older Flow, Bluetooth), so the UI
+    /// can warn about a same-role pairing *before* the request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<crate::control::Role>,
 }
 
 /// An incoming pairing request awaiting the local user's decision,

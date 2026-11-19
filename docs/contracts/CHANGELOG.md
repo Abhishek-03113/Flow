@@ -1,5 +1,19 @@
 # Contract Changelog
 
+## 0.3.0 — Flow 3 connection flows (`docs/redesign/flows-v3.md`)
+
+- **`PairingCandidate.role`** (`controller` | `controlled`, optional): the role the candidate announced. Absent for a peer that does not announce one. UIs warn before requesting a pairing that cannot work (same role).
+- **Live candidate ids are `live:<identity key hex>`** (were `live:<name>`): two computers with the same name are two candidates, and a paired computer is never offered again whatever its name. Ids stay opaque to clients.
+- **Behaviour**: the candidate list is live while pairing is open; a computer not heard for 15 s leaves it. Opening pairing announces at once, and every Flow answers an announce with a unicast one, so nearby computers appear in well under a second and one working broadcast direction is enough. Broadcast addresses are re-read from the interfaces on every announce (a network that comes up after Flow is used within one interval).
+- **Reconnect without broadcast**: each paired computer's last reachable address is stored (`devices.last_address`, from successful dials, its announces and its inbound connections). The engine dials every paired computer without a live link at that address every 1 s, doubling to 15 s per computer, independent of discovery, while `auto_connect_paired_devices` is on and reconnecting was not cancelled. Two paired computers reconnect in either start order on a network that never carries broadcast.
+- **`retry_connection` dials now**: it resets every redial delay and dials and announces immediately (before, it only changed the link state and waited for the next announce).
+- **Windows item `Incoming connections`**: always listed on Windows (after the first background probe, about a second after start), not granted while Windows Defender Firewall is on without Flow's allow rules for UDP 47824 and TCP 47825, or while an inbound block rule for Flow's program exists (the first "Allow access" prompt was dismissed). `one_click_setup` is now `true` on Windows when it is missing: `request_permission` adds the rules and removes those block rules behind one UAC prompt (`permission_setup_cancelled` when the prompt is dismissed). `open_permission_settings` answers `windowsdefender://network`.
+- **Item `Local network`** (any OS): listed, not granted, after three announce intervals in a row on which no discovery announce could leave this computer (macOS Local Network privacy denied, no network). It clears on the next delivered announce. On macOS `open_permission_settings` answers the Local Network privacy pane. Its loss or recovery never asks for a restart.
+- **New command `pair_with_address { address }`** and error code **`invalid_address`**: pair without discovery by typing the other computer's address (`host` or `host:port`, default 47825). **`Diagnostics.local_addresses`** lists this computer's own addresses to type on the other one.
+- **A paired computer is listed under the name it gives in its link Hello**, kept up to date when it is renamed (the name was fixed at pairing time).
+- **Behaviour**: a successful pairing records the address that answered, so the link comes up at once instead of after the next announce.
+- **Daemon-to-daemon announce v2** (UDP 47824): adds `proto` (2), `role` and `reply`. Older announces still parse; replies are never answered.
+
 ## 0.2.6 — one-step permission setup, fixed ports (additive)
 
 - **`PermissionStatus.one_click_setup`** (bool) and **`PermissionStatus.restart_required`** (bool), both defaulting to `false` when absent.

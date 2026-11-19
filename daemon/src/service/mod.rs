@@ -84,11 +84,16 @@ const PAIRING_TERMINAL_TO_IDLE: Duration = Duration::from_millis(1600);
 
 /// How long an incoming pairing request waits for the local user's
 /// Accept/Reject before the daemon rejects it on their behalf.
+/// How long a discovered computer stays a pairing candidate after its last
+/// announce: three announce intervals, so one lost packet does not drop it.
+pub const CANDIDATE_TTL: Duration = Duration::from_secs(15);
+
 const PAIRING_DECISION_TIMEOUT: Duration = Duration::from_secs(30);
 
 mod export;
 mod health;
 mod permissions;
+mod reconnect;
 
 /// How long [`DaemonService::dial_if_trusted`] will spend connecting to
 /// and handshaking with a discovered peer before giving up. Generous
@@ -178,6 +183,9 @@ pub struct ServiceState {
     /// keep exercising the pure mock flow unchanged, with no separate
     /// feature flag needed.
     pub discovered_candidates: HashMap<String, (PairingCandidate, ChannelAddress)>,
+    /// When each discovered candidate was last heard. A candidate not
+    /// heard for [`CANDIDATE_TTL`] is gone (it quit, slept or left).
+    pub candidate_seen: HashMap<String, std::time::Instant>,
     /// The single incoming pairing request currently awaiting a
     /// decision, if any. `None` whenever nothing is pending.
     pub incoming_request: Option<PendingPairingRequest>,
@@ -251,6 +259,7 @@ impl ServiceState {
             permission: permissions::initial_permission(options),
             candidates_pool: Vec::new(),
             discovered_candidates: HashMap::new(),
+            candidate_seen: HashMap::new(),
             incoming_request: None,
             permission_missing_seen: false,
         })
@@ -313,6 +322,7 @@ impl ServiceState {
             },
             candidates_pool: mock_parity_candidates(),
             discovered_candidates: HashMap::new(),
+            candidate_seen: HashMap::new(),
             incoming_request: None,
             permission_missing_seen: false,
         }
@@ -414,6 +424,17 @@ pub struct DaemonService {
     /// Set by `cancel_reconnect`: stop redialling paired computers until
     /// the user retries (or a computer connects to us).
     redial_paused: Arc<AtomicBool>,
+    /// Wakes the discovery loop to announce right away (pairing opened,
+    /// Retry pressed) instead of waiting for the next interval.
+    announce_now: Arc<tokio::sync::Notify>,
+    /// Where each paired computer was last reached (`reconnect.rs`).
+    peer_addresses: reconnect::PeerAddresses,
+    /// Wakes the reconnect supervisor to dial every paired computer now.
+    redial_now: Arc<tokio::sync::Notify>,
+    /// Consecutive announce ticks on which every send failed.
+    announce_failures: Arc<std::sync::atomic::AtomicU32>,
+    /// The peer listener's port (0 until the engine binds it).
+    peer_port: Arc<std::sync::atomic::AtomicU16>,
     /// Peers whose link was refused (`role_conflict`, `protocol_mismatch`):
     /// not redialled, since that cannot help until a role changes. Cleared
     /// when this device's role changes; the peer, when its role changes,
@@ -447,6 +468,8 @@ pub struct PeerInfo {
     pub role: Role,
     pub os: HostOs,
     pub screen: ScreenSize,
+    /// The name the peer gave in its Hello. Empty when unknown.
+    pub device_name: String,
 }
 
 impl DaemonService {
@@ -563,6 +586,11 @@ impl DaemonService {
             keymap_dir: options.keymap_dir,
             backend: options.backend,
             redial_paused: Arc::new(AtomicBool::new(false)),
+            announce_now: Arc::new(tokio::sync::Notify::new()),
+            peer_addresses: Arc::default(),
+            redial_now: Arc::new(tokio::sync::Notify::new()),
+            announce_failures: Arc::default(),
+            peer_port: Arc::default(),
             refused_peers: Arc::default(),
             dial_failures: Arc::default(),
             heard_published: Arc::new(std::sync::Mutex::new(HashMap::new())),
@@ -570,6 +598,7 @@ impl DaemonService {
             log_tail: None,
             virtual_io: Arc::default(),
         };
+        service.load_peer_addresses().await;
         service.spawn_active_screen_follower();
         service.spawn_diagnostics_ticker();
         Ok(service)
@@ -836,7 +865,19 @@ impl DaemonService {
 
     /// Current diagnostics, computed now.
     pub fn diagnostics(&self) -> Diagnostics {
-        diagnostics_of(&self.router, &self.dropped_remote, self.started)
+        diagnostics_of(
+            &self.router,
+            &self.dropped_remote,
+            self.started,
+            self.peer_port.load(Ordering::Relaxed),
+        )
+    }
+
+    /// The engine reports the port its peer listener is bound to, so the
+    /// addresses shown for "connect by address" carry it when it is not the
+    /// default.
+    pub fn set_peer_port(&self, port: u16) {
+        self.peer_port.store(port, Ordering::Relaxed);
     }
 
     /// Publishes fresh diagnostics every couple of seconds while the
@@ -845,6 +886,7 @@ impl DaemonService {
         let router = Arc::downgrade(&self.router);
         let dropped = Arc::clone(&self.dropped_remote);
         let started = self.started;
+        let peer_port = Arc::clone(&self.peer_port);
         let tx = self.diagnostics_tx.clone();
         tokio::spawn(async move {
             let period = Duration::from_secs(2);
@@ -854,7 +896,12 @@ impl DaemonService {
                 let Some(router) = router.upgrade() else {
                     return;
                 };
-                tx.send_replace(diagnostics_of(&router, &dropped, started));
+                tx.send_replace(diagnostics_of(
+                    &router,
+                    &dropped,
+                    started,
+                    peer_port.load(Ordering::Relaxed),
+                ));
             }
         });
     }
@@ -1077,6 +1124,7 @@ impl DaemonService {
                 width: 1920,
                 height: 1080,
             },
+            device_name: String::new(),
         };
         self.link_up(&id, &peer, registration.outbox.clone()).await;
         registration
@@ -1132,6 +1180,7 @@ impl DaemonService {
                 control.controller_device_id = Some(device_id.clone());
             });
         }
+        let mut renamed = false;
         self.update_device(device_id, |device| {
             device.state = DeviceState::Inactive;
             device.os = peer.os;
@@ -1139,8 +1188,23 @@ impl DaemonService {
             device.screen = Some(peer.screen);
             device.link_error = None;
             device.last_seen = Utc::now();
+            // The name it calls itself: replaces the address a computer
+            // paired by address was listed under, and follows renames.
+            let name = peer.device_name.trim();
+            if !name.is_empty() && device.name != name {
+                device.name = name.to_string();
+                renamed = true;
+            }
         })
         .await;
+        if renamed && !peer.device_name.trim().is_empty() {
+            if let Err(err) = DeviceRepo::new(self.storage.clone())
+                .set_name(device_id.clone(), peer.device_name.trim().to_string())
+                .await
+            {
+                tracing::warn!(%err, "could not persist a paired computer's name");
+            }
+        }
         self.redial_paused.store(false, Ordering::Relaxed);
         self.refused_peers
             .lock()
@@ -1348,6 +1412,7 @@ impl DaemonService {
         let persisted = DeviceRepo::new(self.storage.clone())
             .remove(target_id.clone())
             .await;
+        self.forget_peer_address(&target_id);
 
         self.devices_tx.send_replace(devices);
         self.mutate_layout(|layout| layout.remove(&target_id)).await;
@@ -1382,6 +1447,9 @@ impl DaemonService {
             };
         }
         self.emit_pairing_session().await;
+        // Announce now: every Flow that hears it answers at once, so nearby
+        // computers show up in well under a second.
+        self.announce_now.notify_one();
 
         let service = self.clone();
         let handle = tokio::spawn(async move { service.on_search_elapsed().await });
@@ -1452,6 +1520,46 @@ impl DaemonService {
         Ok(())
     }
 
+    /// Pairs with the computer at `address` (`host` or `host:port`, default
+    /// port 47825) without discovery: for networks that drop broadcast
+    /// (`flows-v3.md` §3.4). Same verified pairing and failure messages as
+    /// a discovered candidate. Allowed whenever no request is in flight.
+    #[tracing::instrument(skip(self))]
+    pub async fn pair_with_address(&self, address: &str) -> Result<(), FlowError> {
+        let typed = address.trim();
+        let target = resolve_peer_address(typed).await?;
+        let candidate = PairingCandidate {
+            id: format!("addr:{target}"),
+            // Shown until the link's Hello brings the computer's own name.
+            name: typed.to_string(),
+            // Corrected by the Hello as soon as the link comes up.
+            os: current_host_os(),
+            role: None,
+        };
+        {
+            let mut state = self.state.write().await;
+            if state.pairing_session.stage == PairingStage::Requesting {
+                return Err(FlowError::PairingInProgress);
+            }
+            state.pairing_session.stage = PairingStage::Requesting;
+            state.pairing_session.target_name = Some(candidate.name.clone());
+            state.pairing_session.error = None;
+            state.pairing_session.code = None;
+        }
+        self.cancel_pending_timer().await;
+        self.emit_pairing_session().await;
+        tracing::info!(target: "flow", "[PAIR] pairing by address with {typed} ({target})");
+
+        let service = self.clone();
+        let handle = tokio::spawn(async move {
+            service
+                .on_real_pairing_request(candidate, ChannelAddress::Tcp(target))
+                .await
+        });
+        self.set_pairing_timer(handle).await;
+        Ok(())
+    }
+
     /// `Searching -> Found`, offering whichever of `candidates_pool`
     /// (the mock-parity fallback) and `discovered_candidates` (real,
     /// live-discovered peers) isn't already a known device name —
@@ -1465,13 +1573,23 @@ impl DaemonService {
                 return;
             }
             let known: HashSet<&str> = state.devices.values().map(|d| d.name.as_str()).collect();
-            let candidates: Vec<PairingCandidate> = state
+            // Mock-parity seeds are matched by name; real candidates by the
+            // identity they announced (two computers may share a name).
+            let mut candidates: Vec<PairingCandidate> = state
                 .candidates_pool
                 .iter()
-                .cloned()
-                .chain(state.discovered_candidates.values().map(|(c, _)| c.clone()))
                 .filter(|c| !known.contains(c.name.as_str()))
+                .cloned()
                 .collect();
+            candidates.extend(
+                state
+                    .discovered_candidates
+                    .values()
+                    .map(|(c, _)| c)
+                    .filter(|c| !is_paired_candidate(&state, c))
+                    .cloned(),
+            );
+            candidates.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.id.cmp(&b.id)));
             state.pairing_session = PairingSession {
                 stage: PairingStage::Found,
                 candidates,
@@ -1492,32 +1610,86 @@ impl DaemonService {
     /// `Searching` or before `start_pairing` is simply cached here for
     /// whichever `on_search_elapsed`/`start_pairing` runs next.
     pub async fn note_discovered_peer(&self, peer: DiscoveredPeer) {
-        let candidate_id = format!("live:{}", peer.name);
+        // Keyed by the announced identity when there is one: names are
+        // labels, and two computers may well share one.
+        let candidate_id = match &peer.instance_id {
+            Some(instance) => format!("live:{instance}"),
+            None => format!("live:{}", peer.name),
+        };
         let candidate = PairingCandidate {
             id: candidate_id.clone(),
             name: peer.name.clone(),
             os: peer.os,
+            role: peer.role,
         };
+        if let (Some(instance), ChannelAddress::Tcp(addr)) = (&peer.instance_id, &peer.address) {
+            let device_id = DeviceId(format!("pk:{instance}"));
+            if self.state.read().await.devices.contains_key(&device_id) {
+                // A paired computer announced where it is now.
+                self.note_peer_address(&device_id, *addr).await;
+            }
+        }
         let should_emit = {
             let mut state = self.state.write().await;
+            state.discovered_candidates.insert(
+                candidate_id.clone(),
+                (candidate.clone(), peer.address.clone()),
+            );
             state
-                .discovered_candidates
-                .insert(candidate_id.clone(), (candidate.clone(), peer.address));
-            let already_known = state.devices.values().any(|d| d.name == candidate.name);
-            let already_offered = state
+                .candidate_seen
+                .insert(candidate_id.clone(), std::time::Instant::now());
+            if state.pairing_session.stage != PairingStage::Found
+                || is_paired_candidate(&state, &candidate)
+            {
+                false
+            } else if let Some(offered) = state
                 .pairing_session
                 .candidates
-                .iter()
-                .any(|c| c.id == candidate.id);
-            if !already_known
-                && !already_offered
-                && state.pairing_session.stage == PairingStage::Found
+                .iter_mut()
+                .find(|c| c.id == candidate.id)
             {
+                // Same computer, maybe renamed or with a new role.
+                let changed = *offered != candidate;
+                *offered = candidate;
+                changed
+            } else {
                 state.pairing_session.candidates.push(candidate);
                 true
-            } else {
-                false
             }
+        };
+        if should_emit {
+            self.emit_pairing_session().await;
+        }
+    }
+
+    /// Drops discovered computers not heard for [`CANDIDATE_TTL`], from the
+    /// cache and from an open pairing list. The engine calls it on every
+    /// announce tick.
+    pub async fn prune_stale_candidates(&self) {
+        self.prune_candidates_older_than(CANDIDATE_TTL).await;
+    }
+
+    async fn prune_candidates_older_than(&self, ttl: Duration) {
+        let should_emit = {
+            let mut state = self.state.write().await;
+            let now = std::time::Instant::now();
+            let stale: Vec<String> = state
+                .candidate_seen
+                .iter()
+                .filter(|(_, seen)| now.duration_since(**seen) >= ttl)
+                .map(|(id, _)| id.clone())
+                .collect();
+            for id in &stale {
+                state.candidate_seen.remove(id);
+                state.discovered_candidates.remove(id);
+            }
+            let before = state.pairing_session.candidates.len();
+            state
+                .pairing_session
+                .candidates
+                .retain(|c| !stale.contains(&c.id));
+            state.pairing_session.stage == PairingStage::Found
+                && state.pairing_session.candidates.len() != before
         };
         if should_emit {
             self.emit_pairing_session().await;
@@ -1615,6 +1787,11 @@ impl DaemonService {
                     removable: true,
                 })
                 .await;
+                // Connect straight away at the address that just answered,
+                // instead of waiting for an announce that may never come.
+                if let ChannelAddress::Tcp(addr) = &address {
+                    self.note_peer_address(&device_id, *addr).await;
+                }
 
                 self.take_pairing_timer().await;
                 self.emit_devices().await;
@@ -2129,6 +2306,9 @@ impl DaemonService {
             return None;
         }
         let device_id = device_id_from_public_key(&peer_public_key);
+        if let ChannelAddress::Tcp(addr) = &address {
+            self.note_peer_address(&device_id, *addr).await;
+        }
         crate::hop_note!(
             stage = "dial_trusted",
             role = "initiator",
@@ -2156,7 +2336,7 @@ impl DaemonService {
         if previous != Some(reason) {
             tracing::warn!(
                 target: "flow",
-                "[NET] cannot reach paired computer at {address:?}: {reason}; retrying on every announce"
+                "[NET] cannot reach paired computer at {address:?}: {reason}; will keep retrying"
             );
         }
     }
@@ -2173,6 +2353,11 @@ impl DaemonService {
     /// and the peer listener proves possession of the matching private
     /// key via Noise before anything is trusted, so a copied id buys an
     /// attacker nothing beyond being ignored by the daemon it copied.
+    /// Signalled whenever this computer should announce itself now.
+    pub fn announce_requests(&self) -> Arc<tokio::sync::Notify> {
+        Arc::clone(&self.announce_now)
+    }
+
     pub fn local_instance_id(&self) -> String {
         hex_encode(&self.identity.public_key_bytes())
     }
@@ -2334,6 +2519,9 @@ impl DaemonService {
         }
         self.redial_paused.store(false, Ordering::Relaxed);
         self.link_state_tx.send_replace(DaemonLinkState::Connecting);
+        // Retry means now: dial every paired computer and announce.
+        self.redial_now.notify_one();
+        self.announce_now.notify_one();
         Ok(())
     }
 }
@@ -2353,14 +2541,47 @@ fn diagnostics_of(
     router: &InputRouter,
     dropped_remote: &AtomicU64,
     started: std::time::Instant,
+    peer_port: u16,
 ) -> Diagnostics {
     let stats = router.stats();
-    Diagnostics::from_samples(
+    let mut diagnostics = Diagnostics::from_samples(
         stats.switch_latencies_ms,
         stats.events_forwarded,
         stats.events_dropped + dropped_remote.load(Ordering::Relaxed),
         started.elapsed().as_secs(),
-    )
+    );
+    if peer_port != 0 {
+        diagnostics.local_addresses = local_addresses(peer_port);
+    }
+    diagnostics
+}
+
+/// The LAN IPv4 addresses another computer can reach this one on, as a
+/// person would type them: loopback and link-local (169.254/16, no DHCP)
+/// are left out.
+fn local_addresses(peer_port: u16) -> Vec<String> {
+    let Ok(interfaces) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = interfaces
+        .into_iter()
+        .filter_map(|interface| match interface.addr {
+            if_addrs::IfAddr::V4(v4) if !v4.ip.is_loopback() && !v4.ip.is_link_local() => {
+                Some(v4.ip)
+            }
+            _ => None,
+        })
+        .map(|ip| {
+            if peer_port == flow_core::channel::PEER_PORT {
+                ip.to_string()
+            } else {
+                format!("{ip}:{peer_port}")
+            }
+        })
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }
 
 /// Why an outgoing pairing attempt failed, step by step. Each one has its
@@ -2445,6 +2666,56 @@ impl Drop for LinkRegistration {
 /// review gap #4: "MacBook Pro" / "MacBook Pro" / "MacBook Pro" are not
 /// the same trust identity just because they share a name), but two
 /// public keys are never accidentally equal.
+/// Parses what a person typed to reach another computer: an IPv4/IPv6
+/// address or host name, optionally with `:port` (default 47825), and
+/// resolves it to one socket address (IPv4 preferred: Flow listens on
+/// IPv4).
+async fn resolve_peer_address(typed: &str) -> Result<SocketAddr, FlowError> {
+    let invalid = || FlowError::InvalidAddress(typed.to_string());
+    if typed.is_empty() || typed.contains(char::is_whitespace) || typed.contains('/') {
+        return Err(invalid());
+    }
+    if let Ok(addr) = typed.parse::<SocketAddr>() {
+        return Ok(addr);
+    }
+    if let Ok(ip) = typed.trim_matches(['[', ']']).parse::<std::net::IpAddr>() {
+        return Ok(SocketAddr::new(ip, flow_core::channel::PEER_PORT));
+    }
+    let (host, port) = match typed.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().map_err(|_| invalid())?),
+        None => (typed, flow_core::channel::PEER_PORT),
+    };
+    if host.is_empty() {
+        return Err(invalid());
+    }
+    let resolved: Vec<SocketAddr> = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::net::lookup_host((host, port)),
+    )
+    .await
+    .map_err(|_| invalid())?
+    .map_err(|_| invalid())?
+    .collect();
+    resolved
+        .iter()
+        .find(|a| a.is_ipv4())
+        .or(resolved.first())
+        .copied()
+        .ok_or_else(invalid)
+}
+
+/// Whether a pairing candidate is a computer this one is already paired
+/// with. A live candidate's id carries the identity it announced, which is
+/// the hex public key a paired device's id is derived from.
+fn is_paired_candidate(state: &ServiceState, candidate: &PairingCandidate) -> bool {
+    match candidate.id.strip_prefix("live:") {
+        Some(rest) if rest.len() == 64 && rest.bytes().all(|b| b.is_ascii_hexdigit()) => state
+            .devices
+            .contains_key(&DeviceId(format!("pk:{}", rest.to_ascii_lowercase()))),
+        _ => state.devices.values().any(|d| d.name == candidate.name),
+    }
+}
+
 fn device_id_from_public_key(public_key: &[u8]) -> DeviceId {
     DeviceId(format!("pk:{}", hex_encode(public_key)))
 }
@@ -2589,11 +2860,13 @@ fn mock_parity_candidates() -> Vec<PairingCandidate> {
             id: "cand-office-mini".to_string(),
             name: "Office Mac Mini".to_string(),
             os: HostOs::Macos,
+            role: None,
         },
         PairingCandidate {
             id: "cand-studio-linux".to_string(),
             name: "Studio Linux".to_string(),
             os: HostOs::Linux,
+            role: None,
         },
     ]
 }
@@ -2810,6 +3083,8 @@ mod tests {
                 name: "Linux Box".to_string(),
                 os: HostOs::Linux,
                 address: ChannelAddress::Tcp(addr),
+                instance_id: None,
+                role: None,
             })
             .await;
         let candidate = loop {
@@ -2838,6 +3113,115 @@ mod tests {
         assert!(!error.contains("connection lost") && !error.contains("pairing failed:"));
     }
 
+    fn announced(name: &str, instance: char) -> DiscoveredPeer {
+        DiscoveredPeer {
+            name: name.to_string(),
+            os: HostOs::Macos,
+            address: ChannelAddress::Tcp("127.0.0.1:9".parse().unwrap()),
+            instance_id: Some(instance.to_string().repeat(64)),
+            role: Some(Role::Controlled),
+        }
+    }
+
+    async fn found_candidates(service: &DaemonService) -> Vec<PairingCandidate> {
+        service.start_pairing().await.expect("start pairing");
+        let mut sessions = service.watch_pairing_session();
+        loop {
+            let current = sessions.borrow_and_update().clone();
+            if current.stage == PairingStage::Found {
+                return current.candidates;
+            }
+            sessions.changed().await.expect("session update");
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_addresses_parse_with_the_default_port_and_bad_ones_are_refused() {
+        let at = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert_eq!(
+            resolve_peer_address("192.168.1.20").await.unwrap(),
+            at("192.168.1.20:47825")
+        );
+        assert_eq!(
+            resolve_peer_address("10.0.0.7:5000").await.unwrap(),
+            at("10.0.0.7:5000")
+        );
+        assert_eq!(
+            resolve_peer_address("[::1]").await.unwrap(),
+            at("[::1]:47825")
+        );
+        assert_eq!(resolve_peer_address("localhost:9").await.unwrap().port(), 9);
+        for bad in ["", "two words", "10.0.0.7:port", "http://10.0.0.7", ":5000"] {
+            let err = resolve_peer_address(bad).await.unwrap_err();
+            assert_eq!(err.code(), "invalid_address", "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn local_addresses_leave_out_loopback_and_show_a_non_default_port() {
+        for listed in local_addresses(flow_core::channel::PEER_PORT) {
+            let ip: std::net::Ipv4Addr = listed.parse().expect("bare IPv4 on the default port");
+            assert!(!ip.is_loopback() && !ip.is_link_local());
+        }
+        for listed in local_addresses(5000) {
+            assert!(listed.ends_with(":5000"), "{listed}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_computer_that_stops_announcing_leaves_the_pairing_list() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await.expect("service");
+        service
+            .note_discovered_peer(announced("Gone Mac", 'a'))
+            .await;
+        service
+            .note_discovered_peer(announced("Here Mac", 'b'))
+            .await;
+        assert_eq!(found_candidates(&service).await.len(), 2);
+
+        // "Here Mac" announces again; "Gone Mac" does not.
+        service.prune_candidates_older_than(Duration::ZERO).await;
+        service
+            .note_discovered_peer(announced("Here Mac", 'b'))
+            .await;
+        let names: Vec<String> = service
+            .watch_pairing_session()
+            .borrow()
+            .candidates
+            .iter()
+            .map(|c| c.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Here Mac".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_paired_computer_is_not_offered_again_even_under_a_new_name() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new(storage).await.expect("service");
+        let key = "c".repeat(64);
+        {
+            let mut state = service.state.write().await;
+            let id = DeviceId(format!("pk:{key}"));
+            let mut device = state.devices.values().next().expect("local device").clone();
+            device.id = id.clone();
+            device.name = "Old Name".to_string();
+            state.devices.insert(id, device);
+        }
+        service
+            .note_discovered_peer(announced("New Name", 'c'))
+            .await;
+        service
+            .note_discovered_peer(announced("Old Name", 'd'))
+            .await;
+        let listed = found_candidates(&service).await;
+        // The paired identity is hidden; a stranger that merely shares the
+        // paired computer's old name is still offered.
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "Old Name");
+        assert_eq!(listed[0].role, Some(Role::Controlled));
+    }
+
     #[tokio::test]
     async fn a_real_discovered_peer_is_the_only_pairing_candidate_offered() {
         let storage = Storage::open_in_memory().await.expect("open db");
@@ -2852,6 +3236,8 @@ mod tests {
             name: "Real Linux Box".to_string(),
             os: HostOs::Linux,
             address: ChannelAddress::Tcp("127.0.0.1:9".parse().unwrap()),
+            instance_id: None,
+            role: None,
         };
         service.note_discovered_peer(peer.clone()).await;
 
@@ -3107,6 +3493,7 @@ mod tests {
                 width: 1000,
                 height: 800,
             },
+            device_name: String::new(),
         };
         service
             .link_up(&id, &peer, registration.outbox.clone())
@@ -3295,6 +3682,7 @@ mod tests {
                 width: 10,
                 height: 10,
             },
+            device_name: String::new(),
         };
         let d2 = DeviceId("d2".to_string());
         // Controller meets controller.
@@ -3965,6 +4353,25 @@ mod tests {
             service.request_permission().await,
             Err(FlowError::PermissionAlreadyGranted)
         );
+    }
+
+    #[tokio::test]
+    async fn retry_dials_now_and_announces_now() {
+        let storage = Storage::open_in_memory().await.expect("open db");
+        let service = DaemonService::new_seeded_for_test(storage).await;
+        service.set_link_state(DaemonLinkState::Disconnected);
+        let (redial, announce) = (service.redial_requests(), service.announce_requests());
+
+        service.retry_connection().await.expect("retry accepted");
+
+        // Both wake-ups are stored permits: they fire even though nothing
+        // was waiting at the moment Retry was pressed.
+        tokio::time::timeout(Duration::from_secs(1), redial.notified())
+            .await
+            .expect("the reconnect supervisor is woken");
+        tokio::time::timeout(Duration::from_secs(1), announce.notified())
+            .await
+            .expect("discovery is woken");
     }
 
     #[tokio::test]

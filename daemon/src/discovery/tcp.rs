@@ -9,7 +9,11 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 
+use std::sync::Mutex;
+use std::time::Duration;
+
 use flow_core::channel::ChannelAddress;
+use flow_core::control::Role;
 use flow_core::device::HostOs;
 use serde::{Deserialize, Serialize};
 use socket2::{Domain, Protocol, Socket, Type};
@@ -41,13 +45,36 @@ struct Announce {
     /// filter a loopback echo, and is never used to decide trust (that
     /// stays with the Noise-proven identity key).
     instance_id: String,
+    /// Announce format version (2 since Flow 3). Absent in older peers.
+    #[serde(default)]
+    proto: u32,
+    /// The sender's role, so a pairing that cannot work is explained
+    /// before it is requested. Absent in older peers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    role: Option<Role>,
+    /// True for the unicast answer to someone else's announce. Answers
+    /// are never answered, so two peers cannot ping-pong.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    reply: bool,
 }
+
+/// The announce format this build sends.
+pub const ANNOUNCE_PROTO: u32 = 2;
+
+/// How long to wait after a receive error before the next receive, so a
+/// persistent error (no network, a Windows `WSAECONNRESET` storm) cannot
+/// spin a core.
+pub const RECV_ERROR_PAUSE: Duration = Duration::from_millis(250);
 
 /// One parsed announce: the peer, and the id it announced itself with.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ReceivedAnnounce {
     pub peer: DiscoveredPeer,
     pub instance_id: String,
+    /// The UDP address the announce came from: where a unicast answer goes.
+    pub sender: SocketAddr,
+    /// Whether this announce was itself an answer (never answer those).
+    pub is_reply: bool,
 }
 
 /// Broadcasts this daemon's presence and listens for others' announces.
@@ -57,6 +84,7 @@ pub struct DiscoveryService {
     os: HostOs,
     channel_port: u16,
     instance_id: String,
+    role: Mutex<Option<Role>>,
 }
 
 impl DiscoveryService {
@@ -86,6 +114,7 @@ impl DiscoveryService {
             os,
             channel_port,
             instance_id,
+            role: Mutex::new(None),
         })
     }
 
@@ -154,11 +183,30 @@ impl DiscoveryService {
     /// own tests, or a future unicast re-announce) may target a
     /// specific peer address instead.
     pub async fn announce_to(&self, destination: SocketAddr) -> std::io::Result<()> {
+        self.send_announce(destination, false).await
+    }
+
+    /// Answers someone else's announce with a unicast one, so a single
+    /// working broadcast direction is enough for both sides to learn each
+    /// other (`docs/redesign/flows-v3.md` §3.2).
+    pub async fn answer_to(&self, destination: SocketAddr) -> std::io::Result<()> {
+        self.send_announce(destination, true).await
+    }
+
+    /// The role carried by every announce from now on.
+    pub fn set_role(&self, role: Role) {
+        *self.role.lock().unwrap_or_else(|e| e.into_inner()) = Some(role);
+    }
+
+    async fn send_announce(&self, destination: SocketAddr, reply: bool) -> std::io::Result<()> {
         let packet = Announce {
             name: self.name.clone(),
             os: self.os,
             channel_port: self.channel_port,
             instance_id: self.instance_id.clone(),
+            proto: ANNOUNCE_PROTO,
+            role: *self.role.lock().unwrap_or_else(|e| e.into_inner()),
+            reply,
         };
         let bytes = serde_json::to_vec(&packet).expect("serialize announce");
         self.socket.send_to(&bytes, destination).await?;
@@ -181,7 +229,7 @@ impl DiscoveryService {
     /// it may only be used to skip work (such as redialing a peer that is
     /// already linked), never to trust anyone.
     pub async fn recv_announce(&self) -> std::io::Result<Option<ReceivedAnnounce>> {
-        let mut buf = [0u8; 512];
+        let mut buf = [0u8; 2048];
         let (len, sender) = self.socket.recv_from(&mut buf).await?;
         let Ok(announce) = serde_json::from_slice::<Announce>(&buf[..len]) else {
             return Ok(None);
@@ -195,8 +243,12 @@ impl DiscoveryService {
                 name: announce.name,
                 os: announce.os,
                 address: ChannelAddress::Tcp(tcp_addr),
+                instance_id: Some(announce.instance_id.clone()),
+                role: announce.role,
             },
             instance_id: announce.instance_id,
+            sender,
+            is_reply: announce.reply,
         }))
     }
 
@@ -216,7 +268,9 @@ impl DiscoveryService {
                         }
                     }
                     Ok(None) => continue,
-                    Err(_) => break,
+                    // A receive error is about one packet (or a passing
+                    // network change); discovery must outlive it.
+                    Err(_) => tokio::time::sleep(RECV_ERROR_PAUSE).await,
                 }
             }
         });
@@ -245,8 +299,41 @@ fn bind_reusable_udp(port: u16) -> std::io::Result<UdpSocket> {
         socket.set_reuse_port(true)?;
     }
     socket.set_nonblocking(true)?;
+    #[cfg(windows)]
+    disable_udp_connreset(&socket);
     socket.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
     UdpSocket::from_std(socket.into())
+}
+
+/// Windows reports an ICMP port-unreachable for an earlier `send_to` as a
+/// `WSAECONNRESET` on the next receive of the same UDP socket. Discovery
+/// sends to addresses where nobody may listen, so turn that off
+/// (`SIO_UDP_CONNRESET`, the documented switch).
+#[cfg(windows)]
+fn disable_udp_connreset(socket: &Socket) {
+    use std::os::windows::io::AsRawSocket;
+    use windows_sys::Win32::Networking::WinSock::{WSAIoctl, SOCKET};
+    const SIO_UDP_CONNRESET: u32 = 0x9800_000C;
+    let off: u32 = 0;
+    let mut returned: u32 = 0;
+    // SAFETY: a valid socket handle, a 4-byte input buffer that outlives
+    // the call, no output buffer and no overlapped I/O.
+    let rc = unsafe {
+        WSAIoctl(
+            socket.as_raw_socket() as SOCKET,
+            SIO_UDP_CONNRESET,
+            (&off as *const u32).cast(),
+            std::mem::size_of::<u32>() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+            None,
+        )
+    };
+    if rc != 0 {
+        tracing::debug!("could not turn off UDP connection-reset reports on the discovery socket");
+    }
 }
 
 #[cfg(test)]

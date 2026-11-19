@@ -76,10 +76,21 @@ for (const theme of ['light', 'dark'] as Theme[]) {
       });
     });
 
-    test('Windows needs no setup: straight from role to pairing', async ({ page }) => {
+    test('first launch on Windows: one button allows Flow through the firewall', async ({ page }) => {
       await page.setViewportSize(MAIN);
       await page.goto(url('scenario=fresh-install&os=windows'));
       await page.getByRole('button', { name: 'Get Started' }).click();
+      const guide = page.getByTestId('permission-guide-windows');
+      await expect(guide).toBeVisible();
+      await expect(guide).toContainText('Incoming connections');
+      await expect(guide).toContainText('Windows Firewall');
+      await expect(page.getByRole('button', { name: 'Continue' })).toHaveCount(0);
+      await snap(page, '04-onboarding-2-setup-windows', theme);
+      await guide.getByRole('button', { name: 'Set Up Automatically' }).click();
+      await expect(guide.locator('[data-testid="permission-item"][data-granted="false"]')).toHaveCount(0, {
+        timeout: 10_000,
+      });
+      await page.getByRole('button', { name: 'Continue' }).click();
       await expect(page.getByTestId('onboarding')).toHaveAttribute('data-step', 'pair');
     });
   });

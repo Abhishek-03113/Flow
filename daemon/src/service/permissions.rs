@@ -16,17 +16,65 @@ pub(super) fn initial_permission(options: &ServiceOptions) -> PermissionStatus {
     }
 }
 
+/// Consecutive announce ticks on which every send failed before the
+/// engine reports the local network as unreachable. One bad tick is a
+/// network change in progress; three (15 s) is a state.
+pub const LOCAL_NETWORK_FAILED_TICKS: u32 = 3;
+
 impl DaemonService {
+    /// The engine reports each announce tick: `all_failed` when not one
+    /// destination accepted the packet (macOS Local Network privacy denied
+    /// fails every send with "no route to host"). Re-probes permissions
+    /// when the verdict flips.
+    pub async fn note_announce_result(&self, all_failed: bool) {
+        let before = self.local_network_blocked();
+        if all_failed {
+            self.announce_failures
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        } else {
+            self.announce_failures
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+        }
+        let after = self.local_network_blocked();
+        if before != after {
+            if after {
+                crate::logging::product::error(
+                    "discovery",
+                    &"every announce has failed to leave this computer (local network blocked or unavailable)",
+                );
+            } else {
+                tracing::info!(target: "flow", "[NET] announces reach the local network again");
+            }
+            self.refresh_permissions().await;
+        }
+    }
+
+    fn local_network_blocked(&self) -> bool {
+        self.announce_failures
+            .load(std::sync::atomic::Ordering::Relaxed)
+            >= LOCAL_NETWORK_FAILED_TICKS
+    }
+
     /// Re-probes the OS and publishes the result when it changed. Missing
     /// permission with no live link is `permission_required`; once granted
     /// that state clears. Does nothing without an attached platform.
     pub async fn refresh_permissions(&self) {
         let Some(backend) = &self.backend else { return };
-        let mut status = PermissionStatus::from_items(backend.permissions());
+        let mut items = backend.permissions();
+        if self.local_network_blocked() {
+            items.push(flow_platform::permissions::local_network_item());
+        }
+        let mut status = PermissionStatus::from_items(items);
         status.one_click_setup = !status.granted && backend.permission_one_click_setup();
         let changed = {
             let mut state = self.state.write().await;
-            if !status.granted {
+            // Only an input grant needs a fresh process; the local network
+            // item clears by itself.
+            if status
+                .items
+                .iter()
+                .any(|i| !i.granted && i.name != flow_platform::permissions::LOCAL_NETWORK)
+            {
                 state.permission_missing_seen = true;
             }
             // Granted while running, on an OS that applies it only to a
@@ -226,6 +274,41 @@ mod tests {
             granted: Mutex::new(granted),
             prompts: Mutex::new(0),
         })
+    }
+
+    #[tokio::test]
+    async fn announces_that_never_leave_this_computer_are_a_local_network_item() {
+        let service = service_on(&fake(true)).await;
+        let names = |s: &DaemonService| -> Vec<String> {
+            s.watch_permission()
+                .borrow()
+                .items
+                .iter()
+                .filter(|i| !i.granted)
+                .map(|i| i.name.clone())
+                .collect()
+        };
+        // One or two bad ticks are a network change in progress.
+        for _ in 1..LOCAL_NETWORK_FAILED_TICKS {
+            service.note_announce_result(true).await;
+        }
+        assert!(names(&service).is_empty());
+
+        service.note_announce_result(true).await;
+        assert_eq!(names(&service), ["Local network"]);
+        let status = service.watch_permission().borrow().clone();
+        assert!(!status.granted);
+        let item = status
+            .items
+            .iter()
+            .find(|i| i.name == "Local network")
+            .unwrap();
+        assert!(item.how_to_fix.is_some());
+
+        // One delivered announce clears it.
+        service.note_announce_result(false).await;
+        assert!(names(&service).is_empty());
+        assert!(service.watch_permission().borrow().granted);
     }
 
     #[tokio::test]

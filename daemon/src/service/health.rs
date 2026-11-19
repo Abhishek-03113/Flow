@@ -171,6 +171,7 @@ mod tests {
                 width: 1920,
                 height: 1080,
             },
+            device_name: String::new(),
         };
         service.note_refused_peer(&id, &peer).await;
         service.link_down(&id, Some("role_conflict")).await;

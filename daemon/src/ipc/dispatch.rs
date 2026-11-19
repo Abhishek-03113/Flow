@@ -155,6 +155,13 @@ async fn handle_ack_only(
                 .await
                 .map_err(ErrorPayload::from)
         }
+        "pair_with_address" => {
+            let args: AddressPayload = parse_payload(payload)?;
+            service
+                .pair_with_address(&args.address)
+                .await
+                .map_err(ErrorPayload::from)
+        }
         "set_switch_key" => {
             let binding: SwitchKeyBinding = parse_payload(payload)?;
             service
@@ -245,6 +252,11 @@ struct RemapRulesPayload {
 #[derive(serde::Deserialize)]
 struct CandidateIdPayload {
     candidate_id: String,
+}
+
+#[derive(serde::Deserialize)]
+struct AddressPayload {
+    address: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -496,6 +508,7 @@ mod tests {
                 width: 100,
                 height: 100,
             },
+            device_name: String::new(),
         };
         service.link_up(&d2, &peer, link.outbox.clone()).await;
         service.switch_to("d2").await.expect("switch");

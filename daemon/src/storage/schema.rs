@@ -71,6 +71,9 @@ pub fn migrations() -> Migrations<'static> {
         );
         ",
         ),
+        // Where each paired computer was last reached, so it is redialled
+        // directly instead of waiting for a broadcast (flows-v3 §3.5).
+        M::up("ALTER TABLE devices ADD COLUMN last_address TEXT;"),
     ])
 }
 

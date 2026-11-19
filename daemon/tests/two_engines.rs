@@ -25,6 +25,13 @@ struct Machine {
 }
 
 async fn machine(name: &str, os: HostOs) -> Machine {
+    machine_with(name, os, true).await
+}
+
+/// `answers: false` models a computer whose inbound traffic is blocked:
+/// it never answers announces, so others learn its address only from its
+/// own announces.
+async fn machine_with(name: &str, os: HostOs, answers: bool) -> Machine {
     let dir = tempfile::tempdir().unwrap();
     let backend = Arc::new(VirtualBackend::new(
         os,
@@ -40,6 +47,7 @@ async fn machine(name: &str, os: HostOs) -> Machine {
         port: 0,
         targets: Some(Vec::new()),
         announce_interval: Duration::from_millis(150),
+        answer_announces: answers,
     });
     let engine = Engine::start(config).await.expect("engine starts");
     Machine {
@@ -240,8 +248,9 @@ async fn a_controlled_machine_can_ask_for_control_back() {
 /// up over it instead of being dropped as redundant forever.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_link_comes_up_when_only_the_non_preferred_direction_can_connect() {
-    let first = machine("Linux box", HostOs::Linux).await;
-    let second = machine("MacBook", HostOs::Macos).await;
+    // Neither answers announces, so the listener never learns the dialer.
+    let first = machine_with("Linux box", HostOs::Linux, false).await;
+    let second = machine_with("MacBook", HostOs::Macos, false).await;
     // The dialer is the side whose outbound connection loses the tie-break.
     let (dialer, listener) = if first.engine.service().local_instance_id()
         > second.engine.service().local_instance_id()

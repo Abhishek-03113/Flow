@@ -2,6 +2,7 @@ import { FlowCommandError } from './errors';
 import { fromWire, toWire } from './mapper';
 import {
   candidatePool,
+  sameRoleCandidate,
   defaultSettings,
   layoutFor,
   LOCAL_DEVICE_ID,
@@ -189,6 +190,8 @@ export class MockEngine {
         return this.cancelPairing();
       case 'pair_with_candidate':
         return this.pairWithCandidate(String(p.candidateId));
+      case 'pair_with_address':
+        return this.pairWithAddress(String(p.address ?? ''));
       case 'respond_to_pairing_request':
         return this.respondToPairingRequest(String(p.requestId), p.decision === 'accept');
       case 'set_switch_key':
@@ -299,10 +302,18 @@ export class MockEngine {
     this.pushPairing();
     this.later(1200, () => {
       const known = new Set(this.s.devices.map((d) => d.name));
+      // Like the engine: each candidate carries the role it announced.
+      const mine = this.s.settings.role;
+      const other: Role = mine === 'controller' ? 'controlled' : 'controller';
       this.s.pairingSession = {
         ...this.s.pairingSession,
         stage: 'found',
-        candidates: candidatePool.filter((c) => !known.has(c.name)),
+        candidates: this.noBroadcast
+          ? []
+          : [
+              ...candidatePool.map((c) => ({ ...c, role: other })),
+              { ...sameRoleCandidate, role: mine },
+            ].filter((c) => !known.has(c.name)),
       };
       this.pushPairing();
     });
@@ -339,6 +350,44 @@ export class MockEngine {
       } else {
         this.addDevice({ name: cand.name, os: cand.os });
         this.s.pairingSession = { ...this.s.pairingSession, stage: 'paired', code: null };
+      }
+      this.pushPairing();
+      this.later(1600, () => this.resetPairing());
+    });
+  }
+
+  /** Like the engine: any typed address is tried; `10.0.0.99` stands for one nobody answers at. */
+  private pairWithAddress(address: string): void {
+    const typed = address.trim();
+    if (!/^[\w.\-[\]:]+$/.test(typed) || /:\D|:$/.test(typed.replace(/^\[.*\]/, '')))
+      throw err('invalid_address', `not an address: ${typed}`);
+    if (this.s.pairingSession.stage === 'requesting')
+      throw err('pairing_in_progress', 'A request is already waiting for an answer.');
+    this.s.pairingSession = {
+      ...this.s.pairingSession,
+      stage: 'requesting',
+      targetName: typed,
+      error: null,
+      code: '482 913',
+    };
+    this.pushPairing();
+    this.later(1500, () => {
+      if (typed.startsWith('10.0.0.99')) {
+        this.s.pairingSession = {
+          ...this.s.pairingSession,
+          stage: 'failed',
+          code: null,
+          error: `${typed} didn’t answer. Its firewall is probably blocking Flow: open Flow on ${typed} and finish its setup, then try again.`,
+        };
+      } else {
+        // The engine lists it under the name it gives once linked.
+        this.addDevice({ name: 'Study PC', os: 'windows' });
+        this.s.pairingSession = {
+          ...this.s.pairingSession,
+          stage: 'paired',
+          targetName: 'Study PC',
+          code: null,
+        };
       }
       this.pushPairing();
       this.later(1600, () => this.resetPairing());
@@ -476,7 +525,7 @@ export class MockEngine {
     if (failure) throw err(failure.code, failure.message);
     // The OS prompt (or the administrator password) is out of our hands;
     // simulate the user approving it.
-    this.later(this.os === 'linux' ? 800 : 2500, () => this.simulate.grantPermission());
+    this.later(this.os === 'macos' ? 2500 : 800, () => this.simulate.grantPermission());
   }
 
   /** The real shell relaunches; here the "new process" simply has the grant applied. */
@@ -564,7 +613,14 @@ export class MockEngine {
   }
 
   // --- test / demo hooks (exposed as window.__flowMock) -----------------------
+  /** Models a network that drops broadcast: discovery finds nobody. */
+  private noBroadcast = false;
+
   readonly simulate = {
+    /** From now on, pairing finds no nearby computers (only Connect by Address works). */
+    blockBroadcast: () => {
+      this.noBroadcast = true;
+    },
     incomingPairingRequest: (partial: Partial<typeof sampleIncomingRequest> = {}) => {
       this.s.incomingPairingRequest = { ...sampleIncomingRequest, ...partial };
       this.push('incoming_pairing_request_changed', this.s.incomingPairingRequest);

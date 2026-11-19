@@ -135,6 +135,35 @@ describe('MockEngine', () => {
     expect(client.getSnapshot().pairingSession.stage).toBe('idle');
   });
 
+  it('pairs by typed address without discovery, then lists the computer under its own name', async () => {
+    const { client } = setup('no-devices');
+    await flush();
+    await expect(client.pairWithAddress('two words')).rejects.toMatchObject({ code: 'invalid_address' });
+    await expect(client.pairWithAddress('10.0.0.7:port')).rejects.toMatchObject({ code: 'invalid_address' });
+    await client.pairWithAddress('192.168.1.31');
+    expect(client.getSnapshot().pairingSession).toMatchObject({
+      stage: 'requesting',
+      targetName: '192.168.1.31',
+    });
+    await expect(client.pairWithAddress('192.168.1.32')).rejects.toMatchObject({
+      code: 'pairing_in_progress',
+    });
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(client.getSnapshot().pairingSession.stage).toBe('paired');
+    expect(client.getSnapshot().devices.some((d) => d.name === 'Study PC')).toBe(true);
+  });
+
+  it('an address nobody answers at fails with a reason', async () => {
+    const { client } = setup('no-devices');
+    await flush();
+    await client.pairWithAddress('10.0.0.99');
+    await vi.advanceTimersByTimeAsync(1600);
+    expect(client.getSnapshot().pairingSession).toMatchObject({
+      stage: 'failed',
+      error: expect.stringContaining('firewall'),
+    });
+  });
+
   it('a candidate that declines produces a failed session with a readable error', async () => {
     const { client } = setup('no-devices');
     await flush();

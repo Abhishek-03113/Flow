@@ -54,6 +54,7 @@ fn pairing_session_matches_data_model_example() {
             id: "cand-1".to_string(),
             name: "Office Mac Mini".to_string(),
             os: HostOs::Macos,
+            role: None,
         }],
         target_name: Some("Office Mac Mini".to_string()),
         error: None,

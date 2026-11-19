@@ -1141,3 +1141,43 @@
   font-size: var(--fs-footnote);
   color: var(--label-secondary);
 }
+
+/* Text input ------------------------------------------------------------------------- */
+.fl-input {
+  height: 28px;
+  min-width: 0;
+  padding: 0 var(--s-3);
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-1);
+  color: var(--label);
+  font: inherit;
+}
+
+.fl-input::placeholder {
+  color: var(--label-tertiary);
+}
+
+.fl-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Connect by address ------------------------------------------------------------------ */
+.fl-address {
+  display: grid;
+  gap: var(--s-2);
+  width: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+}
+
+.fl-address__row {
+  display: flex;
+  gap: var(--s-2);
+}
+
+.fl-address__row .fl-input {
+  flex: 1;
+}

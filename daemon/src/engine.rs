@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use flow_core::channel::Channel;
+use flow_core::channel::{Channel, ChannelAddress};
 use flow_core::control::Role;
 use flow_core::device::DeviceId;
 use thiserror::Error;
@@ -48,6 +48,11 @@ pub struct DiscoveryConfig {
     pub targets: Option<Vec<SocketAddr>>,
     /// How often this engine announces itself.
     pub announce_interval: Duration,
+    /// Answer every announce heard with a unicast one, so one working
+    /// broadcast direction is enough (`flows-v3.md` §3.2). Always on in
+    /// real use; tests turn it off to model a computer whose inbound
+    /// traffic is blocked.
+    pub answer_announces: bool,
 }
 
 pub struct EngineConfig {
@@ -192,6 +197,8 @@ impl Engine {
 
         if let Some(port) = runtime.spawn_peer_listener(config.peer_listen_port).await {
             handle.peer_port = Some(port);
+            service.set_peer_port(port);
+            runtime.spawn_reconnect_supervisor();
             if let Some(discovery) = &config.discovery {
                 if let Some((bound, targets)) = runtime.spawn_discovery(discovery, port).await {
                     handle.discovery_port = Some(bound);
@@ -356,6 +363,41 @@ async fn drive_local_pointer(service: Arc<DaemonService>, backend: Arc<dyn Platf
 
 /// How long a redundant connection waits for the preferred one to show up
 /// before it is used instead.
+/// How often the reconnect supervisor looks for paired computers to dial.
+const RECONNECT_TICK: Duration = Duration::from_secs(1);
+/// First and longest wait between dials to one paired computer.
+const REDIAL_MIN: Duration = Duration::from_secs(1);
+const REDIAL_MAX: Duration = Duration::from_secs(15);
+
+/// Per-computer redial delays: 1 s, doubling to 15 s.
+#[derive(Default)]
+struct Backoff {
+    next: std::collections::HashMap<DeviceId, (tokio::time::Instant, Duration)>,
+}
+
+impl Backoff {
+    fn due(&self, id: &DeviceId, now: tokio::time::Instant) -> bool {
+        self.next.get(id).is_none_or(|(at, _)| now >= *at)
+    }
+
+    fn attempted(&mut self, id: &DeviceId, now: tokio::time::Instant) {
+        let delay = self
+            .next
+            .get(id)
+            .map_or(REDIAL_MIN, |(_, delay)| (*delay * 2).min(REDIAL_MAX));
+        self.next.insert(id.clone(), (now + delay, delay));
+    }
+
+    fn keep_only<'a>(&mut self, ids: impl Iterator<Item = &'a DeviceId>) {
+        let keep: std::collections::HashSet<&DeviceId> = ids.collect();
+        self.next.retain(|id, _| keep.contains(id));
+    }
+
+    fn reset_all(&mut self) {
+        self.next.clear();
+    }
+}
+
 const REDUNDANT_CONNECTION_GRACE: Duration = Duration::from_secs(2);
 
 /// A device id short enough for a log line.
@@ -471,6 +513,72 @@ impl Runtime {
         Some(port)
     }
 
+    /// Dials every paired computer that has no live link at the address it
+    /// was last reached, with a per-computer backoff, independent of
+    /// discovery: two paired computers reconnect even on a network that
+    /// never carries broadcast (`flows-v3.md` §3.5). Retry resets every
+    /// backoff and dials at once.
+    fn spawn_reconnect_supervisor(&self) {
+        let runtime = self.clone();
+        let redial_now = self.link.service.redial_requests();
+        self.tasks.spawn(async move {
+            let mut tick = tokio::time::interval(RECONNECT_TICK);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut backoff = Backoff::default();
+            let in_flight: Arc<std::sync::Mutex<std::collections::HashSet<DeviceId>>> =
+                Arc::default();
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {}
+                    _ = redial_now.notified() => backoff.reset_all(),
+                }
+                let targets = runtime.link.service.redial_targets().await;
+                // A computer that is linked (or no longer paired) starts
+                // from the shortest delay next time it drops.
+                backoff.keep_only(targets.iter().map(|(id, _)| id));
+                let now = tokio::time::Instant::now();
+                for (device_id, address) in targets {
+                    if !backoff.due(&device_id, now) {
+                        continue;
+                    }
+                    if !in_flight
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(device_id.clone())
+                    {
+                        continue;
+                    }
+                    backoff.attempted(&device_id, now);
+                    crate::hop_note!(
+                        stage = "redial",
+                        role = "initiator",
+                        peer = %device_id.0,
+                        address = %address,
+                        "dialing a paired computer at its last known address"
+                    );
+                    let inner = runtime.clone();
+                    let in_flight = Arc::clone(&in_flight);
+                    runtime.tasks.spawn(async move {
+                        if let Some((channel, id, precedence)) = inner
+                            .link
+                            .service
+                            .dial_if_trusted(ChannelAddress::Tcp(address))
+                            .await
+                        {
+                            // The address may now answer as another paired
+                            // computer (addresses move); run whatever it is.
+                            inner.claim_and_run(channel, id, precedence).await;
+                        }
+                        in_flight
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&device_id);
+                    });
+                }
+            }
+        });
+    }
+
     /// Starts discovery: one UDP socket both listens for announces and
     /// periodically announces this engine. Every parsed announce surfaces
     /// the peer as a pairing candidate and, if the peer is already paired,
@@ -503,54 +611,94 @@ impl Runtime {
         let port = discovery.local_port().ok()?;
         tracing::info!(target: "flow", "[NET] discovering other computers on UDP port {port}");
 
+        // Fixed targets isolate engines sharing a host (tests, harness).
+        // Otherwise the interfaces are read again on every tick, so a
+        // network that comes up after Flow (login before Wi-Fi), a new
+        // network or a VPN is used within one interval.
+        let fixed = config.targets.is_some();
         let targets = Arc::new(std::sync::Mutex::new(
-            config
-                .targets
-                .clone()
-                .unwrap_or_else(|| DiscoveryService::broadcast_destinations(port)),
+            config.targets.clone().unwrap_or_default(),
         ));
         let announce_targets = Arc::clone(&targets);
-        let announce = config.announce_interval;
+        let every = config.announce_interval;
+        let answer = config.answer_announces;
         let runtime = self.clone();
+        let announce_now = self.link.service.announce_requests();
         self.tasks.spawn(async move {
-            let mut announce_interval = tokio::time::interval(announce);
+            let mut announce_interval = tokio::time::interval(every);
+            announce_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // Last unicast answer per sender, so answers stay bounded.
+            let mut answered: std::collections::HashMap<SocketAddr, tokio::time::Instant> =
+                std::collections::HashMap::new();
             loop {
-                tokio::select! {
-                    _ = announce_interval.tick() => {
-                        let destinations = announce_targets
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .clone();
-                        for destination in destinations {
-                            match discovery.announce_to(destination).await {
-                                Ok(()) => crate::hop!(
-                                    stage = "announce_sent",
-                                    role = "local",
-                                    to = %destination,
-                                    "sent a discovery announce"
-                                ),
-                                Err(err) => crate::hop!(
-                                    stage = "announce_failed",
-                                    role = "local",
-                                    to = %destination,
-                                    error = %err,
-                                    "a discovery announce send failed"
-                                ),
+                let announce_tick = tokio::select! {
+                    _ = announce_interval.tick() => true,
+                    _ = announce_now.notified() => true,
+                    received = discovery.recv_announce() => {
+                        match received {
+                            Ok(Some(announce)) => {
+                                let now = tokio::time::Instant::now();
+                                let due = answered
+                                    .get(&announce.sender)
+                                    .is_none_or(|at| now.duration_since(*at) >= every);
+                                if answer && !announce.is_reply && due {
+                                    answered.insert(announce.sender, now);
+                                    if let Err(err) = discovery.answer_to(announce.sender).await {
+                                        crate::hop!(
+                                            stage = "answer_failed",
+                                            role = "local",
+                                            to = %announce.sender,
+                                            error = %err,
+                                            "a unicast discovery answer failed"
+                                        );
+                                    }
+                                }
+                                runtime
+                                    .handle_discovered_peer(announce.peer, &announce.instance_id)
+                                    .await;
+                            }
+                            Ok(None) => {}
+                            // A transient receive error must not end
+                            // discovery, nor spin while it lasts.
+                            Err(err) => {
+                                tracing::debug!("discovery receive failed, continuing: {err}");
+                                tokio::time::sleep(crate::discovery::tcp::RECV_ERROR_PAUSE).await;
                             }
                         }
+                        false
                     }
-                    received = discovery.recv_announce() => match received {
-                        Ok(Some(announce)) => {
-                            runtime
-                                .handle_discovered_peer(announce.peer, &announce.instance_id)
-                                .await
+                };
+                if !announce_tick {
+                    continue;
+                }
+                discovery.set_role(runtime.link.service.local_role());
+                runtime.link.service.prune_stale_candidates().await;
+                answered.retain(|_, at| at.elapsed() < every * 4);
+                let mut destinations = announce_targets
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                if !fixed {
+                    for destination in DiscoveryService::broadcast_destinations(port) {
+                        if !destinations.contains(&destination) {
+                            destinations.push(destination);
                         }
-                        Ok(None) => {}
-                        // A transient receive error must not end discovery
-                        // for the rest of the process's life.
-                        Err(err) => tracing::warn!("discovery receive failed, continuing: {err}"),
                     }
                 }
+                let mut delivered = false;
+                for destination in destinations {
+                    match discovery.announce_to(destination).await {
+                        Ok(()) => delivered = true,
+                        Err(err) => crate::hop!(
+                            stage = "announce_failed",
+                            role = "local",
+                            to = %destination,
+                            error = %err,
+                            "a discovery announce send failed"
+                        ),
+                    }
+                }
+                runtime.link.service.note_announce_result(!delivered).await;
             }
         });
         Some((port, targets))
@@ -620,6 +768,10 @@ impl Runtime {
         {
             Ok(IncomingPeerConnection::HandledAsPairing) => {}
             Ok(IncomingPeerConnection::TrustedPeer(channel, device_id, precedence)) => {
+                self.link
+                    .service
+                    .note_inbound_peer(&device_id, peer_addr)
+                    .await;
                 self.claim_and_run(channel, device_id, precedence).await;
             }
             Err(err) => tracing::warn!(
@@ -668,5 +820,37 @@ impl Runtime {
             );
         }
         run_link(&self.link, channel, device_id).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redial_delays_double_from_one_second_to_fifteen_and_reset() {
+        let id = DeviceId("pk:aa".to_string());
+        let start = tokio::time::Instant::now();
+        let mut backoff = Backoff::default();
+        let mut now = start;
+        let mut delays = Vec::new();
+        for _ in 0..7 {
+            assert!(backoff.due(&id, now));
+            backoff.attempted(&id, now);
+            let (at, delay) = backoff.next[&id];
+            assert!(!backoff.due(&id, at - Duration::from_millis(1)));
+            delays.push(delay.as_secs());
+            now = at;
+        }
+        assert_eq!(delays, vec![1, 2, 4, 8, 15, 15, 15]);
+
+        // Linked again (dropped from the targets): the next drop starts at 1 s.
+        backoff.keep_only(std::iter::empty());
+        backoff.attempted(&id, now);
+        assert_eq!(backoff.next[&id].1, REDIAL_MIN);
+
+        // Retry: everything is due at once.
+        backoff.reset_all();
+        assert!(backoff.due(&id, now));
     }
 }
